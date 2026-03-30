@@ -1,1 +1,1 @@
-DROP FUNCTION IF EXISTS wo_generate_due_pm_intervals(uuid);
+-- No-op: wo_generate_due_pm_intervals already dropped in 017.

@@ -18,6 +18,8 @@ import {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
+type WoType = 'bd' | 'pm' | 'cm'
+
 type WorkOrderTableRow = {
   id: string
   site_id: string
@@ -29,6 +31,7 @@ type WorkOrderTableRow = {
   plan_start: Date | null
   plan_end: Date | null
   worktime: string
+  wo_type: string
   status: string
   created_at: Date
   updated_at: Date
@@ -77,7 +80,7 @@ async function fetchWorkOrderWithJoins(
 
 const LIST_SQL = `
 SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
-       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.status,
+       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.wo_type, w.status,
        w.created_at, w.updated_at, w.created_by, w.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        a.key AS asset_key, a.name AS asset_name,
@@ -119,6 +122,17 @@ function parseAssetId(body: unknown): string | undefined {
 function parseWorktime(body: unknown): unknown {
   if (typeof body !== 'object' || body === null) return undefined
   return (body as { worktime?: unknown }).worktime
+}
+
+/** Omitted field → undefined; invalid → 'invalid'. */
+function parseWoType(body: unknown): WoType | undefined | 'invalid' {
+  if (typeof body !== 'object' || body === null) return undefined
+  const v = (body as { wo_type?: unknown }).wo_type
+  if (v === undefined) return undefined
+  if (typeof v !== 'string') return 'invalid'
+  const s = v.trim().toLowerCase()
+  if (s === 'bd' || s === 'pm' || s === 'cm') return s
+  return 'invalid'
 }
 
 function parseOptionalInstant(
@@ -255,6 +269,13 @@ router.post('/', async (req, res) => {
     return
   }
 
+  const woTypeParsed = parseWoType(req.body)
+  if (woTypeParsed === 'invalid') {
+    res.status(400).json({ error: 'wo_type must be bd, pm, or cm.' })
+    return
+  }
+  const woType: WoType = woTypeParsed ?? 'cm'
+
   const auth = req.authUser!
   const siteId = workingSiteIdOr403(res, auth)
   if (!siteId) return
@@ -277,11 +298,11 @@ router.post('/', async (req, res) => {
     const r = await client.query<{ id: string }>(
       `INSERT INTO work_orders (
          site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-         plan_start, plan_end, worktime, status, created_by
+         plan_start, plan_end, worktime, wo_type, status, created_by
        )
        VALUES (
          $1, nextval('work_order_wo_key_seq'), $2, $3, $4, $5,
-         $6, $7, $8, 'open', $9
+         $6, $7, $8, $9, 'open', $10
        )
        RETURNING id`,
       [
@@ -293,6 +314,7 @@ router.post('/', async (req, res) => {
         ps,
         pe,
         worktimeNum,
+        woType,
         auth.id,
       ],
     )
@@ -305,7 +327,7 @@ router.post('/', async (req, res) => {
 
     const tableRow = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, status,
+              plan_start, plan_end, worktime, wo_type, status,
               created_at, updated_at, created_by, updated_by
        FROM work_orders WHERE id = $1`,
       [insertedId],
@@ -360,6 +382,12 @@ router.patch('/:id', async (req, res) => {
   const worktimeOpt = parseWorktime(req.body)
   const planStartOpt = parseOptionalInstant(req.body, 'plan_start')
   const planEndOpt = parseOptionalInstant(req.body, 'plan_end')
+  const woTypeOpt = parseWoType(req.body)
+
+  if (woTypeOpt === 'invalid') {
+    res.status(400).json({ error: 'wo_type must be bd, pm, or cm.' })
+    return
+  }
 
   if (
     shortTextOpt === undefined &&
@@ -367,7 +395,8 @@ router.patch('/:id', async (req, res) => {
     assetIdOpt === undefined &&
     worktimeOpt === undefined &&
     planStartOpt === undefined &&
-    planEndOpt === undefined
+    planEndOpt === undefined &&
+    woTypeOpt === undefined
   ) {
     res.status(400).json({ error: 'No fields to update.' })
     return
@@ -422,7 +451,7 @@ router.patch('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, status,
+              plan_start, plan_end, worktime, wo_type, status,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -443,6 +472,8 @@ router.patch('/:id', async (req, res) => {
     let nextPlanStart = beforeRow.plan_start
     let nextPlanEnd = beforeRow.plan_end
     let nextWorktime = beforeRow.worktime
+    let nextWoType: WoType =
+      woTypeOpt !== undefined ? woTypeOpt : (beforeRow.wo_type as WoType)
 
     if (shortTextOpt !== undefined) {
       nextShort = shortTextOpt.trim().slice(0, 200)
@@ -495,11 +526,12 @@ router.patch('/:id', async (req, res) => {
          plan_start = $5,
          plan_end = $6,
          worktime = $7,
+         wo_type = $8,
          updated_at = now(),
-         updated_by = $8
-       WHERE id = $9
+         updated_by = $9
+       WHERE id = $10
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                 plan_start, plan_end, worktime, status,
+                 plan_start, plan_end, worktime, wo_type, status,
                  created_at, updated_at, created_by, updated_by`,
       [
         nextShort,
@@ -509,6 +541,7 @@ router.patch('/:id', async (req, res) => {
         nextPlanStart,
         nextPlanEnd,
         nextWorktime,
+        nextWoType,
         auth.id,
         id,
       ],
@@ -575,7 +608,7 @@ router.delete('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, status,
+              plan_start, plan_end, worktime, wo_type, status,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1

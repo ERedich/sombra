@@ -1,6 +1,5 @@
 /**
  * CRUD for work orders — template-app layout + Sites-style API wiring.
- * (Interval / PM / roll-out / generate-due removed — matches schema without interval columns.)
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TFunction } from 'i18next'
@@ -16,6 +15,7 @@ import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
 import { Dialog } from 'primereact/dialog'
+import { Dropdown } from 'primereact/dropdown'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
 import { InputNumber } from 'primereact/inputnumber'
@@ -23,6 +23,7 @@ import { InputText } from 'primereact/inputtext'
 import { InputTextarea } from 'primereact/inputtextarea'
 import { Tag } from 'primereact/tag'
 import { Toast } from 'primereact/toast'
+import { TabView, TabPanel } from 'primereact/tabview'
 import { ApiError, apiBase, apiJson } from '../../api'
 import { getStoredUser, getToken } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
@@ -38,6 +39,8 @@ import { SelItemField } from '../../components/sel-item/SelItemField'
 import { formatDateTime } from '../../utils/dateTime'
 import type { Asset } from '../asset-management/assetTypes'
 
+export type WoType = 'bd' | 'pm' | 'cm'
+
 export type WorkOrder = {
   id: string
   site_id: string
@@ -49,6 +52,7 @@ export type WorkOrder = {
   plan_start: string | null
   plan_end: string | null
   worktime: string
+  wo_type: WoType
   status: string
   created_at: string
   updated_at: string
@@ -67,6 +71,12 @@ export type WorkOrder = {
 
 type WorkOrdersListResponse = { work_orders: WorkOrder[] }
 type WorkOrderResponse = { work_order: WorkOrder }
+
+function normalizeWoType(raw: string | undefined): WoType {
+  const s = (raw ?? 'cm').trim().toLowerCase()
+  if (s === 'bd' || s === 'pm' || s === 'cm') return s
+  return 'cm'
+}
 
 const WO_STATUS_I18N_KEYS: Record<string, string> = {
   open: 'wo.status_open',
@@ -166,12 +176,14 @@ export default function WorkOrdersAppPage() {
   const [formPlanStart, setFormPlanStart] = useState<Date | null>(null)
   const [formPlanEnd, setFormPlanEnd] = useState<Date | null>(null)
   const [formWorktime, setFormWorktime] = useState<number | null>(null)
+  const [formWoType, setFormWoType] = useState<WoType>('cm')
   const [formStatus, setFormStatus] = useState('open')
   const [pickedAsset, setPickedAsset] = useState<Asset | null>(null)
   const [assetPickerOpen, setAssetPickerOpen] = useState(false)
   const [selected, setSelected] = useState<WorkOrder | null>(null)
   const [search, setSearch] = useState('')
   const [flashRowIds, setFlashRowIds] = useState(() => new Set<string>())
+  const [dialogTab, setDialogTab] = useState(0)
 
   const cardSubTitle = useMemo(() => {
     if (workOrderIdParam) {
@@ -219,7 +231,11 @@ export default function WorkOrdersAppPage() {
         (w.created_by_login_name?.toLowerCase().includes(q) ?? false) ||
         (w.updated_by_login_name?.toLowerCase().includes(q) ?? false) ||
         w.site_key.toLowerCase().includes(q) ||
-        w.site_name.toLowerCase().includes(q)
+        w.site_name.toLowerCase().includes(q) ||
+        normalizeWoType(w.wo_type).includes(q) ||
+        t('wo.type_option_bd').toLowerCase().includes(q) ||
+        t('wo.type_option_pm').toLowerCase().includes(q) ||
+        t('wo.type_option_cm').toLowerCase().includes(q)
       )
     })
   }, [rows, search, workOrderIdParam, t])
@@ -404,6 +420,15 @@ export default function WorkOrdersAppPage() {
     return emDash
   }, [pickedAsset, editingWo, emDash])
 
+  const woTypeOptions = useMemo(
+    () => [
+      { value: 'bd' as WoType, label: t('wo.type_option_bd') },
+      { value: 'pm' as WoType, label: t('wo.type_option_pm') },
+      { value: 'cm' as WoType, label: t('wo.type_option_cm') },
+    ],
+    [t],
+  )
+
   function openCreate() {
     setSelected(null)
     setEditingId(null)
@@ -414,8 +439,10 @@ export default function WorkOrdersAppPage() {
     setFormPlanStart(null)
     setFormPlanEnd(null)
     setFormWorktime(null)
+    setFormWoType('cm')
     setFormStatus('open')
     setAssetPickerOpen(false)
+    setDialogTab(0)
     setDialogOpen(true)
   }
 
@@ -430,8 +457,10 @@ export default function WorkOrdersAppPage() {
     setFormPlanStart(row.plan_start ? new Date(row.plan_start) : null)
     setFormPlanEnd(row.plan_end ? new Date(row.plan_end) : null)
     setFormWorktime(parseWorktimeNum(row.worktime))
+    setFormWoType(normalizeWoType(row.wo_type))
     setFormStatus(row.status)
     setAssetPickerOpen(false)
+    setDialogTab(0)
     setDialogOpen(true)
   }
 
@@ -468,6 +497,7 @@ export default function WorkOrdersAppPage() {
       asset_id: formAssetId,
       instruction_text: instruction,
       worktime: formWorktime,
+      wo_type: formWoType,
       plan_start: formPlanStart ? formPlanStart.toISOString() : null,
       plan_end: formPlanEnd ? formPlanEnd.toISOString() : null,
     }
@@ -797,7 +827,9 @@ export default function WorkOrdersAppPage() {
           setDialogOpen(false)
         }}
         dismissableMask={!saving}
-        style={{ width: 'min(85vw, 50rem)' }}
+        className="work-order-dialog"
+        style={{ width: 'min(92rem, 98vw)' }}
+        breakpoints={{ '1280px': '98vw', '960px': '96vw', '640px': '100vw' }}
         footer={
           <div className="flex justify-content-end gap-2">
             <Button
@@ -818,9 +850,15 @@ export default function WorkOrdersAppPage() {
           </div>
         }
       >
-        <div className="flex flex-column gap-3 pt-2">
+        <TabView
+          className="app-modal-tabview"
+          activeIndex={dialogTab}
+          onTabChange={(e) => setDialogTab(e.index)}
+        >
+          <TabPanel header={t('wo.tab_general')}>
+            <div className="app-modal-tab-content grid pt-2 gap-3">
               {editingId ? (
-                <div className="flex flex-column gap-2">
+                <div className="col-12 sm:col-4 lg:col-2 flex flex-column gap-2">
                   <span className="text-sm font-medium">{t('wo.col_key')}</span>
                   <InputText
                     value={String(
@@ -831,7 +869,13 @@ export default function WorkOrdersAppPage() {
                   />
                 </div>
               ) : null}
-              <div className="flex flex-column gap-2">
+              <div
+                className={
+                  editingId
+                    ? 'col-12 sm:col-8 lg:col-10 flex flex-column gap-2'
+                    : 'col-12 flex flex-column gap-2'
+                }
+              >
                 <label htmlFor="wo-short" className="text-sm font-medium">
                   {t('wo.col_short_text')}
                 </label>
@@ -845,110 +889,72 @@ export default function WorkOrdersAppPage() {
                   autoComplete="off"
                 />
               </div>
-              <div className="flex flex-column gap-2">
-                <label htmlFor="wo-asset" className="text-sm font-medium">
-                  {t('wo.col_asset')}
-                </label>
-                <SelItemField
-                  id="wo-asset"
-                  valueLabel={assetDisplayLabel}
-                  placeholder={t('wo.placeholder_select_asset')}
-                  disabled={saving}
-                  sidebarVisible={assetPickerOpen}
-                  onSidebarHide={() => setAssetPickerOpen(false)}
-                  onOpenSidebar={() => setAssetPickerOpen(true)}
-                  triggerAriaLabel={t('wo.trigger_choose_asset')}
-                  showClear={!!formAssetId}
-                  onClear={() => {
-                    setFormAssetId(null)
-                    setPickedAsset(null)
-                  }}
-                  sidebarHeader={t('wo.sidebar_select_asset')}
-                >
-                  {assetPickerOpen ? (
-                    <AssetPickerSidebarContent
-                      onHide={() => setAssetPickerOpen(false)}
-                      onSelect={(asset) => {
-                        setFormAssetId(asset.id)
-                        setPickedAsset(asset)
-                        setAssetPickerOpen(false)
+              <div className="col-12">
+                <div className="flex flex-column md:flex-row md:align-items-start gap-3">
+                  <div className="flex flex-column gap-2 flex-1 min-w-0 w-full md:w-auto">
+                    <label htmlFor="wo-asset" className="text-sm font-medium">
+                      {t('wo.col_asset')}
+                    </label>
+                    <SelItemField
+                      id="wo-asset"
+                      valueLabel={assetDisplayLabel}
+                      placeholder={t('wo.placeholder_select_asset')}
+                      disabled={saving}
+                      sidebarVisible={assetPickerOpen}
+                      onSidebarHide={() => setAssetPickerOpen(false)}
+                      onOpenSidebar={() => setAssetPickerOpen(true)}
+                      triggerAriaLabel={t('wo.trigger_choose_asset')}
+                      showClear={!!formAssetId}
+                      onClear={() => {
+                        setFormAssetId(null)
+                        setPickedAsset(null)
                       }}
-                      onError={showError}
+                      sidebarHeader={t('wo.sidebar_select_asset')}
+                    >
+                      {assetPickerOpen ? (
+                        <AssetPickerSidebarContent
+                          onHide={() => setAssetPickerOpen(false)}
+                          onSelect={(asset) => {
+                            setFormAssetId(asset.id)
+                            setPickedAsset(asset)
+                            setAssetPickerOpen(false)
+                          }}
+                          onError={showError}
+                        />
+                      ) : null}
+                    </SelItemField>
+                  </div>
+                  <div className="flex flex-column gap-2 flex-1 min-w-0 w-full md:w-auto">
+                    <span className="text-sm font-medium">
+                      {t('wo.col_cost_center')}
+                    </span>
+                    <InputText
+                      value={costCenterHint}
+                      className="w-full"
+                      disabled
                     />
-                  ) : null}
-                </SelItemField>
+                    <span className="text-xs text-color-secondary">
+                      {t('wo.cost_center_from_asset')}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div className="flex flex-column gap-2">
-                <span className="text-sm font-medium">
-                  {t('wo.col_cost_center')}
-                </span>
-                <InputText
-                  value={costCenterHint}
-                  className="w-full"
-                  disabled
-                />
-                <span className="text-xs text-color-secondary">
-                  {t('wo.cost_center_from_asset')}
-                </span>
-              </div>
-              <div className="flex flex-column gap-2">
-                <label htmlFor="wo-instruction" className="text-sm font-medium">
-                  {t('common.col_instruction')}
+              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
+                <label htmlFor="wo-type" className="text-sm font-medium">
+                  {t('wo.field_wo_type')}
                 </label>
-                <InputTextarea
-                  id="wo-instruction"
-                  value={formInstruction}
-                  onChange={(e) => setFormInstruction(e.target.value)}
+                <Dropdown
+                  id="wo-type"
+                  value={formWoType}
+                  onChange={(e) => setFormWoType(e.value as WoType)}
+                  options={woTypeOptions}
+                  optionLabel="label"
+                  optionValue="value"
                   className="w-full"
-                  rows={6}
                   disabled={saving}
-                  maxLength={2000}
-                  autoResize
                 />
               </div>
-              <div className="grid">
-                <div className="col-12 md:col-6 flex flex-column gap-2">
-                  <label
-                    htmlFor="wo-plan-start"
-                    className="text-sm font-medium"
-                  >
-                    {t('wo.col_plan_start')}
-                  </label>
-                  <Calendar
-                    id="wo-plan-start"
-                    value={formPlanStart}
-                    onChange={(e) => setFormPlanStart(e.value as Date | null)}
-                    showTime
-                    hourFormat="24"
-                    showIcon
-                    showButtonBar
-                    className="w-full"
-                    inputClassName="w-full min-w-0"
-                    disabled={saving}
-                  />
-                </div>
-                <div className="col-12 md:col-6 flex flex-column gap-2">
-                  <label
-                    htmlFor="wo-plan-end"
-                    className="text-sm font-medium"
-                  >
-                    {t('wo.col_plan_end')}
-                  </label>
-                  <Calendar
-                    id="wo-plan-end"
-                    value={formPlanEnd}
-                    onChange={(e) => setFormPlanEnd(e.value as Date | null)}
-                    showTime
-                    hourFormat="24"
-                    showIcon
-                    showButtonBar
-                    className="w-full"
-                    inputClassName="w-full min-w-0"
-                    disabled={saving}
-                  />
-                </div>
-              </div>
-              <div className="flex flex-column gap-2">
+              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
                 <label htmlFor="wo-worktime" className="text-sm font-medium">
                   {t('wo.label_worktime_hours')}
                 </label>
@@ -964,7 +970,7 @@ export default function WorkOrdersAppPage() {
                   disabled={saving}
                 />
               </div>
-              <div className="flex flex-column gap-2">
+              <div className="col-12 md:col-12 xl:col-4 flex flex-column gap-2">
                 <span className="text-sm font-medium">{t('wo.col_status')}</span>
                 <Tag
                   value={
@@ -978,7 +984,74 @@ export default function WorkOrdersAppPage() {
                   {t('wo.status_not_editable')}
                 </span>
               </div>
-        </div>
+              <div className="col-12 flex flex-column gap-2">
+                <label htmlFor="wo-instruction" className="text-sm font-medium">
+                  {t('common.col_instruction')}
+                </label>
+                <InputTextarea
+                  id="wo-instruction"
+                  value={formInstruction}
+                  onChange={(e) => setFormInstruction(e.target.value)}
+                  className="w-full"
+                  rows={5}
+                  disabled={saving}
+                  maxLength={2000}
+                  autoResize
+                />
+              </div>
+            </div>
+          </TabPanel>
+          <TabPanel header={t('wo.tab_planning')}>
+            <div className="app-modal-tab-content flex flex-column gap-3 pt-2">
+                <div className="grid">
+                  <div className="col-12 md:col-6 flex flex-column gap-2">
+                    <label
+                      htmlFor="wo-plan-start"
+                      className="text-sm font-medium"
+                    >
+                      {t('wo.col_plan_start')}
+                    </label>
+                    <Calendar
+                      id="wo-plan-start"
+                      value={formPlanStart}
+                      onChange={(e) =>
+                        setFormPlanStart(e.value as Date | null)
+                      }
+                      showTime
+                      hourFormat="24"
+                      showIcon
+                      showButtonBar
+                      className="w-full"
+                      inputClassName="w-full min-w-0"
+                      disabled={saving}
+                    />
+                  </div>
+                  <div className="col-12 md:col-6 flex flex-column gap-2">
+                    <label
+                      htmlFor="wo-plan-end"
+                      className="text-sm font-medium"
+                    >
+                      {t('wo.col_plan_end')}
+                    </label>
+                    <Calendar
+                      id="wo-plan-end"
+                      value={formPlanEnd}
+                      onChange={(e) =>
+                        setFormPlanEnd(e.value as Date | null)
+                      }
+                      showTime
+                      hourFormat="24"
+                      showIcon
+                      showButtonBar
+                      className="w-full"
+                      inputClassName="w-full min-w-0"
+                      disabled={saving}
+                    />
+                  </div>
+                </div>
+            </div>
+          </TabPanel>
+        </TabView>
       </Dialog>
     </AppShell>
   )

@@ -52,6 +52,17 @@
   }
 }
 
+/* Work orders: wide modal + tab body uses full width (horizontal grid in form). */
+.work-order-dialog.p-dialog {
+  max-width: min(92rem, 98vw);
+}
+.work-order-dialog .p-dialog-content {
+  width: 100%;
+}
+.work-order-dialog .app-modal-tab-content {
+  height: min(44rem, calc(100vh - 11rem));
+}
+
 /*
  * Lara hides `p-tabview-ink-bar`; PrimeReact still positions it. Show it and
  * animate left/width so the active indicator slides between tabs.
