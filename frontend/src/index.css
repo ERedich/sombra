@@ -1,0 +1,71 @@
+/*
+  PrimeFlex 4 text/primary utilities use --p-text-* and --p-primary-*.
+  Lara styled themes expose --text-color, --primary-color, etc.
+  See https://primereact.org/theming/#cssvariables
+
+  Do NOT map --p-surface-* to Lara’s --surface-50 … --surface-900 here:
+  Lara *dark* themes invert that scale (e.g. --surface-900 is white), while
+  PrimeFlex’s light-dark() expects the dark branch to stay “deep” surfaces.
+  That mismatch made dark mode backgrounds white. Use .bg-surface-ground etc.
+  (App.css) with Lara’s semantic tokens --surface-ground, --surface-section.
+*/
+:root {
+  --p-text-color: var(--text-color);
+  --p-text-muted-color: var(--text-color-secondary);
+  --p-primary-color: var(--primary-color);
+  --p-primary-contrast-color: var(--primary-color-text);
+}
+
+.bg-surface-ground {
+  background-color: var(--surface-ground);
+}
+
+.bg-surface-section {
+  background-color: var(--surface-section);
+}
+
+html {
+  font-size: 15px;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--surface-ground);
+  color: var(--text-color);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Wider CRUD context menu + readable “Audit info” lines (PrimeReact ContextMenu + nested submenus). */
+.app-crud-context-menu.p-contextmenu {
+  min-width: min(22rem, 94vw);
+}
+.app-crud-context-menu .p-menuitem-text {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: min(22rem, 92vw);
+}
+
+@keyframes wo-row-flash {
+  0% {
+    background-color: rgba(34, 197, 94, 0.28);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.work-orders-table .p-datatable-tbody > tr.wo-row--flash {
+  animation: wo-row-flash 2.2s ease-out forwards;
+}
+
+/* Keep column headers on one line; column minWidths set on each <Column /> */
+.work-orders-table.p-datatable .p-datatable-thead > tr > th {
+  white-space: nowrap;
+}
+.work-orders-table.p-datatable .p-column-header-content {
+  white-space: nowrap;
+}

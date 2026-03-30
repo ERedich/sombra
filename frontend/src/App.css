@@ -1,0 +1,303 @@
+/* Sidebar + nav (Lara semantic tokens; see index.css for .bg-surface-*) */
+
+.app-sidebar {
+  border-right: 1px solid var(--surface-border);
+}
+
+.app-sidebar-footer {
+  border-top: 1px solid var(--surface-border);
+}
+
+.app-sidebar-link--active {
+  background-color: var(--surface-100);
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.app-sidebar-link:not(.app-sidebar-link--active):hover {
+  background-color: var(--surface-hover);
+}
+
+.app-sidebar-link:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+/* CRUD toolbar: search field height aligned with adjacent ButtonGroup (Sites, Template app, …) */
+.app-crud-toolbar-search .p-inputtext {
+  min-height: 2.75rem;
+  box-sizing: border-box;
+}
+
+/*
+ * Tabbed modals (Guidelines.md — Modal Window Handling).
+ * Use with: TabView `className="app-modal-tabview"`; each TabPanel body wrapper
+ * `className="app-modal-tab-content …"`.
+ * Fixed height + overflow keeps the dialog from jumping vertically when switching tabs;
+ * taller or shorter tab bodies scroll inside this region.
+ */
+.app-modal-tab-content {
+  box-sizing: border-box;
+  height: min(40rem, calc(100vh - 12rem));
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
+
+@media (min-width: 768px) {
+  .app-modal-tab-content {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+}
+
+/*
+ * Lara hides `p-tabview-ink-bar`; PrimeReact still positions it. Show it and
+ * animate left/width so the active indicator slides between tabs.
+ */
+.app-modal-tabview .p-tabview-nav {
+  position: relative;
+}
+
+.app-modal-tabview .p-tabview-ink-bar {
+  display: block !important;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  list-style: none;
+  background: var(--primary-color);
+  pointer-events: none;
+  z-index: 2;
+  transition:
+    left 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Inactive tabs: muted underline (not primary — primary is the sliding ink bar) */
+.app-modal-tabview
+  .p-tabview-nav
+  li:not(.p-tabview-ink-bar):not(.p-highlight)
+  .p-tabview-nav-link {
+  border-bottom-color: var(--surface-border) !important;
+}
+
+.app-modal-tabview
+  .p-tabview-nav
+  li:not(.p-tabview-ink-bar):not(.p-highlight):not(.p-disabled):hover
+  .p-tabview-nav-link {
+  border-bottom-color: var(--surface-400) !important;
+}
+
+/* Active tab: no per-link border so the ink bar is the only accent line */
+.app-modal-tabview .p-tabview-nav li.p-highlight .p-tabview-nav-link {
+  border-bottom-color: transparent !important;
+}
+
+/*
+ * Centered Dialog / ConfirmDialog: enter — slide from the left + fade; exit — slide to the right + fade.
+ * PrimeReact CSSTransition timeout for position=center is 150ms — keep transitions ≤150ms.
+ */
+.p-dialog-mask.p-dialog-center .p-dialog-enter {
+  opacity: 0;
+  transform: translate3d(-1.25rem, 0, 0);
+}
+
+.p-dialog-mask.p-dialog-center .p-dialog-enter-active {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition:
+    opacity 0.14s ease-out,
+    transform 0.14s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.p-dialog-mask.p-dialog-center .p-dialog-enter-done {
+  transform: none;
+}
+
+.p-dialog-mask.p-dialog-center .p-dialog-exit-active {
+  opacity: 0;
+  transform: translate3d(1.25rem, 0, 0);
+  transition:
+    opacity 0.12s ease-in,
+    transform 0.12s ease-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .p-dialog-mask.p-dialog-center .p-dialog-enter {
+    transform: none;
+  }
+
+  .p-dialog-mask.p-dialog-center .p-dialog-enter-active,
+  .p-dialog-mask.p-dialog-center .p-dialog-exit-active {
+    transform: none !important;
+    transition: opacity 0.12s ease-out !important;
+  }
+}
+
+/* App card header — shared hero strip (surface + accent icon tile) */
+.app-card-hero {
+  background: var(--surface-card);
+  border-top-left-radius: var(--border-radius-xl, 0.75rem);
+  border-top-right-radius: var(--border-radius-xl, 0.75rem);
+}
+
+.app-card-hero-icon {
+  width: 3rem;
+  height: 3rem;
+  background: #facc15;
+  color: #0f172a;
+  border-radius: 0.75rem;
+}
+
+.app-card-hero-title {
+  color: var(--text-color);
+  font-weight: 700;
+  font-size: 1.5rem;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.app-card-hero-desc {
+  color: var(--text-color-secondary);
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  margin: 0.5rem 0 0;
+  max-width: 36rem;
+}
+
+/* Tree Structure app: treetable row density (body slightly roomier than before) */
+.app-tree-structure-treetable .p-treetable-thead > tr > th {
+  padding-top: 0.625rem;
+  padding-bottom: 0.625rem;
+}
+
+/* Virtualized tree: borderless viewport, full width of card content */
+.app-tree-structure-treetable .app-tree-virtual-scroll {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* Virtualized tree: keep header visible while scrolling */
+.app-tree-structure-treetable .app-tree-virtual-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-card);
+  box-shadow: 0 1px 0 var(--surface-border);
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr > td {
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+  line-height: 1.45;
+  transform-origin: top center;
+}
+
+/* Expand: direct children slide down in cascade (--app-tree-stagger-delay per row from TreeStructureAppPage) */
+.app-tree-structure-treetable .p-treetable-tbody > tr.app-tree-row-expand-enter > td {
+  animation: app-tree-block-slide-down var(--app-tree-anim-ms, 480ms)
+    cubic-bezier(0.22, 1, 0.36, 1);
+  animation-delay: var(--app-tree-stagger-delay, 0ms);
+}
+
+.app-tree-structure-treetable .p-treetable-toggler {
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-inline-end: 0.125rem;
+}
+
+/* Tree Structure: rotating chevron; expand rows slide down + fade when revealed */
+.app-tree-structure-treetable .app-tree-structure-toggler-chevron .pi {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes app-tree-block-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-0.65rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-tree-structure-treetable .app-tree-structure-toggler-chevron .pi {
+    transition: none;
+  }
+
+  .app-tree-structure-treetable .p-treetable-tbody > tr.app-tree-row-expand-enter > td {
+    animation: none;
+  }
+}
+
+/*
+ * Tree Structure: asset type tint on Key column only (see ASSET_TYPE_TREE_ROW_BG).
+ * Horizontal gradient: asset at 15% opacity (left) → 0% opacity / fully transparent (right).
+ */
+.app-tree-structure-treetable .p-treetable-tbody > tr.app-tree-row-type-location > td:nth-child(1) {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--asset-type-bg-location) 15%, transparent),
+    transparent
+  ) !important;
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr.app-tree-row-type-building > td:nth-child(1) {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--asset-type-bg-building) 15%, transparent),
+    transparent
+  ) !important;
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr.app-tree-row-type-group > td:nth-child(1) {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--asset-type-bg-group) 15%, transparent),
+    transparent
+  ) !important;
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr.app-tree-row-type-maintenance_object > td:nth-child(1) {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--asset-type-bg-maintenance_object) 15%, transparent),
+    transparent
+  ) !important;
+}
+
+/* Selected row: full row uses same asset hue as Key column at 40% opacity */
+.app-tree-structure-treetable .p-treetable-tbody > tr.p-highlight.app-tree-row-type-location > td {
+  background: color-mix(in srgb, var(--asset-type-bg-location) 40%, transparent) !important;
+  color: var(--text-color) !important;
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr.p-highlight.app-tree-row-type-building > td {
+  background: color-mix(in srgb, var(--asset-type-bg-building) 40%, transparent) !important;
+  color: var(--text-color) !important;
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr.p-highlight.app-tree-row-type-group > td {
+  background: color-mix(in srgb, var(--asset-type-bg-group) 40%, transparent) !important;
+  color: var(--text-color) !important;
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr.p-highlight.app-tree-row-type-maintenance_object > td {
+  background: color-mix(in srgb, var(--asset-type-bg-maintenance_object) 40%, transparent) !important;
+  color: var(--text-color) !important;
+}
+
+.app-tree-structure-treetable .p-treetable-tbody > tr.p-highlight.app-tree-row-no-type > td {
+  background: color-mix(in srgb, var(--text-color) 10%, var(--surface-ground)) !important;
+  color: var(--text-color) !important;
+}

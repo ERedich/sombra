@@ -1,0 +1,42 @@
+{
+  "name": "cmms-backend",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "db:create": "node scripts/create-db.mjs",
+    "migrate": "tsx src/migrate.ts",
+    "seed:assets": "tsx scripts/seed-40-assets.ts",
+    "seed:assets-4000": "tsx scripts/seed-4000-assets.ts",
+    "db:copy": "node scripts/pg-copy.mjs",
+    "parity:interval": "tsx scripts/compare-interval-sql-vs-ts.ts"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.1.1",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.2"
+  }
+}
