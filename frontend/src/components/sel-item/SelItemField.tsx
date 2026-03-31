@@ -48,14 +48,14 @@ export function SelItemField({
   const drawerTitle = sidebarHeader ?? t('sel_item.sidebar_title')
   return (
     <>
-      <div className="flex align-items-stretch gap-2 w-full">
+      <div className="p-inputgroup w-full">
         <InputText
           id={id}
           readOnly
           value={valueLabel}
           placeholder={ph}
           disabled={disabled}
-          className="flex-1 min-w-0"
+          className="w-full"
         />
         {showClear && onClear ? (
           <Button

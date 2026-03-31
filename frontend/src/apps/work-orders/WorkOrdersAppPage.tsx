@@ -54,6 +54,12 @@ export type WorkOrder = {
   worktime: string
   wo_type: WoType
   status: string
+  work_plan_id?: string | null
+  work_plan_key?: string | null
+  work_plan_interval_count?: number | null
+  work_plan_interval_time_type?: string | null
+  work_plan_next_due_at?: string | null
+  duration?: string
   created_at: string
   updated_at: string
   created_by: string | null
@@ -174,7 +180,7 @@ export default function WorkOrdersAppPage() {
   const [formAssetId, setFormAssetId] = useState<string | null>(null)
   const [formInstruction, setFormInstruction] = useState('')
   const [formPlanStart, setFormPlanStart] = useState<Date | null>(null)
-  const [formPlanEnd, setFormPlanEnd] = useState<Date | null>(null)
+  const [formDurationHours, setFormDurationHours] = useState<number | null>(0)
   const [formWorktime, setFormWorktime] = useState<number | null>(null)
   const [formWoType, setFormWoType] = useState<WoType>('cm')
   const [formStatus, setFormStatus] = useState('open')
@@ -227,6 +233,8 @@ export default function WorkOrdersAppPage() {
         formatDateTime(w.updated_at).toLowerCase().includes(q) ||
         (w.plan_start?.toLowerCase().includes(q) ?? false) ||
         (w.plan_end?.toLowerCase().includes(q) ?? false) ||
+        (w.work_plan_key?.toLowerCase().includes(q) ?? false) ||
+        String(w.duration ?? '').includes(q) ||
         wt.includes(q) ||
         (w.created_by_login_name?.toLowerCase().includes(q) ?? false) ||
         (w.updated_by_login_name?.toLowerCase().includes(q) ?? false) ||
@@ -342,7 +350,7 @@ export default function WorkOrdersAppPage() {
           if (data.type !== 'work_order_created' || !data.work_order?.id) {
             return
           }
-          const wo = data.work_order
+          const wo = data.work_order as WorkOrder
           setRows((prev) => {
             const map = new Map(prev.map((w) => [w.id, w]))
             map.set(wo.id, wo)
@@ -429,6 +437,40 @@ export default function WorkOrdersAppPage() {
     [t],
   )
 
+  const planEndPreview = useMemo(() => {
+    if (!formPlanStart || formDurationHours == null) return null
+    return new Date(
+      formPlanStart.getTime() + formDurationHours * 3600000,
+    )
+  }, [formPlanStart, formDurationHours])
+
+  const planEndDisplay = planEndPreview
+    ? formatDateTime(planEndPreview.toISOString())
+    : emDash
+
+  const linkedToWorkPlan = Boolean(editingWo?.work_plan_id)
+
+  const workPlanTabIntervalType = useMemo(() => {
+    const raw = editingWo?.work_plan_interval_time_type
+    if (!raw) return emDash
+    if (['day', 'week', 'month', 'year'].includes(raw)) {
+      return t(`wp.interval_${raw}` as 'wp.interval_day')
+    }
+    return raw
+  }, [editingWo?.work_plan_interval_time_type, emDash, t])
+
+  const workPlanTabNextDue = useMemo(() => {
+    const v = editingWo?.work_plan_next_due_at
+    if (!v) return emDash
+    return formatDateTime(v)
+  }, [editingWo?.work_plan_next_due_at, emDash])
+
+  const workPlanTabIntervalCount = useMemo(() => {
+    const n = editingWo?.work_plan_interval_count
+    if (n == null || !Number.isFinite(Number(n))) return emDash
+    return String(n)
+  }, [editingWo?.work_plan_interval_count, emDash])
+
   function openCreate() {
     setSelected(null)
     setEditingId(null)
@@ -437,7 +479,7 @@ export default function WorkOrdersAppPage() {
     setPickedAsset(null)
     setFormInstruction('')
     setFormPlanStart(null)
-    setFormPlanEnd(null)
+    setFormDurationHours(0)
     setFormWorktime(null)
     setFormWoType('cm')
     setFormStatus('open')
@@ -455,7 +497,7 @@ export default function WorkOrdersAppPage() {
     setPickedAsset(null)
     setFormInstruction(row.instruction_text)
     setFormPlanStart(row.plan_start ? new Date(row.plan_start) : null)
-    setFormPlanEnd(row.plan_end ? new Date(row.plan_end) : null)
+    setFormDurationHours(Number(row.duration ?? '0'))
     setFormWorktime(parseWorktimeNum(row.worktime))
     setFormWoType(normalizeWoType(row.wo_type))
     setFormStatus(row.status)
@@ -487,8 +529,12 @@ export default function WorkOrdersAppPage() {
       showError(t('wo.err_worktime'))
       return
     }
-    if (formPlanStart && formPlanEnd && formPlanEnd.getTime() < formPlanStart.getTime()) {
-      showError(t('wo.err_plan_end'))
+    if (
+      formDurationHours == null ||
+      !Number.isFinite(formDurationHours) ||
+      formDurationHours < 0
+    ) {
+      showError(t('wp.err_duration'))
       return
     }
 
@@ -497,9 +543,9 @@ export default function WorkOrdersAppPage() {
       asset_id: formAssetId,
       instruction_text: instruction,
       worktime: formWorktime,
-      wo_type: formWoType,
+      wo_type: linkedToWorkPlan ? 'pm' : formWoType,
       plan_start: formPlanStart ? formPlanStart.toISOString() : null,
-      plan_end: formPlanEnd ? formPlanEnd.toISOString() : null,
+      duration: formDurationHours,
     }
 
     setSaving(true)
@@ -752,6 +798,13 @@ export default function WorkOrdersAppPage() {
                 }}
               />
               <Column
+                field="work_plan_key"
+                header={t('wo.field_work_plan')}
+                sortable
+                style={{ minWidth: '10rem' }}
+                body={(row: WorkOrder) => row.work_plan_key ?? emDash}
+              />
+              <Column
                 field="plan_start"
                 header={t('wo.col_plan_start')}
                 sortable
@@ -939,19 +992,31 @@ export default function WorkOrdersAppPage() {
                   </div>
                 </div>
               </div>
+              {editingId && editingWo?.work_plan_id ? (
+                <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
+                  <span className="text-sm font-medium">
+                    {t('wo.field_work_plan')}
+                  </span>
+                  <InputText
+                    value={editingWo.work_plan_key?.trim() ? editingWo.work_plan_key : emDash}
+                    className="w-full"
+                    disabled
+                  />
+                </div>
+              ) : null}
               <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
                 <label htmlFor="wo-type" className="text-sm font-medium">
                   {t('wo.field_wo_type')}
                 </label>
                 <Dropdown
                   id="wo-type"
-                  value={formWoType}
+                  value={linkedToWorkPlan ? 'pm' : formWoType}
                   onChange={(e) => setFormWoType(e.value as WoType)}
                   options={woTypeOptions}
                   optionLabel="label"
                   optionValue="value"
                   className="w-full"
-                  disabled={saving}
+                  disabled={saving || linkedToWorkPlan}
                 />
               </div>
               <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
@@ -1001,54 +1066,118 @@ export default function WorkOrdersAppPage() {
               </div>
             </div>
           </TabPanel>
+          {linkedToWorkPlan ? (
+            <TabPanel header={t('wo.tab_work_plan')}>
+              <div className="app-modal-tab-content grid pt-2 gap-3">
+                <div className="col-12 md:col-6 flex flex-column gap-2">
+                  <span className="text-sm font-medium">
+                    {t('wp.field_interval_count')}
+                  </span>
+                  <InputText
+                    value={workPlanTabIntervalCount}
+                    className="w-full"
+                    disabled
+                  />
+                </div>
+                <div className="col-12 md:col-6 flex flex-column gap-2">
+                  <span className="text-sm font-medium">
+                    {t('wp.field_interval_type')}
+                  </span>
+                  <InputText
+                    value={workPlanTabIntervalType}
+                    className="w-full"
+                    disabled
+                  />
+                </div>
+                <div className="col-12 md:col-6 flex flex-column gap-2">
+                  <span className="text-sm font-medium">
+                    {t('wp.field_next_due')}
+                  </span>
+                  <InputText
+                    value={workPlanTabNextDue}
+                    className="w-full"
+                    disabled
+                  />
+                </div>
+                <div className="col-12 flex flex-column gap-2">
+                  <Button
+                    type="button"
+                    label={t('wo.open_wp')}
+                    icon="pi pi-external-link"
+                    outlined
+                    onClick={() => {
+                      const id = editingWo?.work_plan_id
+                      if (!id) return
+                      setDialogOpen(false)
+                      navigate(
+                        `/work-planning?workPlanId=${encodeURIComponent(id)}`,
+                      )
+                    }}
+                  />
+                </div>
+              </div>
+            </TabPanel>
+          ) : null}
           <TabPanel header={t('wo.tab_planning')}>
             <div className="app-modal-tab-content flex flex-column gap-3 pt-2">
-                <div className="grid">
-                  <div className="col-12 md:col-6 flex flex-column gap-2">
-                    <label
-                      htmlFor="wo-plan-start"
-                      className="text-sm font-medium"
-                    >
-                      {t('wo.col_plan_start')}
-                    </label>
-                    <Calendar
-                      id="wo-plan-start"
-                      value={formPlanStart}
-                      onChange={(e) =>
-                        setFormPlanStart(e.value as Date | null)
-                      }
-                      showTime
-                      hourFormat="24"
-                      showIcon
-                      showButtonBar
-                      className="w-full"
-                      inputClassName="w-full min-w-0"
-                      disabled={saving}
-                    />
-                  </div>
-                  <div className="col-12 md:col-6 flex flex-column gap-2">
-                    <label
-                      htmlFor="wo-plan-end"
-                      className="text-sm font-medium"
-                    >
-                      {t('wo.col_plan_end')}
-                    </label>
-                    <Calendar
-                      id="wo-plan-end"
-                      value={formPlanEnd}
-                      onChange={(e) =>
-                        setFormPlanEnd(e.value as Date | null)
-                      }
-                      showTime
-                      hourFormat="24"
-                      showIcon
-                      showButtonBar
-                      className="w-full"
-                      inputClassName="w-full min-w-0"
-                      disabled={saving}
-                    />
-                  </div>
+              <div className="grid">
+                <div className="col-12 md:col-6 flex flex-column gap-2">
+                  <label
+                    htmlFor="wo-plan-start"
+                    className="text-sm font-medium"
+                  >
+                    {t('wo.col_plan_start')}
+                  </label>
+                  <Calendar
+                    id="wo-plan-start"
+                    value={formPlanStart}
+                    onChange={(e) =>
+                      setFormPlanStart(e.value as Date | null)
+                    }
+                    showTime
+                    hourFormat="24"
+                    showIcon
+                    showButtonBar
+                    className="w-full"
+                    inputClassName="w-full min-w-0"
+                    disabled={saving}
+                  />
                 </div>
+                <div className="col-12 md:col-6 flex flex-column gap-2">
+                  <label
+                    htmlFor="wo-duration"
+                    className="text-sm font-medium"
+                  >
+                    {t('wo.field_duration_hours')}
+                  </label>
+                  <InputNumber
+                    id="wo-duration"
+                    value={formDurationHours}
+                    onValueChange={(e) =>
+                      setFormDurationHours(e.value ?? null)
+                    }
+                    min={0}
+                    minFractionDigits={0}
+                    maxFractionDigits={2}
+                    className="w-full"
+                    inputClassName="w-full min-w-0"
+                    disabled={saving}
+                  />
+                </div>
+                <div className="col-12 md:col-6 flex flex-column gap-2">
+                  <span className="text-sm font-medium">
+                    {t('wo.field_plan_end')}
+                  </span>
+                  <InputText
+                    value={planEndDisplay}
+                    className="w-full"
+                    disabled
+                  />
+                  <span className="text-xs text-color-secondary">
+                    {t('wo.col_plan_start')} + {t('wo.field_duration_hours')}
+                  </span>
+                </div>
+              </div>
             </div>
           </TabPanel>
         </TabView>

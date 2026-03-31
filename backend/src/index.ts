@@ -4,7 +4,7 @@ import express from 'express'
 import helmet from 'helmet'
 import pino from 'pino'
 import { pinoHttp } from 'pino-http'
-import { pingDb } from './db.js'
+import { pingDb, pool } from './db.js'
 import { env } from './env.js'
 import auditLogRouter from './routes/auditLog.js'
 import authRouter from './routes/auth.js'
@@ -16,6 +16,8 @@ import { responseTimeHeader } from './middleware/perfHttp.js'
 import sitesRouter from './routes/sites.js'
 import usersRouter from './routes/users.js'
 import workOrdersRouter from './routes/work-orders.js'
+import workPlansRouter, { generatorActorSystem } from './routes/work-plans.js'
+import { runWorkPlanGenerator } from './services/workPlanWoGen.js'
 import localesRouter from './routes/locales.js'
 import translationsRouter from './routes/translations.js'
 import { initWorkOrderRealtime } from './realtime/workOrderSocket.js'
@@ -54,6 +56,7 @@ app.use('/api/costcenters', costcentersRouter)
 app.use('/api/user-groups', userGroupsRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/work-orders', workOrdersRouter)
+app.use('/api/work-plans', workPlansRouter)
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -80,6 +83,15 @@ app.post('/api/ai/suggest', (_req, res) => {
 const httpServer = http.createServer(app)
 
 initWorkOrderRealtime(httpServer)
+
+const WORK_PLAN_GEN_MS = 5 * 60 * 1000
+function runWorkPlanGenJob(): void {
+  void runWorkPlanGenerator(pool, generatorActorSystem()).catch((err) => {
+    logger.error({ err }, 'work plan generator failed')
+  })
+}
+setImmediate(runWorkPlanGenJob)
+setInterval(runWorkPlanGenJob, WORK_PLAN_GEN_MS)
 
 httpServer.listen(env.PORT, () => {
   logger.info({ port: env.PORT }, 'CMMS API listening')

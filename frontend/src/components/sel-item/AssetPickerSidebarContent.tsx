@@ -6,8 +6,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button } from 'primereact/button'
 import { Column } from 'primereact/column'
 import { DataTable } from 'primereact/datatable'
-import { IconField } from 'primereact/iconfield'
-import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
 import { ApiError, apiJson } from '../../api'
 import { AssetTypeIconLabel } from '../../apps/asset-management/assetTypeUi'
@@ -126,12 +124,13 @@ export function AssetPickerSidebarContent({
   return (
     <div className="flex flex-column gap-3 h-full min-h-0">
       <div className="flex justify-content-between align-items-center gap-3 flex-wrap">
-        <IconField
-          iconPosition="left"
-          className="app-crud-toolbar-search flex-1"
+        <div
+          className="p-inputgroup flex-1 app-crud-toolbar-search"
           style={{ width: 'min(20rem, 100%)' }}
         >
-          <InputIcon className="pi pi-search" />
+          <span className="p-inputgroup-addon">
+            <i className="pi pi-search" aria-hidden />
+          </span>
           <InputText
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
@@ -139,7 +138,7 @@ export function AssetPickerSidebarContent({
             aria-label="Search assets"
             className="w-full"
           />
-        </IconField>
+        </div>
       </div>
       <p className="text-sm text-color-secondary mt-0 mb-0">
         Select a row and choose Select, or double-click a row. Results are

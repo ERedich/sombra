@@ -15,6 +15,7 @@ import {
   redactForAudit,
   writeAudit,
 } from '../audit/auditLog.js'
+import { planEndFromStartAndDurationHours } from '../services/intervalUtc.js'
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -33,6 +34,9 @@ type WorkOrderTableRow = {
   worktime: string
   wo_type: string
   status: string
+  work_plan_id: string | null
+  work_plan_key: string | null
+  duration: string
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -49,6 +53,9 @@ type WorkOrderRow = WorkOrderTableRow & {
   costcenter_name: string | null
   created_by_login_name: string | null
   updated_by_login_name: string | null
+  work_plan_interval_count: number | null
+  work_plan_interval_time_type: string | null
+  work_plan_next_due_at: Date | null
 }
 
 function workingSiteIdOr403(res: Response, auth: AuthUser): string | null {
@@ -81,18 +88,23 @@ async function fetchWorkOrderWithJoins(
 const LIST_SQL = `
 SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
        w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.wo_type, w.status,
+       w.work_plan_id, w.work_plan_key, w.duration,
        w.created_at, w.updated_at, w.created_by, w.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        a.key AS asset_key, a.name AS asset_name,
        cc.key AS costcenter_key, cc.name AS costcenter_name,
        cb.login_name AS created_by_login_name,
-       ub.login_name AS updated_by_login_name
+       ub.login_name AS updated_by_login_name,
+       wp.interval_count AS work_plan_interval_count,
+       wp.interval_time_type AS work_plan_interval_time_type,
+       wp.next_due_at AS work_plan_next_due_at
 FROM work_orders w
 INNER JOIN sites st ON st.id = w.site_id
 INNER JOIN assets a ON a.id = w.asset_id
 LEFT JOIN costcenters cc ON cc.id = w.costcenter_id
 LEFT JOIN users cb ON cb.id = w.created_by
 LEFT JOIN users ub ON ub.id = w.updated_by
+LEFT JOIN work_plans wp ON wp.id = w.work_plan_id
 `
 
 function parseInstructionText(body: unknown): string | undefined {
@@ -133,6 +145,18 @@ function parseWoType(body: unknown): WoType | undefined | 'invalid' {
   const s = v.trim().toLowerCase()
   if (s === 'bd' || s === 'pm' || s === 'cm') return s
   return 'invalid'
+}
+
+/** Duration in hours; omitted → undefined; invalid → undefined (caller validates). */
+function parseDurationHours(body: unknown): number | undefined {
+  if (typeof body !== 'object' || body === null) return undefined
+  const v = (body as { duration?: unknown }).duration
+  if (v === undefined) return undefined
+  if (v === null) return 0
+  const n =
+    typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN
+  if (!Number.isFinite(n) || n < 0) return undefined
+  return n
 }
 
 function parseOptionalInstant(
@@ -252,22 +276,22 @@ router.post('/', async (req, res) => {
   }
 
   const planStart = parseOptionalInstant(req.body, 'plan_start')
-  const planEnd = parseOptionalInstant(req.body, 'plan_end')
   if (planStart === undefined && req.body?.plan_start !== undefined) {
     res.status(400).json({ error: 'Invalid plan_start.' })
     return
   }
-  if (planEnd === undefined && req.body?.plan_end !== undefined) {
-    res.status(400).json({ error: 'Invalid plan_end.' })
+  const durParsed = parseDurationHours(req.body)
+  if (durParsed === undefined && req.body?.duration !== undefined) {
+    res.status(400).json({ error: 'duration must be a non-negative number (hours).' })
     return
   }
-  const ps = planStart === undefined ? null : planStart
-  const pe = planEnd === undefined ? null : planEnd
+  const durationHours = durParsed ?? 0
 
-  if (ps != null && pe != null && pe.getTime() < ps.getTime()) {
-    res.status(400).json({ error: 'plan_end must be on or after plan_start.' })
-    return
-  }
+  const ps = planStart === undefined ? null : planStart
+  const pe =
+    ps === null
+      ? null
+      : planEndFromStartAndDurationHours(ps, durationHours)
 
   const woTypeParsed = parseWoType(req.body)
   if (woTypeParsed === 'invalid') {
@@ -298,11 +322,15 @@ router.post('/', async (req, res) => {
     const r = await client.query<{ id: string }>(
       `INSERT INTO work_orders (
          site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-         plan_start, plan_end, worktime, wo_type, status, created_by
+         plan_start, plan_end, worktime, wo_type, status,
+         work_plan_id, work_plan_key, duration,
+         created_by
        )
        VALUES (
          $1, nextval('work_order_wo_key_seq'), $2, $3, $4, $5,
-         $6, $7, $8, $9, 'open', $10
+         $6, $7, $8, $9, 'open',
+         NULL, NULL, $10::numeric,
+         $11
        )
        RETURNING id`,
       [
@@ -315,6 +343,7 @@ router.post('/', async (req, res) => {
         pe,
         worktimeNum,
         woType,
+        durationHours,
         auth.id,
       ],
     )
@@ -328,6 +357,7 @@ router.post('/', async (req, res) => {
     const tableRow = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
               plan_start, plan_end, worktime, wo_type, status,
+              work_plan_id, work_plan_key, duration,
               created_at, updated_at, created_by, updated_by
        FROM work_orders WHERE id = $1`,
       [insertedId],
@@ -381,11 +411,15 @@ router.patch('/:id', async (req, res) => {
   const assetIdOpt = parseAssetId(req.body)
   const worktimeOpt = parseWorktime(req.body)
   const planStartOpt = parseOptionalInstant(req.body, 'plan_start')
-  const planEndOpt = parseOptionalInstant(req.body, 'plan_end')
+  const durationOpt = parseDurationHours(req.body)
   const woTypeOpt = parseWoType(req.body)
 
   if (woTypeOpt === 'invalid') {
     res.status(400).json({ error: 'wo_type must be bd, pm, or cm.' })
+    return
+  }
+  if (durationOpt === undefined && req.body?.duration !== undefined) {
+    res.status(400).json({ error: 'duration must be a non-negative number (hours).' })
     return
   }
 
@@ -395,7 +429,7 @@ router.patch('/:id', async (req, res) => {
     assetIdOpt === undefined &&
     worktimeOpt === undefined &&
     planStartOpt === undefined &&
-    planEndOpt === undefined &&
+    durationOpt === undefined &&
     woTypeOpt === undefined
   ) {
     res.status(400).json({ error: 'No fields to update.' })
@@ -439,10 +473,6 @@ router.patch('/:id', async (req, res) => {
     res.status(400).json({ error: 'Invalid plan_start.' })
     return
   }
-  if (planEndOpt === undefined && req.body?.plan_end !== undefined) {
-    res.status(400).json({ error: 'Invalid plan_end.' })
-    return
-  }
 
   const auditPath = `${req.baseUrl}${req.path}`
 
@@ -452,6 +482,7 @@ router.patch('/:id', async (req, res) => {
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
               plan_start, plan_end, worktime, wo_type, status,
+              work_plan_id, work_plan_key, duration,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -465,15 +496,32 @@ router.patch('/:id', async (req, res) => {
       return
     }
 
+    if (
+      beforeRow.work_plan_id &&
+      woTypeOpt !== undefined &&
+      woTypeOpt !== 'pm'
+    ) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'wo_type cannot be changed while this work order is linked to a work plan (PM only).',
+      })
+      return
+    }
+
     let nextShort = beforeRow.short_text
     let nextInstruction = beforeRow.instruction_text
     let nextAssetId = beforeRow.asset_id
     let nextCostcenterId = beforeRow.costcenter_id
     let nextPlanStart = beforeRow.plan_start
-    let nextPlanEnd = beforeRow.plan_end
     let nextWorktime = beforeRow.worktime
+    let nextDuration = Number(beforeRow.duration)
     let nextWoType: WoType =
-      woTypeOpt !== undefined ? woTypeOpt : (beforeRow.wo_type as WoType)
+      beforeRow.work_plan_id
+        ? 'pm'
+        : woTypeOpt !== undefined
+          ? woTypeOpt
+          : (beforeRow.wo_type as WoType)
 
     if (shortTextOpt !== undefined) {
       nextShort = shortTextOpt.trim().slice(0, 200)
@@ -505,17 +553,14 @@ router.patch('/:id', async (req, res) => {
     if (planStartOpt !== undefined) {
       nextPlanStart = planStartOpt
     }
-    if (planEndOpt !== undefined) {
-      nextPlanEnd = planEndOpt
+    if (durationOpt !== undefined) {
+      nextDuration = durationOpt
     }
 
-    const ps = nextPlanStart
-    const pe = nextPlanEnd
-    if (ps != null && pe != null && pe.getTime() < ps.getTime()) {
-      await client.query('ROLLBACK')
-      res.status(400).json({ error: 'plan_end must be on or after plan_start.' })
-      return
-    }
+    const nextPlanEnd =
+      nextPlanStart === null
+        ? null
+        : planEndFromStartAndDurationHours(nextPlanStart, nextDuration)
 
     const r = await client.query<WorkOrderTableRow>(
       `UPDATE work_orders SET
@@ -527,11 +572,13 @@ router.patch('/:id', async (req, res) => {
          plan_end = $6,
          worktime = $7,
          wo_type = $8,
+         duration = $9::numeric,
          updated_at = now(),
-         updated_by = $9
-       WHERE id = $10
+         updated_by = $10
+       WHERE id = $11
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
                  plan_start, plan_end, worktime, wo_type, status,
+                 work_plan_id, work_plan_key, duration,
                  created_at, updated_at, created_by, updated_by`,
       [
         nextShort,
@@ -542,6 +589,7 @@ router.patch('/:id', async (req, res) => {
         nextPlanEnd,
         nextWorktime,
         nextWoType,
+        nextDuration,
         auth.id,
         id,
       ],
@@ -609,6 +657,7 @@ router.delete('/:id', async (req, res) => {
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
               plan_start, plan_end, worktime, wo_type, status,
+              work_plan_id, work_plan_key, duration,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1

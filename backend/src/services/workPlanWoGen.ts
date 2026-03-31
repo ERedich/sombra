@@ -1,0 +1,319 @@
+import type { Pool, PoolClient } from 'pg'
+import { broadcastWorkOrderCreated } from '../realtime/workOrderSocket.js'
+import {
+  fieldChanges,
+  redactForAudit,
+  writeAudit,
+} from '../audit/auditLog.js'
+import {
+  addIntervalUtc,
+  isDueForGeneration,
+  planEndFromStartAndDurationHours,
+  type IntervalTimeType,
+} from './intervalUtc.js'
+
+const MAX_WO_PER_PLAN_PER_RUN = 50
+
+type WorkPlanGenRow = {
+  id: string
+  site_id: string
+  plan_key: string
+  short_text: string
+  asset_id: string
+  costcenter_id: string | null
+  instruction_text: string
+  worktime: string
+  interval_count: number
+  interval_time_type: IntervalTimeType
+  next_due_at: Date
+  lead_time_days: number
+  duration_hours: string
+}
+
+type WorkOrderTableRow = {
+  id: string
+  site_id: string
+  wo_key: number
+  short_text: string
+  asset_id: string
+  costcenter_id: string | null
+  instruction_text: string
+  plan_start: Date | null
+  plan_end: Date | null
+  worktime: string
+  wo_type: string
+  status: string
+  work_plan_id: string | null
+  work_plan_key: string | null
+  duration: string
+  created_at: Date
+  updated_at: Date
+  created_by: string | null
+  updated_by: string | null
+}
+
+type WorkPlanTableRow = {
+  id: string
+  site_id: string
+  plan_key: string
+  short_text: string
+  asset_id: string
+  costcenter_id: string | null
+  instruction_text: string
+  worktime: string
+  interval_count: number
+  interval_time_type: string
+  due_date: Date
+  next_due_at: Date
+  lead_time_days: number
+  duration_hours: string
+  created_at: Date
+  updated_at: Date
+  created_by: string | null
+  updated_by: string | null
+}
+
+function rowToWoAudit(row: WorkOrderTableRow): Record<string, unknown> {
+  return row as unknown as Record<string, unknown>
+}
+
+function rowToWpAudit(row: WorkPlanTableRow): Record<string, unknown> {
+  return row as unknown as Record<string, unknown>
+}
+
+const LIST_WO_SQL = `
+SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
+       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.wo_type, w.status,
+       w.work_plan_id, w.work_plan_key, w.duration,
+       w.created_at, w.updated_at, w.created_by, w.updated_by,
+       st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
+       a.key AS asset_key, a.name AS asset_name,
+       cc.key AS costcenter_key, cc.name AS costcenter_name,
+       cb.login_name AS created_by_login_name,
+       ub.login_name AS updated_by_login_name
+FROM work_orders w
+INNER JOIN sites st ON st.id = w.site_id
+INNER JOIN assets a ON a.id = w.asset_id
+LEFT JOIN costcenters cc ON cc.id = w.costcenter_id
+LEFT JOIN users cb ON cb.id = w.created_by
+LEFT JOIN users ub ON ub.id = w.updated_by
+`
+
+async function fetchWorkOrderWithJoins(
+  client: PoolClient,
+  id: string,
+): Promise<Record<string, unknown> | undefined> {
+  const r = await client.query(`${LIST_WO_SQL} WHERE w.id = $1`, [id])
+  return r.rows[0] as Record<string, unknown> | undefined
+}
+
+export type GeneratorActor = {
+  userId: string | null
+  loginName: string
+  name: string
+}
+
+export type GenerateDueResult = {
+  generated: number
+  plans_advanced: number
+}
+
+/**
+ * UTC calendar date comparison: today >= date(next_due_at) - lead_time_days.
+ * Matches `isDueForGeneration` in intervalUtc.ts.
+ */
+const DUE_SQL = `(timezone('UTC', now()))::date >= (timezone('UTC', work_plans.next_due_at))::date - work_plans.lead_time_days`
+
+/**
+ * Creates PM work orders from work plans whose due window is open, advances
+ * next_due_at by the plan interval (up to MAX_WO_PER_PLAN_PER_RUN per plan).
+ */
+export async function runWorkPlanGenerator(
+  pool: Pool,
+  actor: GeneratorActor,
+): Promise<GenerateDueResult> {
+  let generated = 0
+  let plans_advanced = 0
+
+  for (;;) {
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      const sel = await client.query<WorkPlanGenRow>(
+        `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id,
+                instruction_text, worktime::text,
+                interval_count, interval_time_type::text,
+                next_due_at, lead_time_days, duration_hours::text
+         FROM work_plans
+         WHERE next_due_at IS NOT NULL
+           AND ${DUE_SQL}
+         ORDER BY next_due_at ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1`,
+      )
+      const wp = sel.rows[0]
+      if (!wp) {
+        await client.query('COMMIT')
+        break
+      }
+
+      const durationNum = Number(wp.duration_hours)
+      if (!Number.isFinite(durationNum) || durationNum < 0) {
+        await client.query('ROLLBACK')
+        throw new Error('Invalid duration_hours on work plan.')
+      }
+
+      const intervalType = wp.interval_time_type
+      let currentNext = new Date(wp.next_due_at)
+      let iterations = 0
+
+      while (
+        iterations < MAX_WO_PER_PLAN_PER_RUN &&
+        isDueForGeneration(currentNext, wp.lead_time_days)
+      ) {
+        const planStart = new Date(currentNext)
+        const planEnd = planEndFromStartAndDurationHours(
+          planStart,
+          durationNum,
+        )
+
+        const ins = await client.query<{ id: string }>(
+          `INSERT INTO work_orders (
+             site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+             plan_start, plan_end, worktime, wo_type, status,
+             work_plan_id, work_plan_key, duration,
+             created_by
+           )
+           VALUES (
+             $1, nextval('work_order_wo_key_seq'), $2, $3, $4, $5,
+             $6, $7, $8::numeric, 'pm', 'open',
+             $9, $10, $11::numeric,
+             $12
+           )
+           RETURNING id`,
+          [
+            wp.site_id,
+            wp.short_text,
+            wp.asset_id,
+            wp.costcenter_id,
+            wp.instruction_text,
+            planStart,
+            planEnd,
+            wp.worktime,
+            wp.id,
+            wp.plan_key,
+            wp.duration_hours,
+            actor.userId,
+          ],
+        )
+        const woId = ins.rows[0]?.id
+        if (!woId) {
+          await client.query('ROLLBACK')
+          throw new Error('Work order insert failed.')
+        }
+
+        const tableRow = await client.query<WorkOrderTableRow>(
+          `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                  plan_start, plan_end, worktime, wo_type, status,
+                  work_plan_id, work_plan_key, duration,
+                  created_at, updated_at, created_by, updated_by
+           FROM work_orders WHERE id = $1`,
+          [woId],
+        )
+        const persisted = tableRow.rows[0]!
+        const afterWo = redactForAudit('work_order', rowToWoAudit(persisted))
+        await writeAudit(client, {
+          actorUserId: actor.userId,
+          actorKey: actor.loginName,
+          actorName: actor.name,
+          operation: 'create',
+          resourceType: 'work_order',
+          resourceId: persisted.id,
+          beforeState: null,
+          afterState: afterWo,
+          fieldChanges: null,
+          httpMethod: 'POST',
+          path: '/api/work-plans/generate-due',
+        })
+
+        const workOrder = await fetchWorkOrderWithJoins(client, woId)
+        if (workOrder) {
+          broadcastWorkOrderCreated(
+            workOrder as { site_id: string } & Record<string, unknown>,
+          )
+        }
+        generated += 1
+
+        const beforeWpRes = await client.query<WorkPlanTableRow>(
+          `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id,
+                  instruction_text, worktime::text,
+                  interval_count, interval_time_type::text,
+                  due_date, next_due_at, lead_time_days, duration_hours::text,
+                  created_at, updated_at, created_by, updated_by
+           FROM work_plans WHERE id = $1`,
+          [wp.id],
+        )
+        const beforeWp = beforeWpRes.rows[0]!
+
+        const advanced = addIntervalUtc(
+          currentNext,
+          wp.interval_count,
+          intervalType,
+        )
+
+        const upd = await client.query<WorkPlanTableRow>(
+          `UPDATE work_plans SET
+             next_due_at = $1,
+             updated_at = now(),
+             updated_by = $2
+           WHERE id = $3
+           RETURNING id, site_id, plan_key, short_text, asset_id, costcenter_id,
+                     instruction_text, worktime::text,
+                     interval_count, interval_time_type::text,
+                     due_date, next_due_at, lead_time_days, duration_hours::text,
+                     created_at, updated_at, created_by, updated_by`,
+          [advanced, actor.userId, wp.id],
+        )
+        const afterWp = upd.rows[0]
+        if (!afterWp) {
+          await client.query('ROLLBACK')
+          throw new Error('Work plan update failed.')
+        }
+        plans_advanced += 1
+
+        const beforeState = redactForAudit('work_plan', rowToWpAudit(beforeWp))
+        const afterState = redactForAudit('work_plan', rowToWpAudit(afterWp))
+        const changes =
+          beforeState && afterState ? fieldChanges(beforeState, afterState) : null
+        await writeAudit(client, {
+          actorUserId: actor.userId,
+          actorKey: actor.loginName,
+          actorName: actor.name,
+          operation: 'update',
+          resourceType: 'work_plan',
+          resourceId: wp.id,
+          beforeState,
+          afterState,
+          fieldChanges: changes,
+          httpMethod: 'POST',
+          path: '/api/work-plans/generate-due',
+        })
+
+        currentNext = advanced
+        iterations += 1
+        if (!isDueForGeneration(currentNext, wp.lead_time_days)) {
+          break
+        }
+      }
+
+      await client.query('COMMIT')
+    } catch (e) {
+      await client.query('ROLLBACK')
+      throw e
+    } finally {
+      client.release()
+    }
+  }
+
+  return { generated, plans_advanced }
+}

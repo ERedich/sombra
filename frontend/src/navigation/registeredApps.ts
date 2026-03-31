@@ -47,6 +47,12 @@ export const REGISTERED_APPS: RegisteredApp[] = [
   { path: '/work-orders', labelKey: 'nav.work_orders', icon: 'pi pi-file-edit' },
 
   {
+    path: '/work-planning',
+    labelKey: 'nav.work_planning',
+    icon: 'pi pi-calendar-plus',
+  },
+
+  {
 
     path: '/tree-structure',
 

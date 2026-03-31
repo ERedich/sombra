@@ -1,4 +1,4 @@
-CREATE TABLE asset_classifications (
+CREATE TABLE IF NOT EXISTS asset_classifications (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   site_id UUID NOT NULL REFERENCES sites (id) ON DELETE RESTRICT,
   key TEXT NOT NULL,
@@ -10,7 +10,7 @@ CREATE TABLE asset_classifications (
   CONSTRAINT asset_classifications_site_id_key_unique UNIQUE (site_id, key)
 );
 
-CREATE INDEX idx_asset_classifications_site_id ON asset_classifications (site_id);
+CREATE INDEX IF NOT EXISTS idx_asset_classifications_site_id ON asset_classifications (site_id);
 
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS asset_classification_id UUID REFERENCES asset_classifications(id) ON DELETE SET NULL;
 
