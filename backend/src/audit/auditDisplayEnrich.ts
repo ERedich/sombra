@@ -57,6 +57,10 @@ export async function resolveLabels(
        SELECT w.id, w.wo_key::text AS label FROM work_orders w WHERE w.id = ANY($1::uuid[])
        UNION ALL
        SELECT p.id, p.plan_key AS label FROM work_plans p WHERE p.id = ANY($1::uuid[])
+       UNION ALL
+       SELECT e.id, e.key AS label FROM employees e WHERE e.id = ANY($1::uuid[])
+       UNION ALL
+       SELECT wg.id, wg.key AS label FROM workgroups wg WHERE wg.id = ANY($1::uuid[])
      ) AS resolved`,
     [unique],
   )

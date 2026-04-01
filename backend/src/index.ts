@@ -11,6 +11,10 @@ import authRouter from './routes/auth.js'
 import assetClassificationsRouter from './routes/asset-classifications.js'
 import assetsRouter from './routes/assets.js'
 import costcentersRouter from './routes/costcenters.js'
+import workTypesRouter from './routes/work-types.js'
+import categoriesRouter from './routes/categories.js'
+import employeesRouter from './routes/employees.js'
+import workgroupsRouter from './routes/workgroups.js'
 import userGroupsRouter from './routes/user-groups.js'
 import { responseTimeHeader } from './middleware/perfHttp.js'
 import sitesRouter from './routes/sites.js'
@@ -53,6 +57,10 @@ app.use('/api/sites', sitesRouter)
 app.use('/api/assets', assetsRouter)
 app.use('/api/asset-classifications', assetClassificationsRouter)
 app.use('/api/costcenters', costcentersRouter)
+app.use('/api/work-types', workTypesRouter)
+app.use('/api/categories', categoriesRouter)
+app.use('/api/employees', employeesRouter)
+app.use('/api/workgroups', workgroupsRouter)
 app.use('/api/user-groups', userGroupsRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/work-orders', workOrdersRouter)

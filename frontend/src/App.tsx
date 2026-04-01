@@ -12,6 +12,10 @@ import AssetManagementAppPage from './apps/asset-management/AssetManagementAppPa
 import TreeStructureAppPage from './apps/tree-structure/TreeStructureAppPage'
 import AssetClassificationsAppPage from './apps/asset-classifications/AssetClassificationsAppPage'
 import CostcentersAppPage from './apps/costcenters/CostcentersAppPage'
+import WorkTypesAppPage from './apps/work-types/WorkTypesAppPage'
+import CategoriesAppPage from './apps/categories/CategoriesAppPage'
+import EmployeesAppPage from './apps/employees/EmployeesAppPage'
+import WorkgroupsAppPage from './apps/workgroups/WorkgroupsAppPage'
 import UserGroupsAppPage from './apps/user-groups/UserGroupsAppPage'
 import TemplateAppPage from './apps/template-app/TemplateAppPage'
 import HotkeysAppPage from './apps/hotkeys/HotkeysAppPage'
@@ -73,6 +77,38 @@ export default function App() {
         element={
           <ProtectedRoute>
             <CostcentersAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/work-types"
+        element={
+          <ProtectedRoute>
+            <WorkTypesAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/categories"
+        element={
+          <ProtectedRoute>
+            <CategoriesAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/employees"
+        element={
+          <ProtectedRoute>
+            <EmployeesAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/workgroups"
+        element={
+          <ProtectedRoute>
+            <WorkgroupsAppPage />
           </ProtectedRoute>
         }
       />

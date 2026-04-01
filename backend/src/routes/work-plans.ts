@@ -1,6 +1,5 @@
 import { Router } from 'express'
 import type { Response } from 'express'
-import type { PoolClient } from 'pg'
 import type { AuthUser } from '../middleware/auth.js'
 import {
   accessibleSiteIds,
@@ -19,6 +18,10 @@ import {
   type GeneratorActor,
 } from '../services/workPlanWoGen.js'
 import type { IntervalTimeType } from '../services/intervalUtc.js'
+import type { WorkInstructionDto } from './work-orders.js'
+import { parseWorkInstructionsInput } from './work-orders.js'
+import type { Pool, PoolClient } from 'pg'
+
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -38,6 +41,7 @@ type WorkPlanTableRow = {
   next_due_at: Date
   lead_time_days: number
   duration_hours: string
+  category_id: string | null
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -52,8 +56,14 @@ type WorkPlanRow = WorkPlanTableRow & {
   asset_name: string
   costcenter_key: string | null
   costcenter_name: string | null
+  category_key: string | null
+  category_name: string | null
   created_by_login_name: string | null
   updated_by_login_name: string | null
+  has_material_assignment: boolean
+  has_employee_assignment: boolean
+  work_instruction_count: number
+  work_instruction_done_count: number
 }
 
 function workingSiteIdOr403(res: Response, auth: AuthUser): string | null {
@@ -89,11 +99,20 @@ SELECT p.id, p.site_id, p.plan_key, p.short_text, p.asset_id, p.costcenter_id,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        a.key AS asset_key, a.name AS asset_name,
        cc.key AS costcenter_key, cc.name AS costcenter_name,
+       cat.key AS category_key, cat.name AS category_name,
        cb.login_name AS created_by_login_name,
-       ub.login_name AS updated_by_login_name
+       ub.login_name AS updated_by_login_name,
+       false AS has_material_assignment,
+       false AS has_employee_assignment,
+       (SELECT COUNT(*)::int FROM work_instructions wi WHERE wi.work_plan_id = p.id)
+         AS work_instruction_count,
+       (SELECT COUNT(*)::int FROM work_instructions wi
+         WHERE wi.work_plan_id = p.id AND wi.done = true)
+         AS work_instruction_done_count
 FROM work_plans p
 INNER JOIN sites st ON st.id = p.site_id
 INNER JOIN assets a ON a.id = p.asset_id
+LEFT JOIN categories cat ON cat.id = p.category_id
 LEFT JOIN costcenters cc ON cc.id = p.costcenter_id
 LEFT JOIN users cb ON cb.id = p.created_by
 LEFT JOIN users ub ON ub.id = p.updated_by
@@ -110,6 +129,46 @@ async function fetchWorkPlanWithJoins(
   return r.rows[0]
 }
 
+async function fetchWorkInstructionsForWorkPlan(
+  client: Pool | PoolClient,
+  workPlanId: string,
+): Promise<WorkInstructionDto[]> {
+  const r = await client.query<WorkInstructionDto>(
+    `SELECT id, sort_nr, instruction_text, false AS done
+     FROM work_instructions
+     WHERE work_plan_id = $1
+     ORDER BY sort_nr ASC, id ASC`,
+    [workPlanId],
+  )
+  return r.rows
+}
+
+async function fetchWorkPlanDetailForResponse(
+  client: PoolClient,
+  id: string,
+): Promise<
+  (WorkPlanRow & { work_instructions: WorkInstructionDto[] }) | undefined
+> {
+  const wp = await fetchWorkPlanWithJoins(client, id)
+  if (!wp) return undefined
+  const work_instructions = await fetchWorkInstructionsForWorkPlan(client, id)
+  return { ...wp, work_instructions }
+}
+
+async function insertWorkInstructionsForPlan(
+  client: PoolClient,
+  workPlanId: string,
+  items: { sort_nr: number; instruction_text: string }[],
+): Promise<void> {
+  for (const it of items) {
+    await client.query(
+      `INSERT INTO work_instructions (work_plan_id, sort_nr, instruction_text, done)
+       VALUES ($1, $2, $3, false)`,
+      [workPlanId, it.sort_nr, it.instruction_text],
+    )
+  }
+}
+
 async function resolveAssetForWrite(
   client: PoolClient,
   assetId: string,
@@ -122,6 +181,29 @@ async function resolveAssetForWrite(
   const row = r.rows[0]
   if (!row || row.site_id !== expectedSiteId) return undefined
   return { costcenter_id: row.costcenter_id }
+}
+
+async function categoryBelongsToSite(
+  client: PoolClient,
+  categoryId: string,
+  siteId: string,
+): Promise<boolean> {
+  const r = await client.query<{ id: string }>(
+    `SELECT id FROM categories WHERE id = $1 AND site_id = $2`,
+    [categoryId, siteId],
+  )
+  return r.rows.length > 0
+}
+
+function parseCategoryId(body: unknown): string | null | undefined | 'invalid' {
+  if (typeof body !== 'object' || body === null) return undefined
+  const v = (body as { category_id?: unknown }).category_id
+  if (v === undefined) return undefined
+  if (v === null) return null
+  if (typeof v !== 'string') return 'invalid'
+  const s = v.trim()
+  if (!UUID_RE.test(s)) return 'invalid'
+  return s
 }
 
 function parseIntervalType(v: unknown): IntervalTimeType | 'invalid' {
@@ -196,7 +278,13 @@ router.get('/:id', async (req, res) => {
     res.status(404).json({ error: 'Work plan not found.' })
     return
   }
-  res.json({ work_plan: row })
+  const work_instructions = await fetchWorkInstructionsForWorkPlan(pool, id)
+  res.json({
+    work_plan: {
+      ...row,
+      work_instructions,
+    },
+  })
 })
 
 router.post('/', async (req, res) => {
@@ -308,6 +396,18 @@ router.post('/', async (req, res) => {
   const siteId = workingSiteIdOr403(res, auth)
   if (!siteId) return
 
+  const categoryIdParsed = parseCategoryId(req.body)
+  if (categoryIdParsed === 'invalid') {
+    res.status(400).json({ error: 'category_id must be a valid UUID or null.' })
+    return
+  }
+
+  const wiParsed = parseWorkInstructionsInput(req.body)
+  if (!wiParsed.ok) {
+    res.status(400).json({ error: wiParsed.error })
+    return
+  }
+
   const auditPath = `${req.baseUrl}${req.path}`
 
   const client = await pool.connect()
@@ -322,17 +422,31 @@ router.post('/', async (req, res) => {
       return
     }
 
+    let nextCategoryId: string | null = null
+    if (categoryIdParsed !== undefined && categoryIdParsed !== null) {
+      const ok = await categoryBelongsToSite(client, categoryIdParsed, siteId)
+      if (!ok) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error:
+            'category_id must reference a category for your working site.',
+        })
+        return
+      }
+      nextCategoryId = categoryIdParsed
+    }
+
     const r = await client.query<{ id: string }>(
       `INSERT INTO work_plans (
          site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
          worktime, interval_count, interval_time_type,
          due_date, next_due_at, lead_time_days, duration_hours,
-         created_by
+         category_id, created_by
        )
        VALUES (
          $1, $2, $3, $4, $5, $6, $7::numeric,
          $8, $9, $10, $10, $11, $12::numeric,
-         $13
+         $13, $14
        )
        RETURNING id`,
       [
@@ -348,6 +462,7 @@ router.post('/', async (req, res) => {
         dueParsed,
         leadNum,
         durNum,
+        nextCategoryId,
         auth.id,
       ],
     )
@@ -358,10 +473,12 @@ router.post('/', async (req, res) => {
       return
     }
 
+    await insertWorkInstructionsForPlan(client, insertedId, wiParsed.items)
+
     const tableRow = await client.query<WorkPlanTableRow>(
       `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
               worktime::text, interval_count, interval_time_type,
-              due_date, next_due_at, lead_time_days, duration_hours::text,
+              due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
               created_at, updated_at, created_by, updated_by
        FROM work_plans WHERE id = $1`,
       [insertedId],
@@ -384,7 +501,7 @@ router.post('/', async (req, res) => {
       httpMethod: req.method,
       path: auditPath,
     })
-    const workPlan = await fetchWorkPlanWithJoins(client, insertedId)
+    const workPlan = await fetchWorkPlanDetailForResponse(client, insertedId)
     await client.query('COMMIT')
     res.status(201).json({ work_plan: workPlan! })
   } catch (e) {
@@ -424,7 +541,8 @@ router.patch('/:id', async (req, res) => {
     !has('interval_time_type') &&
     !has('due_date') &&
     !has('lead_time_days') &&
-    !has('duration_hours')
+    !has('duration_hours') &&
+    !has('category_id')
   ) {
     res.status(400).json({ error: 'No fields to update.' })
     return
@@ -438,7 +556,7 @@ router.patch('/:id', async (req, res) => {
     const prev = await client.query<WorkPlanTableRow>(
       `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
               worktime::text, interval_count, interval_time_type,
-              due_date, next_due_at, lead_time_days, duration_hours::text,
+              due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
               created_at, updated_at, created_by, updated_by
        FROM work_plans
        WHERE id = $1
@@ -464,6 +582,7 @@ router.patch('/:id', async (req, res) => {
     let nextNextDue = beforeRow.next_due_at
     let nextLead = beforeRow.lead_time_days
     let nextDur = Number(beforeRow.duration_hours)
+    let nextCategoryId: string | null = beforeRow.category_id
 
     if (has('plan_key')) {
       const k =
@@ -595,6 +714,31 @@ router.patch('/:id', async (req, res) => {
       nextDur = n
     }
 
+    if (has('category_id')) {
+      const parsed = parseCategoryId(body)
+      if (parsed === 'invalid') {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error: 'category_id must be a valid UUID or null.',
+        })
+        return
+      }
+      if (parsed === null) {
+        nextCategoryId = null
+      } else if (parsed !== undefined) {
+        const ok = await categoryBelongsToSite(client, parsed, beforeRow.site_id)
+        if (!ok) {
+          await client.query('ROLLBACK')
+          res.status(400).json({
+            error:
+              'category_id must reference a category for this work plan site.',
+          })
+          return
+        }
+        nextCategoryId = parsed
+      }
+    }
+
     const anchorOrIntervalChanged =
       (has('due_date') &&
         nextDueDate.getTime() !== beforeRow.due_date.getTime()) ||
@@ -620,12 +764,13 @@ router.patch('/:id', async (req, res) => {
          next_due_at = $10,
          lead_time_days = $11,
          duration_hours = $12::numeric,
+         category_id = $13,
          updated_at = now(),
-         updated_by = $13
-       WHERE id = $14
+         updated_by = $14
+       WHERE id = $15
        RETURNING id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
                  worktime::text, interval_count, interval_time_type,
-                 due_date, next_due_at, lead_time_days, duration_hours::text,
+                 due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
                  created_at, updated_at, created_by, updated_by`,
       [
         nextPlanKey,
@@ -640,6 +785,7 @@ router.patch('/:id', async (req, res) => {
         nextNextDue,
         nextLead,
         nextDur,
+        nextCategoryId,
         auth.id,
         id,
       ],
@@ -676,7 +822,7 @@ router.patch('/:id', async (req, res) => {
       path: auditPath,
     })
 
-    const workPlan = await fetchWorkPlanWithJoins(client, afterTable.id)
+    const workPlan = await fetchWorkPlanDetailForResponse(client, afterTable.id)
     await client.query('COMMIT')
     res.json({ work_plan: workPlan! })
   } catch (e) {
@@ -687,6 +833,206 @@ router.patch('/:id', async (req, res) => {
       })
       return
     }
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
+router.post('/:id/work-instructions', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work plan id.' })
+    return
+  }
+  const sortRaw = req.body?.sort_nr
+  const textRaw = req.body?.instruction_text
+  if (typeof sortRaw !== 'number' || !Number.isInteger(sortRaw)) {
+    res.status(400).json({ error: 'sort_nr must be an integer.' })
+    return
+  }
+  if (typeof textRaw !== 'string') {
+    res.status(400).json({ error: 'instruction_text is required.' })
+    return
+  }
+  const t = textRaw.trim()
+  if (!t) {
+    res.status(400).json({ error: 'Instruction text cannot be empty.' })
+    return
+  }
+  if (t.length > 200) {
+    res.status(400).json({ error: 'Instruction must be at most 200 characters.' })
+    return
+  }
+
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const prev = await client.query<{ site_id: string }>(
+      `SELECT site_id FROM work_plans WHERE id = $1 FOR UPDATE`,
+      [id],
+    )
+    const row = prev.rows[0]
+    if (!row || !canAccessSite(scope, row.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work plan not found.' })
+      return
+    }
+    const ins = await client.query<WorkInstructionDto>(
+      `INSERT INTO work_instructions (work_plan_id, sort_nr, instruction_text, done)
+       VALUES ($1, $2, $3, false)
+       RETURNING id, sort_nr, instruction_text, done`,
+      [id, sortRaw, t],
+    )
+    const wi = ins.rows[0]
+    if (!wi) {
+      await client.query('ROLLBACK')
+      res.status(500).json({ error: 'Insert failed.' })
+      return
+    }
+    await client.query('COMMIT')
+    res.status(201).json({ work_instruction: wi })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
+router.patch('/:id/work-instructions/:wiId', async (req, res) => {
+  const id = req.params.id
+  const wiId = req.params.wiId
+  if (!UUID_RE.test(id) || !UUID_RE.test(wiId)) {
+    res.status(400).json({ error: 'Invalid id.' })
+    return
+  }
+  const body = req.body as Record<string, unknown>
+  const hasSort = 'sort_nr' in body
+  const hasText = 'instruction_text' in body
+  const hasDone = 'done' in body
+  if (!hasSort && !hasText && !hasDone) {
+    res.status(400).json({ error: 'No fields to update.' })
+    return
+  }
+
+  let nextSort: number | undefined
+  if (hasSort) {
+    const v = body.sort_nr
+    if (typeof v !== 'number' || !Number.isInteger(v)) {
+      res.status(400).json({ error: 'sort_nr must be an integer.' })
+      return
+    }
+    nextSort = v
+  }
+  let nextText: string | undefined
+  if (hasText) {
+    const v = body.instruction_text
+    if (typeof v !== 'string') {
+      res.status(400).json({ error: 'instruction_text must be a string.' })
+      return
+    }
+    const t = v.trim()
+    if (!t) {
+      res.status(400).json({ error: 'Instruction text cannot be empty.' })
+      return
+    }
+    if (t.length > 200) {
+      res.status(400).json({
+        error: 'Instruction must be at most 200 characters.',
+      })
+      return
+    }
+    nextText = t
+  }
+  if (hasDone) {
+    res.status(400).json({ error: 'done cannot be updated on work plan instructions.' })
+    return
+  }
+
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const lockWo = await client.query<{ site_id: string }>(
+      `SELECT p.site_id
+       FROM work_plans p
+       INNER JOIN work_instructions wi ON wi.work_plan_id = p.id
+       WHERE p.id = $1 AND wi.id = $2
+       FOR UPDATE`,
+      [id, wiId],
+    )
+    const ok = lockWo.rows[0]
+    if (!ok || !canAccessSite(scope, ok.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work instruction not found.' })
+      return
+    }
+
+    const upd = await client.query<WorkInstructionDto>(
+      `UPDATE work_instructions SET
+         sort_nr = COALESCE($1, sort_nr),
+         instruction_text = COALESCE($2, instruction_text)
+       WHERE id = $3 AND work_plan_id = $4
+       RETURNING id, sort_nr, instruction_text, done`,
+      [nextSort ?? null, nextText ?? null, wiId, id],
+    )
+    const after = upd.rows[0]
+    if (!after) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work instruction not found.' })
+      return
+    }
+    await client.query('COMMIT')
+    res.json({ work_instruction: after })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
+router.delete('/:id/work-instructions/:wiId', async (req, res) => {
+  const id = req.params.id
+  const wiId = req.params.wiId
+  if (!UUID_RE.test(id) || !UUID_RE.test(wiId)) {
+    res.status(400).json({ error: 'Invalid id.' })
+    return
+  }
+
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const prev = await client.query<{ site_id: string }>(
+      `SELECT p.site_id
+       FROM work_instructions wi
+       INNER JOIN work_plans p ON p.id = wi.work_plan_id
+       WHERE wi.id = $1 AND wi.work_plan_id = $2`,
+      [wiId, id],
+    )
+    const row = prev.rows[0]
+    if (!row || !canAccessSite(scope, row.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work instruction not found.' })
+      return
+    }
+    await client.query(
+      `DELETE FROM work_instructions WHERE id = $1 AND work_plan_id = $2`,
+      [wiId, id],
+    )
+    await client.query('COMMIT')
+    res.status(204).send()
+  } catch (e) {
+    await client.query('ROLLBACK')
     throw e
   } finally {
     client.release()
@@ -711,7 +1057,7 @@ router.delete('/:id', async (req, res) => {
     const prev = await client.query<WorkPlanTableRow>(
       `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
               worktime::text, interval_count, interval_time_type,
-              due_date, next_due_at, lead_time_days, duration_hours::text,
+              due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
               created_at, updated_at, created_by, updated_by
        FROM work_plans
        WHERE id = $1

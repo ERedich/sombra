@@ -14,6 +14,9 @@
   --p-text-muted-color: var(--text-color-secondary);
   --p-primary-color: var(--primary-color);
   --p-primary-contrast-color: var(--primary-color-text);
+  /* PrimeFlex palette utilities (e.g. .text-green-400) use --p-green-*; Lara themes expose --green-* */
+  --p-green-400: var(--green-400);
+  --p-green-500: var(--green-500);
 }
 
 .bg-surface-ground {
@@ -62,10 +65,20 @@ body {
   animation: wo-row-flash 2.2s ease-out forwards;
 }
 
+/* Instruction View modal: done work instruction rows */
+.work-instruction-view-dialog .p-datatable-tbody > tr.wi-view-row-done > td {
+  background-color: rgba(34, 197, 94, 0.2);
+}
+
 /* Keep column headers on one line; column minWidths set on each <Column /> */
 .work-orders-table.p-datatable .p-datatable-thead > tr > th {
   white-space: nowrap;
 }
 .work-orders-table.p-datatable .p-column-header-content {
   white-space: nowrap;
+}
+
+/* Workgroup members: two-pool PickList — minimum list height */
+.workgroup-members-picklist.p-picklist .p-picklist-list {
+  min-height: 14rem;
 }

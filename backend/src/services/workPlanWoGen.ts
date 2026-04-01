@@ -41,11 +41,13 @@ type WorkOrderTableRow = {
   plan_start: Date | null
   plan_end: Date | null
   worktime: string
-  wo_type: string
+  work_type_id: string
   status: string
   work_plan_id: string | null
   work_plan_key: string | null
   duration: string
+  category_id: string | null
+  workgroup_id: string
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -83,17 +85,30 @@ function rowToWpAudit(row: WorkPlanTableRow): Record<string, unknown> {
 
 const LIST_WO_SQL = `
 SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
-       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.wo_type, w.status,
-       w.work_plan_id, w.work_plan_key, w.duration,
+       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.work_type_id, w.status,
+       w.work_plan_id, w.work_plan_key, w.duration, w.category_id, w.workgroup_id,
        w.created_at, w.updated_at, w.created_by, w.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        a.key AS asset_key, a.name AS asset_name,
        cc.key AS costcenter_key, cc.name AS costcenter_name,
        cb.login_name AS created_by_login_name,
-       ub.login_name AS updated_by_login_name
+       ub.login_name AS updated_by_login_name,
+       wt.key AS work_type_key, wt.name AS work_type_name, wt.colour AS work_type_colour,
+       cat.key AS category_key, cat.name AS category_name,
+       wg.key AS workgroup_key, wg.name AS workgroup_name,
+       false AS has_material_assignment,
+       false AS has_employee_assignment,
+       (SELECT COUNT(*)::int FROM work_instructions wi WHERE wi.work_order_id = w.id)
+         AS work_instruction_count,
+       (SELECT COUNT(*)::int FROM work_instructions wi
+         WHERE wi.work_order_id = w.id AND wi.done = true)
+         AS work_instruction_done_count
 FROM work_orders w
 INNER JOIN sites st ON st.id = w.site_id
 INNER JOIN assets a ON a.id = w.asset_id
+INNER JOIN work_types wt ON wt.id = w.work_type_id
+INNER JOIN workgroups wg ON wg.id = w.workgroup_id
+LEFT JOIN categories cat ON cat.id = w.category_id
 LEFT JOIN costcenters cc ON cc.id = w.costcenter_id
 LEFT JOIN users cb ON cb.id = w.created_by
 LEFT JOIN users ub ON ub.id = w.updated_by
@@ -180,14 +195,18 @@ export async function runWorkPlanGenerator(
         const ins = await client.query<{ id: string }>(
           `INSERT INTO work_orders (
              site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-             plan_start, plan_end, worktime, wo_type, status,
+             plan_start, plan_end, worktime, work_type_id, status,
              work_plan_id, work_plan_key, duration,
+             workgroup_id,
              created_by
            )
            VALUES (
              $1, nextval('work_order_wo_key_seq'), $2, $3, $4, $5,
-             $6, $7, $8::numeric, 'pm', 'open',
+             $6, $7, $8::numeric,
+             (SELECT id FROM work_types WHERE site_id = $1 AND key = 'PM' LIMIT 1),
+             'open',
              $9, $10, $11::numeric,
+             (SELECT id FROM workgroups WHERE site_id = $1 AND key = '_DEFAULT' LIMIT 1),
              $12
            )
            RETURNING id`,
@@ -212,10 +231,18 @@ export async function runWorkPlanGenerator(
           throw new Error('Work order insert failed.')
         }
 
+        await client.query(
+          `INSERT INTO work_instructions (work_order_id, sort_nr, instruction_text, done)
+           SELECT $1::uuid, wi.sort_nr, wi.instruction_text, false
+           FROM work_instructions wi
+           WHERE wi.work_plan_id = $2::uuid`,
+          [woId, wp.id],
+        )
+
         const tableRow = await client.query<WorkOrderTableRow>(
           `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                  plan_start, plan_end, worktime, wo_type, status,
-                  work_plan_id, work_plan_key, duration,
+                  plan_start, plan_end, worktime, work_type_id, status,
+                  work_plan_id, work_plan_key, duration, category_id, workgroup_id,
                   created_at, updated_at, created_by, updated_by
            FROM work_orders WHERE id = $1`,
           [woId],

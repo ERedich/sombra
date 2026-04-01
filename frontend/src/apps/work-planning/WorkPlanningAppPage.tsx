@@ -34,7 +34,16 @@ import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import { AssetPickerSidebarContent } from '../../components/sel-item/AssetPickerSidebarContent'
 import { SelItemField } from '../../components/sel-item/SelItemField'
 import { formatDateTime } from '../../utils/dateTime'
+import { WorkAssignmentsIcons } from '../../components/work-instructions/WorkAssignmentsIcons'
+import { WorkInstructionViewModal } from '../../components/work-instructions/WorkInstructionViewModal'
+import {
+  WorkInstructionsTab,
+  workInstructionsForCreateBody,
+  workInstructionsFromApi,
+  type FormWorkInstruction,
+} from '../../components/work-instructions/WorkInstructionsTab'
 import type { Asset } from '../asset-management/assetTypes'
+import type { Category } from '../categories/CategoriesAppPage'
 
 export type IntervalTimeType = 'day' | 'week' | 'month' | 'year'
 
@@ -64,11 +73,25 @@ export type WorkPlan = {
   asset_name: string
   costcenter_key: string | null
   costcenter_name: string | null
+  category_id: string | null
+  category_key: string | null
+  category_name: string | null
   created_by_login_name: string | null
   updated_by_login_name: string | null
+  work_instructions?: {
+    id: string
+    sort_nr: number
+    instruction_text: string
+    done: boolean
+  }[]
+  has_material_assignment?: boolean
+  has_employee_assignment?: boolean
+  work_instruction_count?: number
+  work_instruction_done_count?: number
 }
 
 type WorkPlansListResponse = { work_plans: WorkPlan[] }
+type CategoriesListResponse = { categories: Category[] }
 type WorkPlanResponse = { work_plan: WorkPlan }
 type GenerateDueResponse = { generated: number; plans_advanced: number }
 
@@ -139,10 +162,19 @@ export default function WorkPlanningAppPage() {
   const [formLeadDays, setFormLeadDays] = useState<number | null>(0)
   const [formDurationHours, setFormDurationHours] = useState<number | null>(0)
   const [pickedAsset, setPickedAsset] = useState<Asset | null>(null)
+  const [formCategoryId, setFormCategoryId] = useState<string | null>(null)
+  const [categories, setCategories] = useState<Category[]>([])
   const [assetPickerOpen, setAssetPickerOpen] = useState(false)
   const [selected, setSelected] = useState<WorkPlan | null>(null)
   const [search, setSearch] = useState('')
   const [dialogTab, setDialogTab] = useState(0)
+  const [formWorkInstructions, setFormWorkInstructions] = useState<
+    FormWorkInstruction[]
+  >([])
+  const [instructionViewOpen, setInstructionViewOpen] = useState(false)
+  const [instructionViewPlanId, setInstructionViewPlanId] = useState<
+    string | null
+  >(null)
   const deepLinkHandledRef = useRef(false)
 
   const cronCycleEndRef = useRef(Date.now() + WORK_PLAN_CRON_INTERVAL_MS)
@@ -186,7 +218,9 @@ export default function WorkPlanningAppPage() {
         p.asset_key.toLowerCase().includes(q) ||
         p.asset_name.toLowerCase().includes(q) ||
         p.interval_time_type.toLowerCase().includes(q) ||
-        String(p.interval_count).includes(q)
+        String(p.interval_count).includes(q) ||
+        (p.category_key?.toLowerCase().includes(q) ?? false) ||
+        (p.category_name?.toLowerCase().includes(q) ?? false)
       )
     })
   }, [rows, search, workPlanIdParam])
@@ -249,6 +283,42 @@ export default function WorkPlanningAppPage() {
     void loadWorkPlans()
   }, [loadWorkPlans])
 
+  const loadCategories = useCallback(async () => {
+    try {
+      const data = await apiJson<CategoriesListResponse>('/api/categories')
+      setCategories(data.categories ?? [])
+    } catch {
+      setCategories([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadCategories()
+  }, [loadCategories])
+
+  const targetSiteIdForPlan = useMemo(() => {
+    if (editingId) {
+      return rows.find((x) => x.id === editingId)?.site_id ?? null
+    }
+    return getStoredUser()?.working_site_id ?? null
+  }, [editingId, rows])
+
+  const categoriesForSite = useMemo(() => {
+    if (!targetSiteIdForPlan) return []
+    return categories.filter((c) => c.site_id === targetSiteIdForPlan)
+  }, [categories, targetSiteIdForPlan])
+
+  const categoryDropdownOptions = useMemo(
+    () => [
+      { label: t('common.none'), value: null as string | null },
+      ...categoriesForSite.map((c) => ({
+        label: `${c.key} — ${c.name}`,
+        value: c.id,
+      })),
+    ],
+    [categoriesForSite, t],
+  )
+
   const editingPlan = useMemo(
     () =>
       editingId ? rows.find((p) => p.id === editingId) ?? selected : null,
@@ -297,14 +367,16 @@ export default function WorkPlanningAppPage() {
     setFormIntervalType('month')
     setFormLeadDays(0)
     setFormDurationHours(0)
+    setFormCategoryId(null)
     setAssetPickerOpen(false)
     setDialogTab(0)
+    setFormWorkInstructions([])
     setDialogOpen(true)
   }
 
   useRegisterCreateShortcut(openCreate)
 
-  const openEdit = useCallback((row: WorkPlan) => {
+  const openEdit = useCallback(async (row: WorkPlan) => {
     setEditingId(row.id)
     setFormPlanKey(row.plan_key)
     setFormShortText(row.short_text)
@@ -321,8 +393,23 @@ export default function WorkPlanningAppPage() {
     )
     setFormLeadDays(row.lead_time_days)
     setFormDurationHours(Number(row.duration_hours))
+    setFormCategoryId(row.category_id ?? null)
     setAssetPickerOpen(false)
     setDialogTab(0)
+    try {
+      const data = await apiJson<WorkPlanResponse>(
+        `/api/work-plans/${encodeURIComponent(row.id)}`,
+      )
+      setFormWorkInstructions(
+        workInstructionsFromApi(data.work_plan.work_instructions ?? []),
+      )
+    } catch {
+      setFormWorkInstructions(
+        row.work_instructions?.length
+          ? workInstructionsFromApi(row.work_instructions)
+          : [],
+      )
+    }
     setDialogOpen(true)
   }, [])
 
@@ -413,6 +500,11 @@ export default function WorkPlanningAppPage() {
       due_date: formDueDate.toISOString(),
       lead_time_days: formLeadDays,
       duration_hours: formDurationHours,
+      category_id: formCategoryId,
+    }
+    if (!editingId) {
+      const wi = workInstructionsForCreateBody(formWorkInstructions)
+      if (wi.length > 0) body.work_instructions = wi
     }
 
     setSaving(true)
@@ -581,6 +673,18 @@ export default function WorkPlanningAppPage() {
       />
       <ConfirmDialog dismissableMask />
 
+      <WorkInstructionViewModal
+        visible={instructionViewOpen}
+        onHide={() => {
+          setInstructionViewOpen(false)
+          setInstructionViewPlanId(null)
+        }}
+        mode="wp"
+        entityId={instructionViewPlanId}
+        t={t}
+        reportError={showError}
+      />
+
       <div className="p-4 w-full max-w-none flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
@@ -645,7 +749,7 @@ export default function WorkPlanningAppPage() {
                 loading={loading}
                 dataKey="id"
                 selection={selected}
-                tableStyle={{ minWidth: '72rem', width: 'max-content' }}
+                tableStyle={{ minWidth: '80rem', width: 'max-content' }}
                 onSelectionChange={(e) =>
                   setSelected(e.value as WorkPlan | null)
                 }
@@ -689,6 +793,35 @@ export default function WorkPlanningAppPage() {
                   header={t('wp.field_short_text')}
                   sortable
                   style={{ minWidth: '14rem' }}
+                />
+                <Column
+                  header={t('wp.col_category')}
+                  sortable
+                  sortField="category_key"
+                  style={{ minWidth: '12rem' }}
+                  body={(row: WorkPlan) => {
+                    const k = row.category_key?.trim() ?? ''
+                    const n = row.category_name?.trim() ?? ''
+                    if (!k && !n) return emDash
+                    if (k && n) return `${k} ${emDash} ${n}`
+                    return k || n
+                  }}
+                />
+                <Column
+                  header={t('wo.col_assignments')}
+                  style={{ minWidth: '9rem' }}
+                  body={(row: WorkPlan) => (
+                    <WorkAssignmentsIcons
+                      row={row}
+                      t={t}
+                      onAssignmentClick={(kind) => {
+                        if (kind === 'instructions') {
+                          setInstructionViewPlanId(row.id)
+                          setInstructionViewOpen(true)
+                        }
+                      }}
+                    />
+                  )}
                 />
                 <Column
                   header={t('wp.field_asset')}
@@ -844,6 +977,23 @@ export default function WorkPlanningAppPage() {
                 </div>
               </div>
               <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
+                <label htmlFor="wp-category" className="text-sm font-medium">
+                  {t('wp.field_category')}
+                </label>
+                <Dropdown
+                  id="wp-category"
+                  value={formCategoryId}
+                  onChange={(e) =>
+                    setFormCategoryId((e.value as string | null) ?? null)
+                  }
+                  options={categoryDropdownOptions}
+                  optionLabel="label"
+                  optionValue="value"
+                  className="w-full"
+                  disabled={saving}
+                />
+              </div>
+              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
                 <label htmlFor="wp-worktime" className="text-sm font-medium">
                   {t('wo.label_worktime_hours')}
                 </label>
@@ -875,6 +1025,17 @@ export default function WorkPlanningAppPage() {
                 />
               </div>
             </div>
+          </TabPanel>
+          <TabPanel header={t('wp.tab_instructions')}>
+            <WorkInstructionsTab
+              variant="wp"
+              parentId={editingId}
+              rows={formWorkInstructions}
+              setRows={setFormWorkInstructions}
+              disabled={saving}
+              reportError={showError}
+              t={t}
+            />
           </TabPanel>
           <TabPanel header={t('wp.tab_planning')}>
             <div className="app-modal-tab-content flex flex-column gap-3 pt-2">

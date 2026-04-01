@@ -32,6 +32,14 @@ export const REGISTERED_APPS: RegisteredApp[] = [
 
   { path: '/costcenters', labelKey: 'nav.costcenters', icon: 'pi pi-briefcase' },
 
+  { path: '/work-types', labelKey: 'nav.work_types', icon: 'pi pi-palette' },
+
+  { path: '/categories', labelKey: 'nav.categories', icon: 'pi pi-bookmark' },
+
+  { path: '/employees', labelKey: 'nav.employees', icon: 'pi pi-id-card' },
+
+  { path: '/workgroups', labelKey: 'nav.workgroups', icon: 'pi pi-users' },
+
   {
 
     path: '/asset-classifications',

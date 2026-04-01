@@ -1,0 +1,20 @@
+INSERT INTO ui_translations (locale, msg_key, value) VALUES
+('en', 'wo.tab_instructions', 'Instructions'),
+('en', 'wp.tab_instructions', 'Instructions'),
+('en', 'wi.col_nr', 'No.'),
+('en', 'wi.col_instruction', 'Instruction'),
+('en', 'wi.add', 'Add instruction'),
+('en', 'wi.col_done', 'Done'),
+('en', 'wi.remove', 'Remove'),
+('en', 'wi.err_instruction_empty', 'Instruction text cannot be empty.'),
+('en', 'wi.err_instruction_len', 'Instruction must be at most 200 characters.'),
+('de', 'wo.tab_instructions', 'Anweisungen'),
+('de', 'wp.tab_instructions', 'Anweisungen'),
+('de', 'wi.col_nr', 'Nr.'),
+('de', 'wi.col_instruction', 'Anweisung'),
+('de', 'wi.add', 'Anweisung hinzufügen'),
+('de', 'wi.col_done', 'Erledigt'),
+('de', 'wi.remove', 'Entfernen'),
+('de', 'wi.err_instruction_empty', 'Anweisungstext darf nicht leer sein.'),
+('de', 'wi.err_instruction_len', 'Anweisung darf höchstens 200 Zeichen haben.')
+ON CONFLICT (locale, msg_key) DO UPDATE SET value = EXCLUDED.value;

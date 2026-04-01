@@ -37,9 +37,18 @@ import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import { AssetPickerSidebarContent } from '../../components/sel-item/AssetPickerSidebarContent'
 import { SelItemField } from '../../components/sel-item/SelItemField'
 import { formatDateTime } from '../../utils/dateTime'
+import { WorkAssignmentsIcons } from '../../components/work-instructions/WorkAssignmentsIcons'
+import { WorkInstructionViewModal } from '../../components/work-instructions/WorkInstructionViewModal'
+import {
+  WorkInstructionsTab,
+  workInstructionsForCreateBody,
+  workInstructionsFromApi,
+  type FormWorkInstruction,
+} from '../../components/work-instructions/WorkInstructionsTab'
 import type { Asset } from '../asset-management/assetTypes'
-
-export type WoType = 'bd' | 'pm' | 'cm'
+import type { WorkType } from '../work-types/WorkTypesAppPage'
+import type { Category } from '../categories/CategoriesAppPage'
+import type { Workgroup } from '../workgroups/WorkgroupsAppPage'
 
 export type WorkOrder = {
   id: string
@@ -52,7 +61,16 @@ export type WorkOrder = {
   plan_start: string | null
   plan_end: string | null
   worktime: string
-  wo_type: WoType
+  work_type_id: string
+  work_type_key: string
+  work_type_name: string
+  work_type_colour: string
+  category_id: string | null
+  category_key: string | null
+  category_name: string | null
+  workgroup_id: string
+  workgroup_key: string
+  workgroup_name: string
   status: string
   work_plan_id?: string | null
   work_plan_key?: string | null
@@ -73,16 +91,24 @@ export type WorkOrder = {
   costcenter_name: string | null
   created_by_login_name: string | null
   updated_by_login_name: string | null
+  work_instructions?: {
+    id: string
+    sort_nr: number
+    instruction_text: string
+    done: boolean
+  }[]
+  /** List API: placeholders until material/employee assignment features ship. */
+  has_material_assignment?: boolean
+  has_employee_assignment?: boolean
+  work_instruction_count?: number
+  work_instruction_done_count?: number
 }
 
 type WorkOrdersListResponse = { work_orders: WorkOrder[] }
 type WorkOrderResponse = { work_order: WorkOrder }
-
-function normalizeWoType(raw: string | undefined): WoType {
-  const s = (raw ?? 'cm').trim().toLowerCase()
-  if (s === 'bd' || s === 'pm' || s === 'cm') return s
-  return 'cm'
-}
+type WorkTypesListResponse = { work_types: WorkType[] }
+type CategoriesListResponse = { categories: Category[] }
+type WorkgroupsListResponse = { workgroups: Workgroup[] }
 
 const WO_STATUS_I18N_KEYS: Record<string, string> = {
   open: 'wo.status_open',
@@ -96,6 +122,17 @@ const WO_STATUS_I18N_KEYS: Record<string, string> = {
 function parseWorktimeNum(w: string): number {
   const n = Number(w)
   return Number.isFinite(n) ? n : 0
+}
+
+/** Readable foreground on solid badge background (hex #rrggbb). */
+function contrastTextOnHex(bgHex: string): string {
+  const s = bgHex.trim().replace(/^#/, '')
+  if (!/^[0-9a-fA-F]{6}$/.test(s)) return '#ffffff'
+  const r = parseInt(s.slice(0, 2), 16)
+  const g = parseInt(s.slice(2, 4), 16)
+  const b = parseInt(s.slice(4, 6), 16)
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+  return lum > 0.55 ? '#0f172a' : '#ffffff'
 }
 
 function buildWorkOrderWsUrl(): string | null {
@@ -133,6 +170,42 @@ function statusBody(row: WorkOrder, t: TFunction) {
   const label = k ? t(k) : row.status
   return (
     <Tag value={label} severity={statusSeverity(row.status) ?? undefined} />
+  )
+}
+
+function workTypeColumnBody(
+  row: WorkOrder,
+  dash: string,
+  workTypes: WorkType[],
+) {
+  const pmRow = row.work_plan_id
+    ? workTypes.find((wt) => wt.site_id === row.site_id && wt.key === 'PM')
+    : undefined
+  const colour =
+    pmRow && typeof pmRow.colour === 'string' && pmRow.colour.trim() !== ''
+      ? pmRow.colour.trim()
+      : typeof row.work_type_colour === 'string' &&
+          row.work_type_colour.trim() !== ''
+        ? row.work_type_colour.trim()
+        : '#94a3b8'
+  const label =
+    pmRow?.key?.trim() ||
+    row.work_type_key?.trim() ||
+    row.work_type_name?.trim() ||
+    dash
+  const fg = contrastTextOnHex(colour)
+  return (
+    <Tag
+      value={label}
+      rounded
+      title={colour}
+      className="text-sm font-medium white-space-nowrap"
+      style={{
+        backgroundColor: colour,
+        color: fg,
+        border: `1px solid ${colour}`,
+      }}
+    />
   )
 }
 
@@ -182,14 +255,26 @@ export default function WorkOrdersAppPage() {
   const [formPlanStart, setFormPlanStart] = useState<Date | null>(null)
   const [formDurationHours, setFormDurationHours] = useState<number | null>(0)
   const [formWorktime, setFormWorktime] = useState<number | null>(null)
-  const [formWoType, setFormWoType] = useState<WoType>('cm')
+  const [formWorkTypeId, setFormWorkTypeId] = useState<string | null>(null)
+  const [formCategoryId, setFormCategoryId] = useState<string | null>(null)
+  const [formWorkgroupId, setFormWorkgroupId] = useState<string | null>(null)
   const [formStatus, setFormStatus] = useState('open')
+  const [workTypes, setWorkTypes] = useState<WorkType[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [workgroups, setWorkgroups] = useState<Workgroup[]>([])
   const [pickedAsset, setPickedAsset] = useState<Asset | null>(null)
   const [assetPickerOpen, setAssetPickerOpen] = useState(false)
   const [selected, setSelected] = useState<WorkOrder | null>(null)
   const [search, setSearch] = useState('')
   const [flashRowIds, setFlashRowIds] = useState(() => new Set<string>())
   const [dialogTab, setDialogTab] = useState(0)
+  const [formWorkInstructions, setFormWorkInstructions] = useState<
+    FormWorkInstruction[]
+  >([])
+  const [instructionViewOpen, setInstructionViewOpen] = useState(false)
+  const [instructionViewWoId, setInstructionViewWoId] = useState<string | null>(
+    null,
+  )
 
   const cardSubTitle = useMemo(() => {
     if (workOrderIdParam) {
@@ -240,10 +325,12 @@ export default function WorkOrdersAppPage() {
         (w.updated_by_login_name?.toLowerCase().includes(q) ?? false) ||
         w.site_key.toLowerCase().includes(q) ||
         w.site_name.toLowerCase().includes(q) ||
-        normalizeWoType(w.wo_type).includes(q) ||
-        t('wo.type_option_bd').toLowerCase().includes(q) ||
-        t('wo.type_option_pm').toLowerCase().includes(q) ||
-        t('wo.type_option_cm').toLowerCase().includes(q)
+        (w.work_type_key?.toLowerCase().includes(q) ?? false) ||
+        (w.work_type_name?.toLowerCase().includes(q) ?? false) ||
+        (w.category_key?.toLowerCase().includes(q) ?? false) ||
+        (w.category_name?.toLowerCase().includes(q) ?? false) ||
+        (w.workgroup_key?.toLowerCase().includes(q) ?? false) ||
+        (w.workgroup_name?.toLowerCase().includes(q) ?? false)
       )
     })
   }, [rows, search, workOrderIdParam, t])
@@ -284,29 +371,72 @@ export default function WorkOrdersAppPage() {
     [t],
   )
 
-  const loadWorkOrders = useCallback(async (): Promise<WorkOrder[]> => {
-    setLoading(true)
-    try {
-      const data = await apiJson<WorkOrdersListResponse>('/api/work-orders')
-      const list = data.work_orders ?? []
-      setRows(list)
-      return list
-    } catch (e) {
-      if (e instanceof ApiError) {
-        showError(e.message)
-      } else {
-        showError(t('wo.load_fail'))
+  const loadWorkOrders = useCallback(
+    async (opts?: { silent?: boolean }): Promise<WorkOrder[]> => {
+      const silent = opts?.silent === true
+      if (!silent) setLoading(true)
+      try {
+        const data = await apiJson<WorkOrdersListResponse>('/api/work-orders')
+        const list = data.work_orders ?? []
+        setRows(list)
+        return list
+      } catch (e) {
+        if (e instanceof ApiError) {
+          showError(e.message)
+        } else {
+          showError(t('wo.load_fail'))
+        }
+        setRows([])
+        return []
+      } finally {
+        if (!silent) setLoading(false)
       }
-      setRows([])
-      return []
-    } finally {
-      setLoading(false)
-    }
-  }, [showError, t])
+    },
+    [showError, t],
+  )
 
   useEffect(() => {
     void loadWorkOrders()
   }, [loadWorkOrders])
+
+  const loadWorkTypes = useCallback(async () => {
+    try {
+      const data = await apiJson<WorkTypesListResponse>('/api/work-types')
+      setWorkTypes(data.work_types ?? [])
+    } catch {
+      setWorkTypes([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadWorkTypes()
+  }, [loadWorkTypes])
+
+  const loadCategories = useCallback(async () => {
+    try {
+      const data = await apiJson<CategoriesListResponse>('/api/categories')
+      setCategories(data.categories ?? [])
+    } catch {
+      setCategories([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadCategories()
+  }, [loadCategories])
+
+  const loadWorkgroups = useCallback(async () => {
+    try {
+      const data = await apiJson<WorkgroupsListResponse>('/api/workgroups')
+      setWorkgroups(data.workgroups ?? [])
+    } catch {
+      setWorkgroups([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadWorkgroups()
+  }, [loadWorkgroups])
 
   const queueRowFlash = useCallback((id: string) => {
     setFlashRowIds((prev) => {
@@ -396,6 +526,63 @@ export default function WorkOrdersAppPage() {
     [editingId, rows, selected],
   )
 
+  const targetSiteIdForPicker = useMemo(() => {
+    if (editingId) {
+      const wo = rows.find((w) => w.id === editingId)
+      return wo?.site_id ?? null
+    }
+    return getStoredUser()?.working_site_id ?? null
+  }, [editingId, rows])
+
+  const workTypesForSite = useMemo(() => {
+    if (!targetSiteIdForPicker) return []
+    return workTypes.filter((wt) => wt.site_id === targetSiteIdForPicker)
+  }, [workTypes, targetSiteIdForPicker])
+
+  const workTypeDropdownOptions = useMemo(
+    () =>
+      workTypesForSite.map((wt) => ({
+        label: `${wt.key} — ${wt.name}`,
+        value: wt.id,
+      })),
+    [workTypesForSite],
+  )
+
+  const categoriesForSite = useMemo(() => {
+    if (!targetSiteIdForPicker) return []
+    return categories.filter((c) => c.site_id === targetSiteIdForPicker)
+  }, [categories, targetSiteIdForPicker])
+
+  const categoryDropdownOptions = useMemo(
+    () => [
+      { label: t('common.none'), value: null as string | null },
+      ...categoriesForSite.map((c) => ({
+        label: `${c.key} — ${c.name}`,
+        value: c.id,
+      })),
+    ],
+    [categoriesForSite, t],
+  )
+
+  const workgroupsForSite = useMemo(() => {
+    if (!targetSiteIdForPicker) return []
+    return workgroups.filter((wg) => wg.site_id === targetSiteIdForPicker)
+  }, [workgroups, targetSiteIdForPicker])
+
+  const workgroupDropdownOptions = useMemo(
+    () =>
+      workgroupsForSite.map((wg) => ({
+        label: `${wg.key} — ${wg.name}`,
+        value: wg.id,
+      })),
+    [workgroupsForSite],
+  )
+
+  const pmWorkTypeIdForSite = useMemo(
+    () => workTypesForSite.find((w) => w.key === 'PM')?.id ?? null,
+    [workTypesForSite],
+  )
+
   const assetDisplayLabel = useMemo(() => {
     if (pickedAsset) {
       return `${pickedAsset.key} ${emDash} ${pickedAsset.name}`
@@ -427,15 +614,6 @@ export default function WorkOrdersAppPage() {
     }
     return emDash
   }, [pickedAsset, editingWo, emDash])
-
-  const woTypeOptions = useMemo(
-    () => [
-      { value: 'bd' as WoType, label: t('wo.type_option_bd') },
-      { value: 'pm' as WoType, label: t('wo.type_option_pm') },
-      { value: 'cm' as WoType, label: t('wo.type_option_cm') },
-    ],
-    [t],
-  )
 
   const planEndPreview = useMemo(() => {
     if (!formPlanStart || formDurationHours == null) return null
@@ -481,16 +659,28 @@ export default function WorkOrdersAppPage() {
     setFormPlanStart(null)
     setFormDurationHours(0)
     setFormWorktime(null)
-    setFormWoType('cm')
+    const ws = getStoredUser()?.working_site_id
+    const list = ws
+      ? workTypes.filter((wt) => wt.site_id === ws)
+      : []
+    const def =
+      list.find((w) => w.key === 'CM')?.id ?? list[0]?.id ?? null
+    setFormWorkTypeId(def)
+    setFormCategoryId(null)
+    const wgl = ws ? workgroups.filter((wg) => wg.site_id === ws) : []
+    setFormWorkgroupId(
+      wgl.find((w) => w.key === '_DEFAULT')?.id ?? wgl[0]?.id ?? null,
+    )
     setFormStatus('open')
     setAssetPickerOpen(false)
     setDialogTab(0)
+    setFormWorkInstructions([])
     setDialogOpen(true)
   }
 
   useRegisterCreateShortcut(openCreate)
 
-  function openEdit(row: WorkOrder) {
+  async function openEdit(row: WorkOrder) {
     setEditingId(row.id)
     setFormShortText(row.short_text)
     setFormAssetId(row.asset_id)
@@ -499,10 +689,26 @@ export default function WorkOrdersAppPage() {
     setFormPlanStart(row.plan_start ? new Date(row.plan_start) : null)
     setFormDurationHours(Number(row.duration ?? '0'))
     setFormWorktime(parseWorktimeNum(row.worktime))
-    setFormWoType(normalizeWoType(row.wo_type))
+    setFormWorkTypeId(row.work_type_id)
+    setFormCategoryId(row.category_id ?? null)
+    setFormWorkgroupId(row.workgroup_id)
     setFormStatus(row.status)
     setAssetPickerOpen(false)
     setDialogTab(0)
+    try {
+      const data = await apiJson<WorkOrderResponse>(
+        `/api/work-orders/${encodeURIComponent(row.id)}`,
+      )
+      setFormWorkInstructions(
+        workInstructionsFromApi(data.work_order.work_instructions ?? []),
+      )
+    } catch {
+      setFormWorkInstructions(
+        row.work_instructions?.length
+          ? workInstructionsFromApi(row.work_instructions)
+          : [],
+      )
+    }
     setDialogOpen(true)
   }
 
@@ -538,14 +744,32 @@ export default function WorkOrdersAppPage() {
       return
     }
 
+    const resolvedWorkTypeId = linkedToWorkPlan
+      ? pmWorkTypeIdForSite
+      : formWorkTypeId
+    if (!resolvedWorkTypeId) {
+      showError(t('wo.err_work_type'))
+      return
+    }
+    if (!formWorkgroupId) {
+      showError(t('wo.err_workgroup'))
+      return
+    }
+
     const body: Record<string, unknown> = {
       short_text: shortText.slice(0, 200),
       asset_id: formAssetId,
       instruction_text: instruction,
       worktime: formWorktime,
-      wo_type: linkedToWorkPlan ? 'pm' : formWoType,
+      work_type_id: resolvedWorkTypeId,
       plan_start: formPlanStart ? formPlanStart.toISOString() : null,
       duration: formDurationHours,
+      category_id: formCategoryId,
+      workgroup_id: formWorkgroupId,
+    }
+    if (!editingId) {
+      const wi = workInstructionsForCreateBody(formWorkInstructions)
+      if (wi.length > 0) body.work_instructions = wi
     }
 
     setSaving(true)
@@ -670,6 +894,19 @@ export default function WorkOrdersAppPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+
+      <WorkInstructionViewModal
+        visible={instructionViewOpen}
+        onHide={() => {
+          setInstructionViewOpen(false)
+          setInstructionViewWoId(null)
+        }}
+        mode="wo"
+        entityId={instructionViewWoId}
+        t={t}
+        reportError={showError}
+        onAfterInstructionsChange={() => void loadWorkOrders({ silent: true })}
+      />
 
       <div className="p-4 w-full max-w-none flex flex-column gap-3">
         <Card
@@ -798,11 +1035,62 @@ export default function WorkOrdersAppPage() {
                 }}
               />
               <Column
+                header={t('wo.col_workgroup')}
+                sortable
+                sortField="workgroup_key"
+                style={{ minWidth: '12rem' }}
+                body={(row: WorkOrder) => {
+                  const k = row.workgroup_key?.trim() ?? ''
+                  const n = row.workgroup_name?.trim() ?? ''
+                  if (!k && !n) return emDash
+                  if (k && n) return `${k} ${emDash} ${n}`
+                  return k || n
+                }}
+              />
+              <Column
                 field="work_plan_key"
                 header={t('wo.field_work_plan')}
                 sortable
                 style={{ minWidth: '10rem' }}
                 body={(row: WorkOrder) => row.work_plan_key ?? emDash}
+              />
+              <Column
+                header={t('wo.col_work_type')}
+                sortable
+                sortField="work_type_key"
+                style={{ minWidth: '14rem' }}
+                body={(row: WorkOrder) =>
+                  workTypeColumnBody(row, emDash, workTypes)
+                }
+              />
+              <Column
+                header={t('wo.col_category')}
+                sortable
+                sortField="category_key"
+                style={{ minWidth: '12rem' }}
+                body={(row: WorkOrder) => {
+                  const k = row.category_key?.trim() ?? ''
+                  const n = row.category_name?.trim() ?? ''
+                  if (!k && !n) return emDash
+                  if (k && n) return `${k} ${emDash} ${n}`
+                  return k || n
+                }}
+              />
+              <Column
+                header={t('wo.col_assignments')}
+                style={{ minWidth: '9rem' }}
+                body={(row: WorkOrder) => (
+                  <WorkAssignmentsIcons
+                    row={row}
+                    t={t}
+                    onAssignmentClick={(kind) => {
+                      if (kind === 'instructions') {
+                        setInstructionViewWoId(row.id)
+                        setInstructionViewOpen(true)
+                      }
+                    }}
+                  />
+                )}
               />
               <Column
                 field="plan_start"
@@ -1010,13 +1298,36 @@ export default function WorkOrdersAppPage() {
                 </label>
                 <Dropdown
                   id="wo-type"
-                  value={linkedToWorkPlan ? 'pm' : formWoType}
-                  onChange={(e) => setFormWoType(e.value as WoType)}
-                  options={woTypeOptions}
+                  value={
+                    linkedToWorkPlan ? pmWorkTypeIdForSite : formWorkTypeId
+                  }
+                  onChange={(e) =>
+                    setFormWorkTypeId((e.value as string) ?? null)
+                  }
+                  options={workTypeDropdownOptions}
                   optionLabel="label"
                   optionValue="value"
                   className="w-full"
-                  disabled={saving || linkedToWorkPlan}
+                  disabled={
+                    saving || linkedToWorkPlan || workTypeDropdownOptions.length === 0
+                  }
+                />
+              </div>
+              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
+                <label htmlFor="wo-category" className="text-sm font-medium">
+                  {t('wo.field_category')}
+                </label>
+                <Dropdown
+                  id="wo-category"
+                  value={formCategoryId}
+                  onChange={(e) =>
+                    setFormCategoryId((e.value as string | null) ?? null)
+                  }
+                  options={categoryDropdownOptions}
+                  optionLabel="label"
+                  optionValue="value"
+                  className="w-full"
+                  disabled={saving}
                 />
               </div>
               <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
@@ -1065,6 +1376,17 @@ export default function WorkOrdersAppPage() {
                 />
               </div>
             </div>
+          </TabPanel>
+          <TabPanel header={t('wo.tab_instructions')}>
+            <WorkInstructionsTab
+              variant="wo"
+              parentId={editingId}
+              rows={formWorkInstructions}
+              setRows={setFormWorkInstructions}
+              disabled={saving}
+              reportError={showError}
+              t={t}
+            />
           </TabPanel>
           {linkedToWorkPlan ? (
             <TabPanel header={t('wo.tab_work_plan')}>
@@ -1121,6 +1443,23 @@ export default function WorkOrdersAppPage() {
           <TabPanel header={t('wo.tab_planning')}>
             <div className="app-modal-tab-content flex flex-column gap-3 pt-2">
               <div className="grid">
+                <div className="col-12 md:col-6 flex flex-column gap-2">
+                  <label
+                    htmlFor="wo-workgroup"
+                    className="text-sm font-medium"
+                  >
+                    {t('wo.field_workgroup')}
+                  </label>
+                  <Dropdown
+                    id="wo-workgroup"
+                    value={formWorkgroupId}
+                    options={workgroupDropdownOptions}
+                    onChange={(e) => setFormWorkgroupId(e.value as string | null)}
+                    className="w-full"
+                    disabled={saving || workgroupDropdownOptions.length === 0}
+                    placeholder={t('wo.field_workgroup')}
+                  />
+                </div>
                 <div className="col-12 md:col-6 flex flex-column gap-2">
                   <label
                     htmlFor="wo-plan-start"
