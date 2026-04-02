@@ -10,6 +10,8 @@
   (App.css) with Lara’s semantic tokens --surface-ground, --surface-section.
 */
 :root {
+  /* Atmospheric background blur (CSS has no % — “20%” → 20px here) */
+  --app-atmosphere-blur: 20px;
   --p-text-color: var(--text-color);
   --p-text-muted-color: var(--text-color-secondary);
   --p-primary-color: var(--primary-color);

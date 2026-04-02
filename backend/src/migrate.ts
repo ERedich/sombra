@@ -97,6 +97,8 @@ async function main() {
   await runSqlFile('057_i18n_workgroups_bulk_members.sql')
   await runSqlFile('058_i18n_workgroups_pools.sql')
   await runSqlFile('059_i18n_workgroups_members_confirm.sql')
+  await runSqlFile('060_i18n_nav_structure.sql')
+  await runSqlFile('061_i18n_nav_sidebar_toggle.sql')
   await ensureAdminUser()
   await assignAdminDefaultWorkingSite()
   await pool.end()

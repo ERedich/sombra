@@ -11,6 +11,7 @@ import { Password } from 'primereact/password'
 import { apiBase } from '../api'
 import { getToken, setAuth, type AuthUser } from '../auth'
 import { ensureTranslationsLoaded } from '../i18n/loadTranslations'
+import './LoginPage.css'
 
 const LOCALE_STORAGE_KEY = 'cmms_login_locale'
 
@@ -233,91 +234,112 @@ export default function LoginPage() {
 
   if (!i18nReady) {
     return (
-      <div className="min-h-screen bg-surface-ground flex align-items-center justify-content-center p-4">
-        <span className="text-color-secondary text-sm" aria-busy="true">
-          …
-        </span>
+      <div className="login-page">
+        <div className="login-page__backdrop" aria-hidden />
+        <div className="login-page__layout">
+          <div className="login-page__left" aria-hidden />
+          <aside className="login-page__panel flex align-items-center justify-content-center">
+            <span className="login-page__loading" aria-busy="true">
+              …
+            </span>
+          </aside>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-surface-ground flex align-items-center justify-content-center p-4">
-      <div
-        className="fixed top-0 right-0 z-5 flex align-items-center gap-1 p-2 md:p-3"
-        role="group"
-        aria-label={t('login.locale_label')}
-      >
-        {localeOptions.map((opt) => {
-          const flag = regionCodeToFlagEmoji(localeToRegionCode(opt.code))
-          const active = selectedLocale === opt.code
-          return (
-            <button
-              key={opt.code}
-              type="button"
-              title={opt.native_name}
-              aria-label={opt.native_name}
-              aria-pressed={active}
-              disabled={loading || localeOptions.length === 0}
-              onClick={() => void onLocaleChange(opt.code)}
-              className={
-                'flex align-items-center justify-content-center border-circle p-0 border-none cursor-pointer bg-transparent transition-all transition-duration-150 ' +
-                (active ?
-                  'surface-border border-2 shadow-1 bg-surface-card'
-                : 'hover:bg-surface-hover border-2 border-transparent')
-              }
-              style={{ width: '2.25rem', height: '2.25rem' }}
-            >
-              <span className="text-xl line-height-1" aria-hidden>
-                {flag}
-              </span>
-            </button>
-          )
-        })}
+    <div className="login-page">
+      <div className="login-page__backdrop" aria-hidden />
+      <div className="login-page__layout">
+        <div className="login-page__left">
+          <div className="login-page__brand">
+            <h1 className="login-page__brand-title">{t('shell.brand_name')}</h1>
+          </div>
+        </div>
+        <aside className="login-page__panel">
+          <div
+            className="login-page__locale"
+            role="group"
+            aria-label={t('login.locale_label')}
+          >
+            {localeOptions.map((opt) => {
+              const flag = regionCodeToFlagEmoji(localeToRegionCode(opt.code))
+              const active = selectedLocale === opt.code
+              return (
+                <button
+                  key={opt.code}
+                  type="button"
+                  title={opt.native_name}
+                  aria-label={opt.native_name}
+                  aria-pressed={active}
+                  disabled={loading || localeOptions.length === 0}
+                  onClick={() => void onLocaleChange(opt.code)}
+                  className={
+                    'flex align-items-center justify-content-center border-circle p-0 cursor-pointer transition-all transition-duration-150 ' +
+                    (active ?
+                      'shadow-1'
+                    : 'border-2 border-transparent')
+                  }
+                  style={{ width: '2.25rem', height: '2.25rem' }}
+                >
+                  <span className="text-xl line-height-1" aria-hidden>
+                    {flag}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="login-page__panel-inner">
+            <Card title={t('login.title')} className="w-full">
+              <form
+                className="flex flex-column gap-3"
+                onSubmit={(e) => void onSubmit(e)}
+              >
+                <div className="flex flex-column gap-2">
+                  <label htmlFor="login-name" className="text-sm font-medium">
+                    {t('login.login_name_label')}
+                  </label>
+                  <InputText
+                    id="login-name"
+                    value={loginName}
+                    onChange={(e) => setLoginName(e.target.value)}
+                    className="w-full"
+                    autoComplete="username"
+                    disabled={loading}
+                  />
+                </div>
+                <div className="flex flex-column gap-2">
+                  <label htmlFor="login-password" className="text-sm font-medium">
+                    {t('login.password_label')}
+                  </label>
+                  <Password
+                    id="login-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    feedback={false}
+                    toggleMask
+                    className="w-full"
+                    inputClassName="w-full"
+                    autoComplete="current-password"
+                    disabled={loading}
+                  />
+                </div>
+                {error ? (
+                  <Message severity="error" text={error} className="w-full" />
+                ) : null}
+                <Button
+                  type="submit"
+                  label={t('login.sign_in')}
+                  icon="pi pi-sign-in"
+                  loading={loading}
+                  className="w-full"
+                />
+              </form>
+            </Card>
+          </div>
+        </aside>
       </div>
-      <Card title={t('login.title')} className="w-full" style={{ maxWidth: '24rem' }}>
-        <form className="flex flex-column gap-3" onSubmit={(e) => void onSubmit(e)}>
-          <div className="flex flex-column gap-2">
-            <label htmlFor="login-name" className="text-sm font-medium">
-              {t('login.login_name_label')}
-            </label>
-            <InputText
-              id="login-name"
-              value={loginName}
-              onChange={(e) => setLoginName(e.target.value)}
-              className="w-full"
-              autoComplete="username"
-              disabled={loading}
-            />
-          </div>
-          <div className="flex flex-column gap-2">
-            <label htmlFor="login-password" className="text-sm font-medium">
-              {t('login.password_label')}
-            </label>
-            <Password
-              id="login-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              feedback={false}
-              toggleMask
-              className="w-full"
-              inputClassName="w-full"
-              autoComplete="current-password"
-              disabled={loading}
-            />
-          </div>
-          {error ? (
-            <Message severity="error" text={error} className="w-full" />
-          ) : null}
-          <Button
-            type="submit"
-            label={t('login.sign_in')}
-            icon="pi pi-sign-in"
-            loading={loading}
-            className="w-full"
-          />
-        </form>
-      </Card>
 
       <Dialog
         header={t('login.working_site_title')}

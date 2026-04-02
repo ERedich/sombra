@@ -275,6 +275,8 @@ export default function WorkOrdersAppPage() {
   const [instructionViewWoId, setInstructionViewWoId] = useState<string | null>(
     null,
   )
+  /** Prevents late GET /work-orders/:id from overwriting instructions after close or another open. */
+  const workOrderInstructionsFetchForIdRef = useRef<string | null>(null)
 
   const cardSubTitle = useMemo(() => {
     if (workOrderIdParam) {
@@ -650,6 +652,7 @@ export default function WorkOrdersAppPage() {
   }, [editingWo?.work_plan_interval_count, emDash])
 
   function openCreate() {
+    workOrderInstructionsFetchForIdRef.current = null
     setSelected(null)
     setEditingId(null)
     setFormShortText('')
@@ -681,7 +684,9 @@ export default function WorkOrdersAppPage() {
   useRegisterCreateShortcut(openCreate)
 
   async function openEdit(row: WorkOrder) {
-    setEditingId(row.id)
+    const id = row.id
+    workOrderInstructionsFetchForIdRef.current = id
+    setEditingId(id)
     setFormShortText(row.short_text)
     setFormAssetId(row.asset_id)
     setPickedAsset(null)
@@ -695,21 +700,28 @@ export default function WorkOrdersAppPage() {
     setFormStatus(row.status)
     setAssetPickerOpen(false)
     setDialogTab(0)
+    setFormWorkInstructions(
+      row.work_instructions?.length
+        ? workInstructionsFromApi(row.work_instructions)
+        : [],
+    )
+    setDialogOpen(true)
     try {
       const data = await apiJson<WorkOrderResponse>(
-        `/api/work-orders/${encodeURIComponent(row.id)}`,
+        `/api/work-orders/${encodeURIComponent(id)}`,
       )
+      if (workOrderInstructionsFetchForIdRef.current !== id) return
       setFormWorkInstructions(
         workInstructionsFromApi(data.work_order.work_instructions ?? []),
       )
     } catch {
+      if (workOrderInstructionsFetchForIdRef.current !== id) return
       setFormWorkInstructions(
         row.work_instructions?.length
           ? workInstructionsFromApi(row.work_instructions)
           : [],
       )
     }
-    setDialogOpen(true)
   }
 
   async function saveWorkOrder() {
@@ -1164,6 +1176,7 @@ export default function WorkOrdersAppPage() {
         }
         visible={dialogOpen}
         onHide={() => {
+          workOrderInstructionsFetchForIdRef.current = null
           setAssetPickerOpen(false)
           setDialogOpen(false)
         }}

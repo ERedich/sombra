@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "db:create": "node scripts/create-db.mjs",
     "migrate": "tsx src/migrate.ts",
+    "migrate:nav-i18n": "tsx scripts/apply-nav-i18n.ts",
     "seed:assets": "tsx scripts/seed-40-assets.ts",
     "seed:assets-4000": "tsx scripts/seed-4000-assets.ts",
     "db:copy": "node scripts/pg-copy.mjs",
