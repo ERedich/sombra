@@ -26,9 +26,21 @@ import localesRouter from './routes/locales.js'
 import translationsRouter from './routes/translations.js'
 import { initWorkOrderRealtime } from './realtime/workOrderSocket.js'
 
-const logger = pino({ level: env.NODE_ENV === 'production' ? 'info' : 'debug' })
+const logger = pino({
+  level: env.NODE_ENV === 'production' ? 'info' : 'debug',
+  redact: {
+    paths: [
+      'req.headers.authorization',
+      'req.headers.cookie',
+      'req.headers.x-api-key',
+      'res.headers.set-cookie',
+    ],
+    remove: true,
+  },
+})
 
 const app = express()
+app.set('trust proxy', 1)
 app.use(helmet())
 app.use(
   cors({
@@ -43,7 +55,9 @@ app.use(
     logger,
     autoLogging: true,
     customSuccessMessage(req, _res, responseTime) {
-      return `${req.method} ${req.originalUrl ?? req.url} ${responseTime}ms`
+      const url = req.originalUrl ?? req.url
+      const pathOnly = url.split('?')[0]
+      return `${req.method} ${pathOnly} ${responseTime}ms`
     },
   }),
 )
