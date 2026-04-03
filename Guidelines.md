@@ -62,6 +62,11 @@ The backend maintains an **append-only** `audit_log` table in PostgreSQL for eve
 
 - **List tables — when / who on screen:** Server-backed CRUD pages should show **Created**, **Updated**, **Created by**, and **Updated by** when the API provides the underlying fields, so operators do not need to open the audit log for routine checks. Include timestamp values in **search** (both ISO substrings and formatted display text, as in cost centers). Reference implementations: [`SitesPage`](frontend/src/pages/SitesPage.tsx), [`UsersPage`](frontend/src/pages/UsersPage.tsx), [`CostcentersAppPage`](frontend/src/apps/costcenters/CostcentersAppPage.tsx).
 
+### Site reference column (list UI)
+
+- For `site_id`-scoped domain data, the **site reference** column (site key, name, colour — the column that answers which site a row belongs to) **must not** be included in the **default/base** column set for list tables. Operators can **add** it via the **Table Wizard** when they want it.
+- This is a **UI default** only: list APIs may continue to return `site_key`, `site_name`, and related fields; the SPA simply omits that column from the initial column registry unless the user enables it in the wizard.
+
 ### Site scope (users and `site_id`-backed data)
 
 Terminology:

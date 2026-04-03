@@ -7,7 +7,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Card } from 'primereact/card'
-import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -26,6 +25,8 @@ import {
 } from '../../layout/crudContextMenuItems'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
+import type { ColumnRegistryEntry } from '../../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import { formatDateTime } from '../../utils/dateTime'
 
 export type Category = {
@@ -90,6 +91,47 @@ export default function CategoriesAppPage() {
   const [search, setSearch] = useState('')
   const emDash = t('common.em_dash')
 
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<Category>[] => {
+    return [
+      {
+        field: 'site_key',
+        headerKey: 'common.col_site',
+        sortable: true,
+        isSiteReference: true,
+        type: 'text',
+        body: (row) => siteColumnBody(row, emDash),
+      },
+      { field: 'key', headerKey: 'common.col_key', sortable: true },
+      { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'created_at',
+        headerKey: 'common.col_created_at',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.created_at),
+      },
+      {
+        field: 'created_by_login_name',
+        headerKey: 'common.col_created_by',
+        sortable: true,
+        body: (row) => row.created_by_login_name ?? emDash,
+      },
+      {
+        field: 'updated_at',
+        headerKey: 'common.col_updated_at',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.updated_at),
+      },
+      {
+        field: 'updated_by_login_name',
+        headerKey: 'common.col_updated_by',
+        sortable: true,
+        body: (row) => row.updated_by_login_name ?? emDash,
+      },
+    ]
+  }, [emDash])
+
   const cardSubTitle = useMemo(() => {
     if (categoryIdParam) {
       return t('categories.subtitle_filtered')
@@ -122,6 +164,15 @@ export default function CategoriesAppPage() {
         (r.updated_by_login_name?.toLowerCase().includes(q) ?? false),
     )
   }, [rows, search, categoryIdParam])
+
+  const tw = useTableWizard<Category>({
+    appPath: '/categories',
+    columnDefs: tableColumnDefs,
+    largeTableRowCount: filteredRows.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
 
   useEffect(() => {
     if (categoryIdParam && rows.length > 0) {
@@ -299,16 +350,21 @@ export default function CategoriesAppPage() {
   )
 
   const categoriesCardHeader = (
-    <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
-      <span
-        className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-        aria-hidden
-      >
-        <i className="pi pi-folder text-xl" />
-      </span>
-      <div className="min-w-0 pt-0">
-        <h1 className="app-card-hero-title">{t('categories.title')}</h1>
-        <p className="app-card-hero-desc">{cardSubTitle}</p>
+    <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">
+      <div className="flex align-items-start gap-3 min-w-0 flex-1">
+        <span
+          className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+          aria-hidden
+        >
+          <i className="pi pi-folder text-xl" />
+        </span>
+        <div className="min-w-0 pt-0">
+          <h1 className="app-card-hero-title">{t('categories.title')}</h1>
+          <p className="app-card-hero-desc">{cardSubTitle}</p>
+        </div>
+      </div>
+      <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
       </div>
     </div>
   )
@@ -322,8 +378,9 @@ export default function CategoriesAppPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+      {tw.wizardDialog}
 
-      <div className="p-4 max-w-screen-lg mx-auto flex flex-column gap-3">
+      <div className="p-4 app-page-mw-lg flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}
@@ -354,28 +411,30 @@ export default function CategoriesAppPage() {
                   onClick={() => selected && confirmDelete(selected)}
                 />
               </ButtonGroup>
-              <IconField
-                iconPosition="left"
-                className="app-crud-toolbar-search flex-shrink-0 ml-auto"
-                style={{ width: 'min(20rem, 100%)' }}
-              >
-                <InputIcon className="pi pi-search" />
-                <InputText
-                  ref={toolbarSearchRef}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={t('common.search_ellipsis')}
-                  aria-label={t('categories.search_aria')}
-                  className="w-full"
+              <div className="flex align-items-center gap-2 flex-wrap ml-auto">
+                <IconField
+                  iconPosition="left"
+                  className="app-crud-toolbar-search flex-shrink-0"
+                  style={{ width: 'min(20rem, 100%)' }}
+                >
+                  <InputIcon className="pi pi-search" />
+                  <InputText
+                    ref={toolbarSearchRef}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder={t('common.search_ellipsis')}
+                    aria-label={t('categories.search_aria')}
+                    className="w-full"
                 />
               </IconField>
+            </div>
             </div>
             <p className="text-sm text-color-secondary mt-0 mb-3">
               {t('categories.subtitle_default')}
             </p>
             <DataTable
-              value={filteredRows}
-              loading={loading}
+              value={tw.prepareRows(filteredRows)}
+              loading={loading || tw.tableBusy}
               dataKey="id"
               selection={selected}
               onSelectionChange={(e) => setSelected(e.value as Category | null)}
@@ -400,39 +459,9 @@ export default function CategoriesAppPage() {
                   : t('categories.empty')
               }
               stripedRows
+              {...tw.tableLayoutProps}
             >
-              <Column
-                field="site_key"
-                header={t('common.col_site')}
-                sortable
-                body={(row: Category) => siteColumnBody(row, emDash)}
-              />
-              <Column field="key" header={t('common.col_key')} sortable />
-              <Column field="name" header={t('common.col_name')} sortable />
-              <Column
-                field="created_at"
-                header={t('common.col_created_at')}
-                sortable
-                body={(row: Category) => formatDateTime(row.created_at)}
-              />
-              <Column
-                field="created_by_login_name"
-                header={t('common.col_created_by')}
-                sortable
-                body={(row: Category) => row.created_by_login_name ?? emDash}
-              />
-              <Column
-                field="updated_at"
-                header={t('common.col_updated_at')}
-                sortable
-                body={(row: Category) => formatDateTime(row.updated_at)}
-              />
-              <Column
-                field="updated_by_login_name"
-                header={t('common.col_updated_by')}
-                sortable
-                body={(row: Category) => row.updated_by_login_name ?? emDash}
-              />
+              {tw.renderColumns()}
             </DataTable>
           </div>
         </Card>

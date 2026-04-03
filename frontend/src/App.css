@@ -65,6 +65,10 @@ html.theme-transition-fallback #root {
 
 .app-shell .app-shell-main {
   margin-left: var(--app-sidebar-w);
+  /* Occupy the full strip beside the fixed sidebar so % / vw widths match the visible “screen”. */
+  width: calc(100vw - var(--app-sidebar-w));
+  max-width: calc(100vw - var(--app-sidebar-w));
+  box-sizing: border-box;
   transition: margin-left 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -73,6 +77,29 @@ html.theme-transition-fallback #root {
   .app-shell .app-shell-main {
     transition-duration: 0.01ms;
   }
+}
+
+/*
+ * Main content widths. PrimeFlex has no max-w-screen-lg / max-w-screen-xl / max-w-none.
+ * Target: 80% of viewport width, centered; explicit width so the block actually grows (max-width alone can stay content-sized).
+ */
+:root {
+  --app-page-mw-screen-pct: 80vw;
+}
+
+.app-page-mw-lg,
+.app-page-mw-xl {
+  width: min(100%, var(--app-page-mw-screen-pct));
+  max-width: min(100%, var(--app-page-mw-screen-pct));
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+.app-page-mw-none {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
 }
 
 /* Atmospheric art only under the nav column (main uses solid surface-ground) */
@@ -91,7 +118,7 @@ html.theme-transition-fallback #root {
   pointer-events: none;
   background: url('/login-bg.png') center / cover no-repeat;
   filter: blur(var(--app-atmosphere-blur, 20px));
-  transform: scale(1.06);
+  transform: scaleX(-1) scale(1.06);
   transform-origin: center center;
 }
 
@@ -119,8 +146,8 @@ html.theme-transition-fallback #root {
       rgba(255, 255, 255, 0.07) 0%,
       rgba(255, 255, 255, 0.02) 100%
     );
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  backdrop-filter: saturate(180%);
+  -webkit-backdrop-filter: saturate(180%);
   box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.06);
 }
 
@@ -154,8 +181,8 @@ html.theme-transition-fallback #root {
       rgba(255, 255, 255, 0.55) 0%,
       rgba(255, 255, 255, 0.2) 100%
     );
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: saturate(140%);
+  -webkit-backdrop-filter: saturate(140%);
   box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.45);
 }
 
@@ -609,4 +636,149 @@ html.theme-transition-fallback #root {
 .app-tree-structure-treetable .p-treetable-tbody > tr.p-highlight.app-tree-row-no-type > td {
   background: color-mix(in srgb, var(--text-color) 10%, var(--surface-ground)) !important;
   color: var(--text-color) !important;
+}
+
+/* Table wizard: OrderList rows use full width so the column grid lines up. */
+.table-wizard-dialog .p-orderlist-list .p-orderlist-item {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Table wizard: column list — align “Width” + input in one column across rows. */
+.table-wizard-dialog .table-wizard-order-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 0.75rem;
+  width: 100%;
+  box-sizing: border-box;
+  /* Inset width column from list edge. */
+  padding-right: 180px;
+}
+
+.table-wizard-dialog .table-wizard-order-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Table wizard: hero top-right cluster (preset dropdown + icon button). */
+.table-wizard-dialog .table-wizard-col-width-input {
+  width: 7rem;
+  max-width: 100%;
+}
+
+.app-table-wizard-hero {
+  flex-shrink: 0;
+}
+
+.app-table-wizard-trigger.p-button.p-button-outlined {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+.app-table-wizard-trigger.p-button.p-button-outlined:enabled:hover {
+  background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+/* DataTable row-group subheaders (Table Wizard “Group by”): distinct solid fill */
+.p-datatable .p-datatable-tbody > tr.p-rowgroup-header {
+  background: var(--surface-section) !important;
+}
+
+.p-datatable .p-datatable-tbody > tr.p-rowgroup-header > td {
+  background: var(--surface-section) !important;
+}
+
+/*
+ * Scrollable DataTable + frozen columns: unfrozen <td>s come later in the row and paint on top
+ * of sticky frozen cells when scrolling horizontally. Row hover/selection uses semi-transparent
+ * rgba on <tr>/<td>, so scrolled text can show through frozen cells. Stack frozen above unfrozen
+ * and use opaque fills where the theme uses transparency.
+ */
+.p-datatable-scrollable .p-datatable-tbody > tr > td.p-frozen-column {
+  z-index: 2;
+  position: sticky;
+}
+
+.p-datatable-scrollable .p-datatable-tbody > tr > td:not(.p-frozen-column) {
+  z-index: 0;
+  position: relative;
+}
+
+.p-datatable-scrollable.p-datatable-hoverable-rows
+  .p-datatable-tbody
+  > tr:not(.p-highlight):not(.p-datatable-emptymessage):hover
+  > td.p-frozen-column,
+.p-datatable-scrollable.p-datatable-selectable
+  .p-datatable-tbody
+  > tr.p-selectable-row:not(.p-highlight):not(.p-datatable-emptymessage):hover
+  > td.p-frozen-column {
+  background: color-mix(in srgb, white 3%, var(--surface-ground)) !important;
+}
+
+.p-datatable-scrollable.p-datatable-striped
+  .p-datatable-tbody
+  > tr.p-row-odd:not(.p-highlight):hover
+  > td.p-frozen-column {
+  background: color-mix(in srgb, white 3%, #1c2532) !important;
+}
+
+.app-shell--theme-light
+  .p-datatable-scrollable.p-datatable-striped
+  .p-datatable-tbody
+  > tr.p-row-odd:not(.p-highlight):hover
+  > td.p-frozen-column {
+  background: color-mix(in srgb, black 2.5%, #f8f8fa) !important;
+}
+
+.p-datatable-scrollable .p-datatable-tbody > tr.p-highlight > td.p-frozen-column,
+.p-datatable-scrollable .p-datatable-tbody > tr > td.p-frozen-column.p-highlight {
+  background: color-mix(in srgb, var(--primary-color) 16%, var(--surface-ground)) !important;
+}
+
+.p-datatable-scrollable.p-datatable-striped
+  .p-datatable-tbody
+  > tr.p-row-odd.p-highlight
+  > td.p-frozen-column {
+  background: color-mix(in srgb, var(--primary-color) 16%, #1c2532) !important;
+}
+
+.app-shell--theme-light
+  .p-datatable-scrollable.p-datatable-striped
+  .p-datatable-tbody
+  > tr.p-row-odd.p-highlight
+  > td.p-frozen-column {
+  background: color-mix(in srgb, var(--primary-color) 12%, #f8f8fa) !important;
+}
+
+/*
+ * Frozen columns + row-group subheaders: Prime’s default is one colspan cell, so the whole
+ * band scrolls horizontally. useTableWizard splits into frozen + unfrozen cells; keep the
+ * frozen segment sticky like body cells.
+ */
+.p-datatable-scrollable .p-datatable-tbody > tr.p-rowgroup-header > td.p-frozen-column {
+  position: sticky !important;
+  left: 0 !important;
+  z-index: 3;
+}
+
+/*
+ * Lara light: --surface-section is #fff, same as tbody rows — group bands disappear.
+ * Use page-ground grey + a hint of primary so bands read clearly (dark theme unchanged).
+ */
+.app-shell--theme-light .p-datatable .p-datatable-tbody > tr.p-rowgroup-header,
+.app-shell--theme-light .p-datatable .p-datatable-tbody > tr.p-rowgroup-header > td {
+  background: color-mix(
+    in srgb,
+    var(--surface-ground) 88%,
+    var(--primary-color) 12%
+  ) !important;
+}
+
+/* Table Wizard: collapsible row groups — hover accent only (no expand/collapse animation). */
+.app-datatable-expandable-groups .p-datatable-tbody > tr.p-rowgroup-header:hover > td {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--primary-color) 28%, transparent);
 }

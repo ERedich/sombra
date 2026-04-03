@@ -1,13 +1,18 @@
 /**
  * Read-only instruction list from table row; work orders get Done toggles (PATCH).
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TFunction } from 'i18next'
 import { Checkbox } from 'primereact/checkbox'
 import { Column } from 'primereact/column'
 import { DataTable } from 'primereact/datatable'
 import { Dialog } from 'primereact/dialog'
+import { Toast } from 'primereact/toast'
 import { ApiError, apiJson } from '../../api'
+import {
+  BulkOperationOverlay,
+  shouldShowBulkTableFeedback,
+} from '../../table-wizard'
 
 export type ViewInstructionRow = {
   id: string
@@ -44,6 +49,8 @@ export function WorkInstructionViewModal({
   const [rows, setRows] = useState<ViewInstructionRow[]>([])
   const [loading, setLoading] = useState(false)
   const [savingAll, setSavingAll] = useState(false)
+  const [bulkOverlay, setBulkOverlay] = useState(false)
+  const bulkToastRef = useRef<Toast | null>(null)
 
   const load = useCallback(async () => {
     if (!entityId) {
@@ -114,6 +121,15 @@ export function WorkInstructionViewModal({
     if (mode !== 'wo' || !entityId || rows.length === 0) return
     const need = rows.filter((r) => r.done !== checked)
     if (need.length === 0) return
+    const bulk = shouldShowBulkTableFeedback(rows.length, need.length)
+    setBulkOverlay(bulk)
+    if (bulk) {
+      bulkToastRef.current?.show({
+        severity: 'info',
+        summary: t('common.bulk_table_rows_busy'),
+        life: 8000,
+      })
+    }
     setSavingAll(true)
     try {
       await Promise.all(
@@ -126,6 +142,7 @@ export function WorkInstructionViewModal({
       else reportError(t('wi.view_patch_fail'))
     } finally {
       setSavingAll(false)
+      setBulkOverlay(false)
     }
   }
 
@@ -141,6 +158,8 @@ export function WorkInstructionViewModal({
       style={{ width: 'min(42rem, 96vw)' }}
       breakpoints={{ '640px': '98vw' }}
     >
+      <Toast ref={bulkToastRef} position="top-right" />
+      <BulkOperationOverlay visible={bulkOverlay && savingAll} />
       {showDoneCol && rows.length > 0 ? (
         <div className="flex align-items-center gap-2 mb-3">
           <Checkbox

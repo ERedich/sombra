@@ -12,7 +12,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Card } from 'primereact/card'
-import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -22,6 +21,7 @@ import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
 import { Toast } from 'primereact/toast'
+import type { DataTablePageEvent } from 'primereact/datatable'
 import { ApiError, apiBlob, apiFetch, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
@@ -32,6 +32,8 @@ import {
 } from '../../layout/crudContextMenuItems'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
+import type { ColumnRegistryEntry } from '../../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import { formatDate, formatDateTime } from '../../utils/dateTime'
 import { AssetFormDialogDefault } from './AssetFormDialogDefault'
 import { AssetFormDialogQuick } from './AssetFormDialogQuick'
@@ -136,6 +138,8 @@ export default function AssetManagementAppPage() {
 
   const [selected, setSelected] = useState<Asset | null>(null)
   const [search, setSearch] = useState('')
+  const [tableFirst, setTableFirst] = useState(0)
+  const [tableRows, setTableRows] = useState(25)
   const emDash = t('common.em_dash')
 
   const [splitWide, setSplitWide] = useState(() =>
@@ -152,6 +156,127 @@ export default function AssetManagementAppPage() {
     mq.addEventListener('change', sync)
     return () => mq.removeEventListener('change', sync)
   }, [])
+
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<Asset>[] => {
+    return [
+      {
+        field: 'site_key',
+        headerKey: 'common.col_site',
+        sortable: true,
+        isSiteReference: true,
+        type: 'text',
+        body: (row) => siteColumnBody(row, emDash),
+      },
+      {
+        field: 'asset_type',
+        headerKey: 'common.col_object_type',
+        sortable: true,
+        body: (row) =>
+          row.asset_type && ASSET_TYPE_LABELS[row.asset_type] ? (
+            <AssetTypeIconLabel type={row.asset_type} />
+          ) : (
+            emDash
+          ),
+      },
+      { field: 'key', headerKey: 'common.col_key', sortable: true },
+      { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'asset_classification_key',
+        headerKey: 'common.col_classification',
+        sortable: true,
+        body: (row) =>
+          row.asset_classification_key
+            ? `${row.asset_classification_key} ${emDash} ${row.asset_classification_name ?? ''}`
+            : emDash,
+      },
+      {
+        field: 'parent_asset_key',
+        headerKey: 'common.col_parent',
+        sortable: true,
+        body: (row) =>
+          row.parent_asset_key
+            ? `${row.parent_asset_key} ${emDash} ${row.parent_asset_name ?? ''}`
+            : emDash,
+      },
+      {
+        field: 'costcenter_key',
+        headerKey: 'common.col_cost_center',
+        sortable: true,
+        body: (row) => row.costcenter_key ?? emDash,
+      },
+      {
+        field: 'equipment_number',
+        headerKey: 'common.col_equip_nr',
+        sortable: true,
+        body: (row) => row.equipment_number ?? emDash,
+      },
+      {
+        field: 'serial_no',
+        headerKey: 'common.col_serial',
+        sortable: true,
+        body: (row) => row.serial_no ?? emDash,
+      },
+      {
+        field: 'build_year',
+        headerKey: 'common.col_build_year',
+        sortable: true,
+        body: (row) =>
+          row.build_year != null ? String(row.build_year) : emDash,
+      },
+      {
+        field: 'warranty_end',
+        headerKey: 'common.col_warranty_end',
+        sortable: true,
+        type: 'date',
+        body: (row) =>
+          row.warranty_end ? formatDate(row.warranty_end) : emDash,
+      },
+      {
+        field: 'priority',
+        headerKey: 'common.col_priority',
+        sortable: true,
+        body: (row) =>
+          row.priority != null ? String(row.priority) : emDash,
+      },
+      {
+        field: 'has_thumbnail',
+        headerKey: 'common.col_photo',
+        sortable: true,
+        body: (row) =>
+          row.has_thumbnail ? t('assets.col_photo_yes') : emDash,
+      },
+      {
+        field: 'created_at',
+        headerKey: 'common.col_created_at',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.created_at),
+      },
+      {
+        field: 'created_by_login_name',
+        headerKey: 'common.col_created_by',
+        sortable: true,
+        body: (row) => row.created_by_login_name ?? emDash,
+      },
+      {
+        field: 'updated_at',
+        headerKey: 'common.col_updated_at',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.updated_at),
+      },
+      {
+        field: 'updated_by_login_name',
+        headerKey: 'common.col_updated_by',
+        sortable: true,
+        body: (row) => row.updated_by_login_name ?? emDash,
+      },
+    ]
+  }, [emDash, t])
+
+  /** Same value passed to DataTable scrollHeight and table wizard when columns are frozen. */
+  const assetTableScrollHeight =
+    ASSET_PAGE_LAYOUT === 'split' ? 'flex' : 'min(72vh, 48rem)'
 
   const cardSubTitle = useMemo(() => {
     if (assetIdParam) {
@@ -205,6 +330,16 @@ export default function AssetManagementAppPage() {
     })
   }, [rows, search, assetIdParam])
 
+  const tw = useTableWizard<Asset>({
+    appPath: '/assets',
+    columnDefs: tableColumnDefs,
+    frozenScrollHeight: assetTableScrollHeight,
+    largeTableRowCount: filteredRows.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
+
   useEffect(() => {
     if (assetIdParam && rows.length > 0) {
       const a = rows.find((x) => x.id === assetIdParam)
@@ -216,6 +351,10 @@ export default function AssetManagementAppPage() {
       return filteredRows.some((a) => a.id === cur.id) ? cur : null
     })
   }, [filteredRows, assetIdParam, rows])
+
+  useEffect(() => {
+    setTableFirst(0)
+  }, [search, assetIdParam])
 
   const showError = useCallback(
     (detail: string) => {
@@ -596,16 +735,21 @@ export default function AssetManagementAppPage() {
   }
 
   const cardHeader = (
-    <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
-      <span
-        className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-        aria-hidden
-      >
-        <i className="pi pi-box text-xl" />
-      </span>
-      <div className="min-w-0 pt-0">
-        <h1 className="app-card-hero-title">{t('assets.title')}</h1>
-        <p className="app-card-hero-desc">{cardSubTitle}</p>
+    <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">
+      <div className="flex align-items-start gap-3 min-w-0 flex-1">
+        <span
+          className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+          aria-hidden
+        >
+          <i className="pi pi-box text-xl" />
+        </span>
+        <div className="min-w-0 pt-0">
+          <h1 className="app-card-hero-title">{t('assets.title')}</h1>
+          <p className="app-card-hero-desc">{cardSubTitle}</p>
+        </div>
+      </div>
+      <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
       </div>
     </div>
   )
@@ -653,10 +797,6 @@ export default function AssetManagementAppPage() {
     </div>
   )
 
-  /** Virtual scroll viewport: flex fills split panel; modal needs an explicit min height. */
-  const assetTableScrollHeight =
-    ASSET_PAGE_LAYOUT === 'split' ? 'flex' : 'min(72vh, 48rem)'
-
   const tableToolbarAndGrid = (
     <div className="px-2 md:px-4 min-w-0 flex flex-column flex-1 min-h-0">
       <div className="flex justify-content-between align-items-center gap-3 flex-wrap mb-3 w-full">
@@ -683,30 +823,40 @@ export default function AssetManagementAppPage() {
             onClick={() => selected && confirmDelete(selected)}
           />
         </ButtonGroup>
-        <IconField
-          iconPosition="left"
-          className="app-crud-toolbar-search flex-shrink-0 ml-auto"
-          style={{ width: 'min(20rem, 100%)' }}
-        >
-          <InputIcon className="pi pi-search" />
-          <InputText
-            ref={toolbarSearchRef}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('common.search_ellipsis')}
-            aria-label={t('assets.search_aria')}
-            className="w-full"
-          />
-        </IconField>
+        <div className="flex align-items-center gap-2 flex-wrap ml-auto">
+          <IconField
+            iconPosition="left"
+            className="app-crud-toolbar-search flex-shrink-0"
+            style={{ width: 'min(20rem, 100%)' }}
+          >
+            <InputIcon className="pi pi-search" />
+            <InputText
+              ref={toolbarSearchRef}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t('common.search_ellipsis')}
+              aria-label={t('assets.search_aria')}
+              className="w-full"
+            />
+          </IconField>
+        </div>
       </div>
       <p className="text-sm text-color-secondary mt-0 mb-3">
         {t('assets.help')}
       </p>
       <div className="min-w-0 min-h-0 flex-1 flex flex-column">
         <DataTable
-          value={filteredRows}
-          loading={loading}
+          value={tw.prepareRows(filteredRows)}
+          loading={loading || tw.tableBusy}
           dataKey="id"
+          paginator
+          rows={tableRows}
+          first={tableFirst}
+          rowsPerPageOptions={[10, 25, 50, 100]}
+          onPage={(e: DataTablePageEvent) => {
+            setTableFirst(e.first)
+            setTableRows(e.rows)
+          }}
           selection={selected}
           onSelectionChange={(e) => setSelected(e.value as Asset | null)}
           contextMenuSelection={selected ?? undefined}
@@ -732,148 +882,10 @@ export default function AssetManagementAppPage() {
           stripedRows
           scrollable
           scrollHeight={assetTableScrollHeight}
-          virtualScrollerOptions={{ itemSize: 46, numToleratedItems: 12 }}
           tableStyle={{ width: 'max-content', minWidth: '100%' }}
+          {...tw.tableLayoutProps}
         >
-          <Column
-            field="site_key"
-            header={t('common.col_site')}
-            sortable
-            body={(row: Asset) => siteColumnBody(row, emDash)}
-            style={{ minWidth: '14rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="asset_type"
-            header={t('common.col_object_type')}
-            sortable
-            body={(row: Asset) =>
-              row.asset_type && ASSET_TYPE_LABELS[row.asset_type] ? (
-                <AssetTypeIconLabel type={row.asset_type} />
-              ) : (
-                emDash
-              )
-            }
-            style={{ minWidth: '12rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="key"
-            header={t('common.col_key')}
-            sortable
-            style={{ minWidth: '8rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="name"
-            header={t('common.col_name')}
-            sortable
-            style={{ minWidth: '14rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="asset_classification_key"
-            header={t('common.col_classification')}
-            sortable
-            body={(row: Asset) =>
-              row.asset_classification_key
-                ? `${row.asset_classification_key} ${emDash} ${row.asset_classification_name ?? ''}`
-                : emDash
-            }
-            style={{ minWidth: '14rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="parent_asset_key"
-            header={t('common.col_parent')}
-            sortable
-            body={(row: Asset) =>
-              row.parent_asset_key
-                ? `${row.parent_asset_key} ${emDash} ${row.parent_asset_name ?? ''}`
-                : emDash
-            }
-            style={{ minWidth: '16rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="costcenter_key"
-            header={t('common.col_cost_center')}
-            sortable
-            body={(row: Asset) => row.costcenter_key ?? emDash}
-            style={{ minWidth: '11rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="equipment_number"
-            header={t('common.col_equip_nr')}
-            sortable
-            body={(row: Asset) => row.equipment_number ?? emDash}
-            style={{ minWidth: '8rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="serial_no"
-            header={t('common.col_serial')}
-            sortable
-            body={(row: Asset) => row.serial_no ?? emDash}
-            style={{ minWidth: '10rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="build_year"
-            header={t('common.col_build_year')}
-            sortable
-            body={(row: Asset) =>
-              row.build_year != null ? String(row.build_year) : emDash
-            }
-            style={{ minWidth: '6rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="warranty_end"
-            header={t('common.col_warranty_end')}
-            sortable
-            body={(row: Asset) =>
-              row.warranty_end ? formatDate(row.warranty_end) : emDash
-            }
-            style={{ minWidth: '9rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="priority"
-            header={t('common.col_priority')}
-            sortable
-            body={(row: Asset) =>
-              row.priority != null ? String(row.priority) : emDash
-            }
-            style={{ minWidth: '5rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="has_thumbnail"
-            header={t('common.col_photo')}
-            sortable
-            body={(row: Asset) =>
-              row.has_thumbnail ? t('assets.col_photo_yes') : emDash
-            }
-            style={{ minWidth: '6rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="created_at"
-            header={t('common.col_created_at')}
-            sortable
-            body={(row: Asset) => formatDateTime(row.created_at)}
-            style={{ minWidth: '13rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="created_by_login_name"
-            header={t('common.col_created_by')}
-            sortable
-            body={(row: Asset) => row.created_by_login_name ?? emDash}
-            style={{ minWidth: '10rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="updated_at"
-            header={t('common.col_updated_at')}
-            sortable
-            body={(row: Asset) => formatDateTime(row.updated_at)}
-            style={{ minWidth: '13rem', whiteSpace: 'nowrap' }}
-          />
-          <Column
-            field="updated_by_login_name"
-            header={t('common.col_updated_by')}
-            sortable
-            body={(row: Asset) => row.updated_by_login_name ?? emDash}
-            style={{ minWidth: '10rem', whiteSpace: 'nowrap' }}
-          />
+          {tw.renderColumns()}
         </DataTable>
       </div>
     </div>
@@ -916,6 +928,7 @@ export default function AssetManagementAppPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+      {tw.wizardDialog}
 
       <div className={`${ASSET_PAGE_CONTAINER_CLASS} flex flex-column gap-3`}>
         <Card

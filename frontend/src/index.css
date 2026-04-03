@@ -10,8 +10,6 @@
   (App.css) with Lara’s semantic tokens --surface-ground, --surface-section.
 */
 :root {
-  /* Atmospheric background blur (CSS has no % — “20%” → 20px here) */
-  --app-atmosphere-blur: 20px;
   --p-text-color: var(--text-color);
   --p-text-muted-color: var(--text-color-secondary);
   --p-primary-color: var(--primary-color);
@@ -52,19 +50,6 @@ body {
   white-space: normal;
   overflow-wrap: anywhere;
   max-width: min(22rem, 92vw);
-}
-
-@keyframes wo-row-flash {
-  0% {
-    background-color: rgba(34, 197, 94, 0.28);
-  }
-  100% {
-    background-color: transparent;
-  }
-}
-
-.work-orders-table .p-datatable-tbody > tr.wo-row--flash {
-  animation: wo-row-flash 2.2s ease-out forwards;
 }
 
 /* Instruction View modal: done work instruction rows */

@@ -11,7 +11,7 @@
 
 /* Photo on ::before (Gaussian blur); vignettes on ::after stay sharp */
 .login-page__backdrop {
-  --login-bg-blur: var(--app-atmosphere-blur, 20px);
+  --login-bg-blur: var(--app-atmosphere-blur, 36px);
   position: absolute;
   inset: 0;
   z-index: 0;
@@ -29,7 +29,7 @@
   background-position: center center;
   background-repeat: no-repeat;
   filter: blur(var(--login-bg-blur));
-  transform: scale(1.06);
+  transform: scaleX(-1) scale(1.06);
   transform-origin: center center;
 }
 

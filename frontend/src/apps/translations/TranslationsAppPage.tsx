@@ -1,16 +1,7 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { Card } from 'primereact/card'
-import { Column } from 'primereact/column'
 import { DataTable } from 'primereact/datatable'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
@@ -20,6 +11,13 @@ import { Message } from 'primereact/message'
 import { Toast } from 'primereact/toast'
 import { apiJson } from '../../api'
 import { AppShell } from '../../layout/AppShell'
+import type { ColumnRegistryEntry } from '../../table-wizard'
+import {
+  BulkOperationOverlay,
+  shouldShowBulkTableFeedback,
+  useTableWizard,
+  useTableWizardToastEffect,
+} from '../../table-wizard'
 
 type MatrixResponse = {
   msg_keys: string[]
@@ -88,6 +86,7 @@ export default function TranslationsAppPage() {
   const [rows, setRows] = useState<Row[]>([])
   const [baselineRows, setBaselineRows] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
+  const [bulkPersistOverlay, setBulkPersistOverlay] = useState(false)
   const [keyFilter, setKeyFilter] = useState('')
 
   const load = useCallback(async () => {
@@ -105,7 +104,7 @@ export default function TranslationsAppPage() {
       })
       setRows(next)
       setBaselineRows(cloneRows(next))
-    } catch (e) {
+    } catch {
       setError(t('translations.load_error'))
     } finally {
       setLoading(false)
@@ -140,41 +139,66 @@ export default function TranslationsAppPage() {
     return rows.filter((r) => r.msg_key.toLowerCase().includes(q))
   }, [rows, keyFilter])
 
-  const localeColumnBodies = useMemo(() => {
-    const m = new Map<string, (row: Row) => ReactNode>()
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<Row>[] => {
+    const defs: ColumnRegistryEntry<Row>[] = [
+      { field: 'msg_key', headerKey: 'translations.col_key', sortable: true },
+    ]
     for (const lc of localeCodes) {
-      m.set(lc, (row: Row) => (
-        <TranslationCell
-          msgKey={row.msg_key}
-          locale={lc}
-          value={row[lc] ?? ''}
-          onChange={onCellChange}
-        />
-      ))
+      defs.push({
+        field: lc,
+        headerKey: lc.toUpperCase(),
+        sortable: true,
+        body: (row) => (
+          <TranslationCell
+            msgKey={row.msg_key}
+            locale={lc}
+            value={row[lc] ?? ''}
+            onChange={onCellChange}
+          />
+        ),
+      })
     }
-    return m
+    return defs
   }, [localeCodes, onCellChange])
+
+  const tw = useTableWizard<Row>({
+    appPath: '/translations',
+    columnDefs: tableColumnDefs,
+    largeTableRowCount: filteredRows.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
 
   const save = async () => {
     if (!dirty) return
-    setSaving(true)
-    try {
-      const updates: { locale: string; msg_key: string; value: string }[] = []
-      for (const row of rows) {
-        const prev = baselineRows.find((p) => p.msg_key === row.msg_key)
-        if (!prev) continue
-        for (const lc of localeCodes) {
-          const a = row[lc] ?? ''
-          const b = prev[lc] ?? ''
-          if (a !== b) {
-            updates.push({ locale: lc, msg_key: row.msg_key, value: a })
-          }
+    const updates: { locale: string; msg_key: string; value: string }[] = []
+    for (const row of rows) {
+      const prev = baselineRows.find((p) => p.msg_key === row.msg_key)
+      if (!prev) continue
+      for (const lc of localeCodes) {
+        const a = row[lc] ?? ''
+        const b = prev[lc] ?? ''
+        if (a !== b) {
+          updates.push({ locale: lc, msg_key: row.msg_key, value: a })
         }
       }
-      if (updates.length === 0) {
-        setBaselineRows(cloneRows(rows))
-        return
-      }
+    }
+    if (updates.length === 0) {
+      setBaselineRows(cloneRows(rows))
+      return
+    }
+    const bulk = shouldShowBulkTableFeedback(rows.length, updates.length)
+    setBulkPersistOverlay(bulk)
+    if (bulk) {
+      toast.current?.show({
+        severity: 'info',
+        summary: t('common.bulk_table_rows_busy'),
+        life: 8000,
+      })
+    }
+    setSaving(true)
+    try {
       await apiJson('/api/translations', {
         method: 'PATCH',
         body: JSON.stringify({ updates }),
@@ -193,14 +217,17 @@ export default function TranslationsAppPage() {
       })
     } finally {
       setSaving(false)
+      setBulkPersistOverlay(false)
     }
   }
 
   return (
     <AppShell>
       <Toast ref={toast} position="top-right" />
+      <BulkOperationOverlay visible={bulkPersistOverlay && saving} />
+      {tw.wizardDialog}
       <div
-        className="p-4 max-w-screen-xl mx-auto flex flex-column gap-3 min-h-0"
+        className="p-4 app-page-mw-xl flex flex-column gap-3 min-h-0"
         style={{ height: 'calc(100vh - 3rem)' }}
       >
         <Card
@@ -208,29 +235,34 @@ export default function TranslationsAppPage() {
           pt={{ header: { className: 'p-0 border-none' } }}
           header={
             <div className="app-card-hero flex flex-column gap-1 p-4 md:p-5 w-full">
-              <div className="flex align-items-start gap-3 flex-wrap">
-                <div
-                  className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-                  aria-hidden
-                >
-                  <i className="pi pi-language text-2xl" />
+              <div className="flex align-items-start justify-content-between gap-3 flex-wrap w-full">
+                <div className="flex align-items-start gap-3 min-w-0 flex-1">
+                  <div
+                    className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+                    aria-hidden
+                  >
+                    <i className="pi pi-language text-2xl" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h1 className="app-card-hero-title mt-0 mb-0">
+                      {t('translations.title')}
+                    </h1>
+                    <p className="app-card-hero-desc mb-0">
+                      {t('translations.subtitle')}
+                    </p>
+                  </div>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <h1 className="app-card-hero-title mt-0 mb-0">
-                    {t('translations.title')}
-                  </h1>
-                  <p className="app-card-hero-desc mb-0">
-                    {t('translations.subtitle')}
-                  </p>
+                <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+                  <Button
+                    type="button"
+                    label={t('translations.save')}
+                    icon="pi pi-save"
+                    onClick={() => void save()}
+                    loading={saving}
+                    disabled={!dirty || loading}
+                  />
+                  {tw.heroTableWizard}
                 </div>
-                <Button
-                  type="button"
-                  label={t('translations.save')}
-                  icon="pi pi-save"
-                  onClick={() => void save()}
-                  loading={saving}
-                  disabled={!dirty || loading}
-                />
               </div>
             </div>
           }
@@ -246,24 +278,27 @@ export default function TranslationsAppPage() {
                 className="w-full"
               />
             ) : null}
-            <IconField
-              iconPosition="left"
-              className="w-full"
-              style={{ maxWidth: '24rem' }}
-            >
-              <InputIcon className="pi pi-search" />
-              <InputText
-                value={keyFilter}
-                onChange={(e) => setKeyFilter(e.target.value)}
-                placeholder={t('common.search_ellipsis')}
-                aria-label={t('translations.col_key')}
-                className="w-full"
-              />
-            </IconField>
+            <div className="flex align-items-center gap-2 flex-wrap w-full">
+              <IconField
+                iconPosition="left"
+                className="flex-1"
+                style={{ maxWidth: '24rem' }}
+              >
+                <InputIcon className="pi pi-search" />
+                <InputText
+                  value={keyFilter}
+                  onChange={(e) => setKeyFilter(e.target.value)}
+                  placeholder={t('common.search_ellipsis')}
+                  aria-label={t('translations.col_key')}
+                  className="w-full"
+                />
+              </IconField>
+            </div>
             <div className="min-w-0 min-h-0 flex-1 flex flex-column">
+              {/* PrimeReact DataTable union types disagree with virtualScroller + tableLayoutProps spread */}
               <DataTable
-                value={filteredRows}
-                loading={loading}
+                value={tw.prepareRows(filteredRows)}
+                loading={loading || tw.tableBusy}
                 dataKey="msg_key"
                 scrollable
                 scrollHeight="calc(100vh - 16rem)"
@@ -275,24 +310,9 @@ export default function TranslationsAppPage() {
                   numToleratedItems: 10,
                 }}
                 tableStyle={{ width: 'max-content', minWidth: '100%' }}
+                {...(tw.tableLayoutProps as Record<string, unknown>)}
               >
-                <Column
-                  field="msg_key"
-                  header={t('translations.col_key')}
-                  style={{ minWidth: '14rem' }}
-                  frozen
-                />
-                {localeCodes.map((lc) => (
-                  <Column
-                    key={lc}
-                    header={lc.toUpperCase()}
-                    body={(row: Row) => {
-                      const render = localeColumnBodies.get(lc)
-                      return render ? render(row) : null
-                    }}
-                    style={{ minWidth: '18rem' }}
-                  />
-                ))}
+                {tw.renderColumns()}
               </DataTable>
             </div>
           </div>

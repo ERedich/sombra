@@ -10,7 +10,6 @@ import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Calendar } from 'primereact/calendar'
 import { Card } from 'primereact/card'
-import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -45,6 +44,8 @@ import {
   workInstructionsFromApi,
   type FormWorkInstruction,
 } from '../../components/work-instructions/WorkInstructionsTab'
+import type { ColumnRegistryEntry } from '../../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import type { Asset } from '../asset-management/assetTypes'
 import type { WorkType } from '../work-types/WorkTypesAppPage'
 import type { Category } from '../categories/CategoriesAppPage'
@@ -266,7 +267,6 @@ export default function WorkOrdersAppPage() {
   const [assetPickerOpen, setAssetPickerOpen] = useState(false)
   const [selected, setSelected] = useState<WorkOrder | null>(null)
   const [search, setSearch] = useState('')
-  const [flashRowIds, setFlashRowIds] = useState(() => new Set<string>())
   const [dialogTab, setDialogTab] = useState(0)
   const [formWorkInstructions, setFormWorkInstructions] = useState<
     FormWorkInstruction[]
@@ -336,6 +336,170 @@ export default function WorkOrdersAppPage() {
       )
     })
   }, [rows, search, workOrderIdParam, t])
+
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<WorkOrder>[] => {
+    const admin = getStoredUser()?.role === 'admin'
+    const defs: ColumnRegistryEntry<WorkOrder>[] = [
+      { field: 'wo_key', headerKey: 'wo.col_key', sortable: true },
+      { field: 'short_text', headerKey: 'wo.col_short_text', sortable: true },
+    ]
+    if (admin) {
+      defs.push({
+        field: 'site_key',
+        headerKey: 'common.col_site',
+        sortable: true,
+        isSiteReference: true,
+        body: (row) => siteColumnBody(row, t),
+      })
+    }
+    defs.push(
+      {
+        field: 'asset_key',
+        headerKey: 'wo.col_asset',
+        sortable: true,
+        sortField: 'asset_key',
+        body: (row) => `${row.asset_key} ${emDash} ${row.asset_name}`,
+      },
+      {
+        field: 'costcenter_key',
+        headerKey: 'wo.col_cost_center',
+        sortable: true,
+        body: (row) => {
+          const ck = row.costcenter_key ?? ''
+          const cn = row.costcenter_name ?? ''
+          if (!ck && !cn) return emDash
+          return `${ck} ${emDash} ${cn}`.trim()
+        },
+      },
+      {
+        field: 'workgroup_key',
+        headerKey: 'wo.col_workgroup',
+        sortable: true,
+        sortField: 'workgroup_key',
+        body: (row) => {
+          const k = row.workgroup_key?.trim() ?? ''
+          const n = row.workgroup_name?.trim() ?? ''
+          if (!k && !n) return emDash
+          if (k && n) return `${k} ${emDash} ${n}`
+          return k || n
+        },
+      },
+      {
+        field: 'work_plan_key',
+        headerKey: 'wo.field_work_plan',
+        sortable: true,
+        body: (row) => row.work_plan_key ?? emDash,
+      },
+      {
+        field: 'work_type_key',
+        headerKey: 'wo.col_work_type',
+        sortable: true,
+        sortField: 'work_type_key',
+        body: (row) => workTypeColumnBody(row, emDash, workTypes),
+      },
+      {
+        field: 'category_key',
+        headerKey: 'wo.col_category',
+        sortable: true,
+        sortField: 'category_key',
+        body: (row) => {
+          const k = row.category_key?.trim() ?? ''
+          const n = row.category_name?.trim() ?? ''
+          if (!k && !n) return emDash
+          if (k && n) return `${k} ${emDash} ${n}`
+          return k || n
+        },
+      },
+      {
+        field: 'work_instruction_count',
+        headerKey: 'wo.col_assignments',
+        sortable: true,
+        sortField: 'work_instruction_count',
+        body: (row) => (
+          <WorkAssignmentsIcons
+            row={row}
+            t={t}
+            onAssignmentClick={(kind) => {
+              if (kind === 'instructions') {
+                setInstructionViewWoId(row.id)
+                setInstructionViewOpen(true)
+              }
+            }}
+          />
+        ),
+      },
+      {
+        field: 'plan_start',
+        headerKey: 'wo.col_plan_start',
+        sortable: true,
+        type: 'datetime',
+        body: (row) =>
+          row.plan_start ? formatDateTime(row.plan_start) : emDash,
+      },
+      {
+        field: 'plan_end',
+        headerKey: 'wo.col_plan_end',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => (row.plan_end ? formatDateTime(row.plan_end) : emDash),
+      },
+      {
+        field: 'worktime',
+        headerKey: 'wo.col_worktime_h',
+        sortable: true,
+        body: (row) => parseWorktimeNum(row.worktime),
+      },
+      {
+        field: 'status',
+        headerKey: 'wo.col_status',
+        sortable: true,
+        body: (row) => statusBody(row, t),
+      },
+      {
+        field: 'created_at',
+        headerKey: 'common.col_created_at',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.created_at),
+      },
+      {
+        field: 'created_by_login_name',
+        headerKey: 'common.col_created_by',
+        sortable: true,
+        body: (row) => row.created_by_login_name ?? emDash,
+      },
+      {
+        field: 'updated_at',
+        headerKey: 'common.col_updated_at',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.updated_at),
+      },
+      {
+        field: 'updated_by_login_name',
+        headerKey: 'common.col_updated_by',
+        sortable: true,
+        body: (row) => row.updated_by_login_name ?? emDash,
+      },
+    )
+    return defs
+  }, [t, emDash, workTypes])
+
+  const tw = useTableWizard<WorkOrder>({
+    appPath: '/work-orders',
+    columnDefs: tableColumnDefs,
+    largeTableRowCount: filteredRows.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
+
+  const twLp = tw.tableLayoutProps as { className?: string } & Record<
+    string,
+    unknown
+  >
+  const twTableClass = twLp.className
+  const { className: _twClassOmit, ...tableLayoutRest } = twLp
 
   useEffect(() => {
     if (workOrderIdParam && rows.length > 0) {
@@ -440,21 +604,6 @@ export default function WorkOrdersAppPage() {
     void loadWorkgroups()
   }, [loadWorkgroups])
 
-  const queueRowFlash = useCallback((id: string) => {
-    setFlashRowIds((prev) => {
-      const n = new Set(prev)
-      n.add(id)
-      return n
-    })
-    window.setTimeout(() => {
-      setFlashRowIds((prev) => {
-        const n = new Set(prev)
-        n.delete(id)
-        return n
-      })
-    }, 2200)
-  }, [])
-
   useEffect(() => {
     let ws: WebSocket | null = null
     let cancelled = false
@@ -488,7 +637,6 @@ export default function WorkOrdersAppPage() {
             map.set(wo.id, wo)
             return [...map.values()].sort((a, b) => b.wo_key - a.wo_key)
           })
-          queueRowFlash(wo.id)
         } catch {
           /* ignore malformed */
         }
@@ -518,7 +666,7 @@ export default function WorkOrdersAppPage() {
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       ws?.close()
     }
-  }, [queueRowFlash])
+  }, [])
 
   const editingWo = useMemo(
     () =>
@@ -883,16 +1031,21 @@ export default function WorkOrdersAppPage() {
   ]
 
   const workOrdersCardHeader = (
-    <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
-      <span
-        className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-        aria-hidden
-      >
-        <i className="pi pi-file-edit text-xl" />
-      </span>
-      <div className="min-w-0 pt-0">
-        <h1 className="app-card-hero-title">{t('work_orders.title')}</h1>
-        <p className="app-card-hero-desc">{cardSubTitle}</p>
+    <div className="app-card-hero flex align-items-start justify-content-between gap-3 flex-wrap p-4 md:p-5">
+      <div className="flex align-items-start gap-3 min-w-0 flex-1">
+        <span
+          className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+          aria-hidden
+        >
+          <i className="pi pi-file-edit text-xl" />
+        </span>
+        <div className="min-w-0 pt-0">
+          <h1 className="app-card-hero-title">{t('work_orders.title')}</h1>
+          <p className="app-card-hero-desc">{cardSubTitle}</p>
+        </div>
+      </div>
+      <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
       </div>
     </div>
   )
@@ -906,6 +1059,7 @@ export default function WorkOrdersAppPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+      {tw.wizardDialog}
 
       <WorkInstructionViewModal
         visible={instructionViewOpen}
@@ -920,7 +1074,7 @@ export default function WorkOrdersAppPage() {
         onAfterInstructionsChange={() => void loadWorkOrders({ silent: true })}
       />
 
-      <div className="p-4 w-full max-w-none flex flex-column gap-3">
+      <div className="p-4 w-full app-page-mw-none flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}
@@ -973,198 +1127,43 @@ export default function WorkOrdersAppPage() {
               {t('wo.help_intro')}
             </p>
             <div className="w-full overflow-x-auto">
-            <DataTable
-              className="work-orders-table"
-              value={filteredRows}
-              loading={loading}
-              dataKey="id"
-              selection={selected}
-              tableStyle={{ minWidth: '96rem', width: 'max-content' }}
-              onSelectionChange={(e) => setSelected(e.value as WorkOrder | null)}
-              contextMenuSelection={selected ?? undefined}
-              onContextMenuSelectionChange={(e) =>
-                setSelected(e.value as WorkOrder | null)
-              }
-              onContextMenu={(e) => {
-                e.originalEvent.preventDefault()
-                crudContextMenuRef.current?.show(e.originalEvent)
-              }}
-              selectionMode="single"
-              metaKeySelection={false}
-              onRowDoubleClick={(e) => {
-                const row = e.data as WorkOrder
-                setSelected(row)
-                openEdit(row)
-              }}
-              emptyMessage={
-                search.trim()
-                  ? t('work_orders.empty_search')
-                  : t('work_orders.empty')
-              }
-              stripedRows
-              rowClassName={(row) =>
-                flashRowIds.has((row as WorkOrder).id) ? 'wo-row--flash' : ''
-              }
-            >
-              <Column
-                field="wo_key"
-                header={t('wo.col_key')}
-                sortable
-                style={{ minWidth: '5rem' }}
-              />
-              <Column
-                field="short_text"
-                header={t('wo.col_short_text')}
-                sortable
-                style={{ minWidth: '16rem' }}
-              />
-              {isAdmin ? (
-                <Column
-                  field="site_key"
-                  header={t('common.col_site')}
-                  sortable
-                  style={{ minWidth: '17rem' }}
-                  body={(row: WorkOrder) => siteColumnBody(row, t)}
-                />
-              ) : null}
-              <Column
-                header={t('wo.col_asset')}
-                sortable
-                sortField="asset_key"
-                style={{ minWidth: '18rem' }}
-                body={(row: WorkOrder) =>
-                  `${row.asset_key} ${emDash} ${row.asset_name}`
+              <DataTable
+                {...tableLayoutRest}
+                className={['work-orders-table', twTableClass]
+                  .filter(Boolean)
+                  .join(' ')}
+                value={tw.prepareRows(filteredRows)}
+                loading={loading || tw.tableBusy}
+                dataKey="id"
+                selection={selected}
+                tableStyle={{ minWidth: '96rem', width: 'max-content' }}
+                onSelectionChange={(e) =>
+                  setSelected(e.value as WorkOrder | null)
                 }
-              />
-              <Column
-                header={t('wo.col_cost_center')}
-                style={{ minWidth: '12rem' }}
-                body={(row: WorkOrder) => {
-                  const ck = row.costcenter_key ?? ''
-                  const cn = row.costcenter_name ?? ''
-                  if (!ck && !cn) return emDash
-                  return `${ck} ${emDash} ${cn}`.trim()
+                contextMenuSelection={selected ?? undefined}
+                onContextMenuSelectionChange={(e) =>
+                  setSelected(e.value as WorkOrder | null)
+                }
+                onContextMenu={(e) => {
+                  e.originalEvent.preventDefault()
+                  crudContextMenuRef.current?.show(e.originalEvent)
                 }}
-              />
-              <Column
-                header={t('wo.col_workgroup')}
-                sortable
-                sortField="workgroup_key"
-                style={{ minWidth: '12rem' }}
-                body={(row: WorkOrder) => {
-                  const k = row.workgroup_key?.trim() ?? ''
-                  const n = row.workgroup_name?.trim() ?? ''
-                  if (!k && !n) return emDash
-                  if (k && n) return `${k} ${emDash} ${n}`
-                  return k || n
+                selectionMode="single"
+                metaKeySelection={false}
+                onRowDoubleClick={(e) => {
+                  const row = e.data as WorkOrder
+                  setSelected(row)
+                  openEdit(row)
                 }}
-              />
-              <Column
-                field="work_plan_key"
-                header={t('wo.field_work_plan')}
-                sortable
-                style={{ minWidth: '10rem' }}
-                body={(row: WorkOrder) => row.work_plan_key ?? emDash}
-              />
-              <Column
-                header={t('wo.col_work_type')}
-                sortable
-                sortField="work_type_key"
-                style={{ minWidth: '14rem' }}
-                body={(row: WorkOrder) =>
-                  workTypeColumnBody(row, emDash, workTypes)
+                emptyMessage={
+                  search.trim()
+                    ? t('work_orders.empty_search')
+                    : t('work_orders.empty')
                 }
-              />
-              <Column
-                header={t('wo.col_category')}
-                sortable
-                sortField="category_key"
-                style={{ minWidth: '12rem' }}
-                body={(row: WorkOrder) => {
-                  const k = row.category_key?.trim() ?? ''
-                  const n = row.category_name?.trim() ?? ''
-                  if (!k && !n) return emDash
-                  if (k && n) return `${k} ${emDash} ${n}`
-                  return k || n
-                }}
-              />
-              <Column
-                header={t('wo.col_assignments')}
-                style={{ minWidth: '9rem' }}
-                body={(row: WorkOrder) => (
-                  <WorkAssignmentsIcons
-                    row={row}
-                    t={t}
-                    onAssignmentClick={(kind) => {
-                      if (kind === 'instructions') {
-                        setInstructionViewWoId(row.id)
-                        setInstructionViewOpen(true)
-                      }
-                    }}
-                  />
-                )}
-              />
-              <Column
-                field="plan_start"
-                header={t('wo.col_plan_start')}
-                sortable
-                style={{ minWidth: '13rem' }}
-                body={(row: WorkOrder) =>
-                  row.plan_start ? formatDateTime(row.plan_start) : emDash
-                }
-              />
-              <Column
-                field="plan_end"
-                header={t('wo.col_plan_end')}
-                sortable
-                style={{ minWidth: '13rem' }}
-                body={(row: WorkOrder) =>
-                  row.plan_end ? formatDateTime(row.plan_end) : emDash
-                }
-              />
-              <Column
-                field="worktime"
-                header={t('wo.col_worktime_h')}
-                sortable
-                style={{ minWidth: '10.5rem' }}
-                body={(row: WorkOrder) => parseWorktimeNum(row.worktime)}
-              />
-              <Column
-                field="status"
-                header={t('wo.col_status')}
-                sortable
-                style={{ minWidth: '8.5rem' }}
-                body={(row: WorkOrder) => statusBody(row, t)}
-              />
-              <Column
-                field="created_at"
-                header={t('common.col_created_at')}
-                sortable
-                style={{ minWidth: '13.5rem' }}
-                body={(row: WorkOrder) => formatDateTime(row.created_at)}
-              />
-              <Column
-                field="created_by_login_name"
-                header={t('common.col_created_by')}
-                sortable
-                style={{ minWidth: '10rem' }}
-                body={(row: WorkOrder) => row.created_by_login_name ?? emDash}
-              />
-              <Column
-                field="updated_at"
-                header={t('common.col_updated_at')}
-                sortable
-                style={{ minWidth: '13.5rem' }}
-                body={(row: WorkOrder) => formatDateTime(row.updated_at)}
-              />
-              <Column
-                field="updated_by_login_name"
-                header={t('common.col_updated_by')}
-                sortable
-                style={{ minWidth: '10rem' }}
-                body={(row: WorkOrder) => row.updated_by_login_name ?? emDash}
-              />
-            </DataTable>
+                stripedRows
+              >
+                {tw.renderColumns()}
+              </DataTable>
             </div>
           </div>
         </Card>

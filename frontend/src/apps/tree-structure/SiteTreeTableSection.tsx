@@ -363,7 +363,7 @@ function SiteTreeTableSectionInner({
           />
         </div>
       </div>
-      <div className="w-[calc(100%+0.5rem)] md:w-[calc(100%+1rem)] max-w-none -mx-1 md:-mx-2">
+      <div className="w-[calc(100%+0.5rem)] md:w-[calc(100%+1rem)] app-page-mw-none -mx-1 md:-mx-2">
         <VirtualizedAssetTreeTable
           className="app-tree-structure-treetable"
           style={treeTableStyle}

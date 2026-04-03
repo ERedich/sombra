@@ -84,13 +84,6 @@ export const NAV_SECTIONS: NavSection[] = [
     children: [
       { path: '/assets', labelKey: 'nav.asset_management', icon: 'pi pi-box' },
       { path: '/tree-structure', labelKey: 'nav.tree_structure', icon: 'pi pi-list' },
-    ],
-  },
-  {
-    id: 'service',
-    labelKey: 'nav.section_service',
-    icon: 'pi pi-clipboard',
-    children: [
       { path: '/work-orders', labelKey: 'nav.work_orders', icon: 'pi pi-file-edit' },
       {
         path: '/work-planning',

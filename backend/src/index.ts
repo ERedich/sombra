@@ -21,6 +21,7 @@ import sitesRouter from './routes/sites.js'
 import usersRouter from './routes/users.js'
 import workOrdersRouter from './routes/work-orders.js'
 import workPlansRouter, { generatorActorSystem } from './routes/work-plans.js'
+import tableLayoutsRouter from './routes/table-layouts.js'
 import { runWorkPlanGenerator } from './services/workPlanWoGen.js'
 import localesRouter from './routes/locales.js'
 import translationsRouter from './routes/translations.js'
@@ -65,6 +66,7 @@ app.use('/api/user-groups', userGroupsRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/work-orders', workOrdersRouter)
 app.use('/api/work-plans', workPlansRouter)
+app.use('/api/table-layouts', tableLayoutsRouter)
 
 app.get('/api/health', async (_req, res) => {
   try {

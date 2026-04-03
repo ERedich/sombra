@@ -8,7 +8,6 @@ import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Calendar } from 'primereact/calendar'
 import { Card } from 'primereact/card'
-import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -31,6 +30,8 @@ import {
 } from '../../layout/crudContextMenuItems'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
+import type { ColumnRegistryEntry } from '../../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import { AssetPickerSidebarContent } from '../../components/sel-item/AssetPickerSidebarContent'
 import { SelItemField } from '../../components/sel-item/SelItemField'
 import { formatDateTime } from '../../utils/dateTime'
@@ -428,6 +429,95 @@ export default function WorkPlanningAppPage() {
     navigate('/work-planning', { replace: true })
   }, [workPlanIdParam, rows, navigate, openEdit])
 
+  const isAdmin = getStoredUser()?.role === 'admin'
+
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<WorkPlan>[] => {
+    const cols: ColumnRegistryEntry<WorkPlan>[] = []
+    if (isAdmin) {
+      cols.push({
+        field: 'site_key',
+        headerKey: 'common.col_site',
+        sortable: true,
+        isSiteReference: true,
+        type: 'text',
+        body: (row) => siteColumnBody(row, emDash),
+      })
+    }
+    cols.push(
+      { field: 'plan_key', headerKey: 'wp.field_key', sortable: true },
+      { field: 'short_text', headerKey: 'wp.field_short_text', sortable: true },
+      {
+        field: 'category_key',
+        headerKey: 'wp.col_category',
+        sortable: true,
+        sortField: 'category_key',
+        body: (row) => {
+          const k = row.category_key?.trim() ?? ''
+          const n = row.category_name?.trim() ?? ''
+          if (!k && !n) return emDash
+          if (k && n) return `${k} ${emDash} ${n}`
+          return k || n
+        },
+      },
+      {
+        field: 'work_instruction_count',
+        headerKey: 'wo.col_assignments',
+        sortable: false,
+        body: (row) => (
+          <WorkAssignmentsIcons
+            row={row}
+            t={t}
+            onAssignmentClick={(kind) => {
+              if (kind === 'instructions') {
+                setInstructionViewPlanId(row.id)
+                setInstructionViewOpen(true)
+              }
+            }}
+          />
+        ),
+      },
+      {
+        field: 'asset_key',
+        headerKey: 'wp.field_asset',
+        sortable: true,
+        sortField: 'asset_key',
+        body: (row) => `${row.asset_key} ${emDash} ${row.asset_name}`,
+      },
+      {
+        field: 'next_due_at',
+        headerKey: 'wp.field_next_due',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.next_due_at),
+      },
+      {
+        field: 'interval_count',
+        headerKey: 'wp.field_interval',
+        sortable: true,
+      },
+      {
+        field: 'interval_time_type',
+        headerKey: 'wp.field_interval_type',
+        sortable: true,
+      },
+      {
+        field: 'duration_hours',
+        headerKey: 'wp.field_duration_hours',
+        sortable: true,
+      },
+    )
+    return cols
+  }, [emDash, isAdmin, t])
+
+  const tw = useTableWizard<WorkPlan>({
+    appPath: '/work-planning',
+    columnDefs: tableColumnDefs,
+    largeTableRowCount: filteredRows.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
+
   async function saveWorkPlan() {
     const planKey = formPlanKey.trim()
     const shortText = formShortText.trim()
@@ -599,7 +689,6 @@ export default function WorkPlanningAppPage() {
     }
   }
 
-  const isAdmin = getStoredUser()?.role === 'admin'
   const auditResourceIdForMenu = selected?.id ?? ''
 
   const crudContextMenuItems = buildCrudContextMenuModel(
@@ -646,19 +735,22 @@ export default function WorkPlanningAppPage() {
           <p className="app-card-hero-desc">{t('wp.subtitle')}</p>
         </div>
       </div>
-      <div
-        className="flex flex-column align-items-end gap-1 flex-shrink-0 ml-auto"
-        title={t('wp.cron_debug_hint')}
-      >
-        <span className="text-xs text-color-secondary uppercase">
-          {t('wp.cron_debug_label')}
-        </span>
-        <span
-          className="font-mono text-xl font-semibold tabular-nums"
-          aria-live="polite"
+      <div className="flex align-items-start gap-3 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
+        <div
+          className="flex flex-column align-items-end gap-1"
+          title={t('wp.cron_debug_hint')}
         >
-          {cronCountdownText}
-        </span>
+          <span className="text-xs text-color-secondary uppercase">
+            {t('wp.cron_debug_label')}
+          </span>
+          <span
+            className="font-mono text-xl font-semibold tabular-nums"
+            aria-live="polite"
+          >
+            {cronCountdownText}
+          </span>
+        </div>
       </div>
     </div>
   )
@@ -672,6 +764,7 @@ export default function WorkPlanningAppPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+      {tw.wizardDialog}
 
       <WorkInstructionViewModal
         visible={instructionViewOpen}
@@ -685,7 +778,7 @@ export default function WorkPlanningAppPage() {
         reportError={showError}
       />
 
-      <div className="p-4 w-full max-w-none flex flex-column gap-3">
+      <div className="p-4 w-full app-page-mw-none flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}
@@ -727,26 +820,28 @@ export default function WorkPlanningAppPage() {
                   outlined
                 />
               </div>
-              <IconField
-                iconPosition="left"
-                className="app-crud-toolbar-search flex-shrink-0 ml-auto"
-                style={{ width: 'min(20rem, 100%)' }}
-              >
-                <InputIcon className="pi pi-search" />
-                <InputText
-                  ref={toolbarSearchRef}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={t('common.search_ellipsis')}
-                  aria-label={t('wp.search_aria')}
-                  className="w-full"
+              <div className="flex align-items-center gap-2 flex-wrap ml-auto">
+                <IconField
+                  iconPosition="left"
+                  className="app-crud-toolbar-search flex-shrink-0"
+                  style={{ width: 'min(20rem, 100%)' }}
+                >
+                  <InputIcon className="pi pi-search" />
+                  <InputText
+                    ref={toolbarSearchRef}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder={t('common.search_ellipsis')}
+                    aria-label={t('wp.search_aria')}
+                    className="w-full"
                 />
               </IconField>
+              </div>
             </div>
             <div className="w-full overflow-x-auto">
               <DataTable
-                value={filteredRows}
-                loading={loading}
+                value={tw.prepareRows(filteredRows)}
+                loading={loading || tw.tableBusy}
                 dataKey="id"
                 selection={selected}
                 tableStyle={{ minWidth: '80rem', width: 'max-content' }}
@@ -772,91 +867,9 @@ export default function WorkPlanningAppPage() {
                   search.trim() ? t('wp.empty_search') : t('wp.empty')
                 }
                 stripedRows
+                {...tw.tableLayoutProps}
               >
-                {isAdmin ? (
-                  <Column
-                    field="site_key"
-                    header={t('common.col_site')}
-                    sortable
-                    style={{ minWidth: '17rem' }}
-                    body={(row: WorkPlan) => siteColumnBody(row, emDash)}
-                  />
-                ) : null}
-                <Column
-                  field="plan_key"
-                  header={t('wp.field_key')}
-                  sortable
-                  style={{ minWidth: '10rem' }}
-                />
-                <Column
-                  field="short_text"
-                  header={t('wp.field_short_text')}
-                  sortable
-                  style={{ minWidth: '14rem' }}
-                />
-                <Column
-                  header={t('wp.col_category')}
-                  sortable
-                  sortField="category_key"
-                  style={{ minWidth: '12rem' }}
-                  body={(row: WorkPlan) => {
-                    const k = row.category_key?.trim() ?? ''
-                    const n = row.category_name?.trim() ?? ''
-                    if (!k && !n) return emDash
-                    if (k && n) return `${k} ${emDash} ${n}`
-                    return k || n
-                  }}
-                />
-                <Column
-                  header={t('wo.col_assignments')}
-                  style={{ minWidth: '9rem' }}
-                  body={(row: WorkPlan) => (
-                    <WorkAssignmentsIcons
-                      row={row}
-                      t={t}
-                      onAssignmentClick={(kind) => {
-                        if (kind === 'instructions') {
-                          setInstructionViewPlanId(row.id)
-                          setInstructionViewOpen(true)
-                        }
-                      }}
-                    />
-                  )}
-                />
-                <Column
-                  header={t('wp.field_asset')}
-                  sortable
-                  sortField="asset_key"
-                  style={{ minWidth: '16rem' }}
-                  body={(row: WorkPlan) =>
-                    `${row.asset_key} ${emDash} ${row.asset_name}`
-                  }
-                />
-                <Column
-                  field="next_due_at"
-                  header={t('wp.field_next_due')}
-                  sortable
-                  style={{ minWidth: '13rem' }}
-                  body={(row: WorkPlan) => formatDateTime(row.next_due_at)}
-                />
-                <Column
-                  field="interval_count"
-                  header={t('wp.field_interval')}
-                  sortable
-                  style={{ minWidth: '8rem' }}
-                />
-                <Column
-                  field="interval_time_type"
-                  header={t('wp.field_interval_type')}
-                  sortable
-                  style={{ minWidth: '8rem' }}
-                />
-                <Column
-                  field="duration_hours"
-                  header={t('wp.field_duration_hours')}
-                  sortable
-                  style={{ minWidth: '9rem' }}
-                />
+                {tw.renderColumns()}
               </DataTable>
             </div>
           </div>

@@ -330,7 +330,7 @@ export default function TreeStructureAppPage() {
         onHide={() => setContextMenuAssetId(null)}
         {...CRUD_CONTEXT_MENU_PROPS}
       />
-      <div className="p-4 max-w-screen-lg mx-auto flex flex-column gap-3">
+      <div className="p-4 app-page-mw-lg flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}

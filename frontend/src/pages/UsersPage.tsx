@@ -5,7 +5,6 @@ import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Card } from 'primereact/card'
 import { Checkbox } from 'primereact/checkbox'
-import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -28,6 +27,8 @@ import {
   rowAuditSnapshot,
 } from '../layout/crudContextMenuItems'
 import { useRegisterAppToolbarSearch } from '../layout/AppToolbarSearchFocus'
+import type { ColumnRegistryEntry } from '../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../table-wizard'
 import { formatDateTime } from '../utils/dateTime'
 import { isValidEmailFormat } from '../utils/email'
 import type { Site } from './SitesPage'
@@ -488,44 +489,112 @@ export default function UsersPage() {
     },
   )
 
-  const workingSiteBody = (row: AppUser) => {
-    if (row.working_site_name && row.working_site_key) {
-      const colour =
-        typeof row.working_site_colour === 'string' &&
-        row.working_site_colour.trim() !== ''
-          ? row.working_site_colour.trim()
-          : '#94a3b8'
-      return (
-        <div className="flex align-items-center gap-2">
-          <span
-            className="border-round border-1 border-300 flex-shrink-0"
-            style={{
-              width: '1.25rem',
-              height: '1.25rem',
-              backgroundColor: colour,
-            }}
-            title={colour}
-          />
-          <span className="text-sm">
-            {row.working_site_name} ({row.working_site_key})
-          </span>
-        </div>
-      )
-    }
-    return emDash
-  }
+  const workingSiteBody = useCallback(
+    (row: AppUser) => {
+      if (row.working_site_name && row.working_site_key) {
+        const colour =
+          typeof row.working_site_colour === 'string' &&
+          row.working_site_colour.trim() !== ''
+            ? row.working_site_colour.trim()
+            : '#94a3b8'
+        return (
+          <div className="flex align-items-center gap-2">
+            <span
+              className="border-round border-1 border-300 flex-shrink-0"
+              style={{
+                width: '1.25rem',
+                height: '1.25rem',
+                backgroundColor: colour,
+              }}
+              title={colour}
+            />
+            <span className="text-sm">
+              {row.working_site_name} ({row.working_site_key})
+            </span>
+          </div>
+        )
+      }
+      return emDash
+    },
+    [emDash],
+  )
+
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<AppUser>[] => {
+    return [
+      {
+        field: 'login_name',
+        headerKey: 'common.col_login_name',
+        sortable: true,
+      },
+      { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'email',
+        headerKey: 'common.col_email',
+        sortable: true,
+        body: (row) => row.email ?? emDash,
+      },
+      { field: 'role', headerKey: 'common.col_role', sortable: true },
+      {
+        field: 'working_site_name',
+        sortField: 'working_site_name',
+        headerKey: 'common.col_working_site',
+        sortable: true,
+        body: workingSiteBody,
+      },
+      {
+        field: 'created_by_login_name',
+        headerKey: 'common.col_created_by',
+        sortable: true,
+        body: (row) => row.created_by_login_name ?? emDash,
+      },
+      {
+        field: 'updated_by_login_name',
+        headerKey: 'common.col_updated_by',
+        sortable: true,
+        body: (row) => row.updated_by_login_name ?? emDash,
+      },
+      {
+        field: 'created_at',
+        headerKey: 'common.col_created',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.created_at),
+      },
+      {
+        field: 'updated_at',
+        headerKey: 'common.col_updated',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.updated_at),
+      },
+    ]
+  }, [emDash, workingSiteBody])
+
+  const tw = useTableWizard<AppUser>({
+    appPath: '/users',
+    columnDefs: tableColumnDefs,
+    largeTableRowCount: filteredUsers.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
 
   const usersCardHeader = (
-    <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
-      <span
-        className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-        aria-hidden
-      >
-        <i className="pi pi-user text-xl" />
-      </span>
-      <div className="min-w-0 pt-0">
-        <h1 className="app-card-hero-title">{t('users.title')}</h1>
-        <p className="app-card-hero-desc">{usersCardSubtitle}</p>
+    <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">
+      <div className="flex align-items-start gap-3 min-w-0 flex-1">
+        <span
+          className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+          aria-hidden
+        >
+          <i className="pi pi-user text-xl" />
+        </span>
+        <div className="min-w-0 pt-0">
+          <h1 className="app-card-hero-title">{t('users.title')}</h1>
+          <p className="app-card-hero-desc">{usersCardSubtitle}</p>
+        </div>
+      </div>
+      <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
       </div>
     </div>
   )
@@ -539,8 +608,9 @@ export default function UsersPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+      {tw.wizardDialog}
 
-      <div className="p-4 max-w-screen-xl mx-auto flex flex-column gap-3">
+      <div className="p-4 app-page-mw-xl flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}
@@ -587,28 +657,30 @@ export default function UsersPage() {
                 />
               ) : null}
             </div>
-            <IconField
-              iconPosition="left"
-              className="app-crud-toolbar-search flex-shrink-0 ml-auto"
-              style={{ width: 'min(20rem, 100%)' }}
-            >
-              <InputIcon className="pi pi-search" />
-              <InputText
-                ref={toolbarSearchRef}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t('users.search_placeholder')}
-                aria-label={t('users.search_aria')}
-                className="w-full"
-              />
-            </IconField>
+            <div className="flex align-items-center gap-2 flex-wrap ml-auto">
+              <IconField
+                iconPosition="left"
+                className="app-crud-toolbar-search flex-shrink-0"
+                style={{ width: 'min(20rem, 100%)' }}
+              >
+                <InputIcon className="pi pi-search" />
+                <InputText
+                  ref={toolbarSearchRef}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={t('users.search_placeholder')}
+                  aria-label={t('users.search_aria')}
+                  className="w-full"
+                />
+              </IconField>
+            </div>
           </div>
           <p className="text-sm text-color-secondary mt-0 mb-3">
             {t('users.help_full')}
           </p>
           <DataTable
-            value={filteredUsers}
-            loading={loading}
+            value={tw.prepareRows(filteredUsers)}
+            loading={loading || tw.tableBusy}
             dataKey="id"
             selection={selectedUser}
             onSelectionChange={(e) => setSelectedUser(e.value as AppUser | null)}
@@ -631,50 +703,9 @@ export default function UsersPage() {
               search.trim() ? t('users.empty_search') : t('users.empty')
             }
             stripedRows
+            {...tw.tableLayoutProps}
           >
-            <Column
-              field="login_name"
-              header={t('common.col_login_name')}
-              sortable
-            />
-            <Column field="name" header={t('common.col_name')} sortable />
-            <Column
-              field="email"
-              header={t('common.col_email')}
-              sortable
-              body={(row: AppUser) => row.email ?? emDash}
-            />
-            <Column field="role" header={t('common.col_role')} sortable />
-            <Column
-              header={t('common.col_working_site')}
-              sortable
-              sortField="working_site_name"
-              body={workingSiteBody}
-            />
-            <Column
-              field="created_by_login_name"
-              header={t('common.col_created_by')}
-              sortable
-              body={(row: AppUser) => row.created_by_login_name ?? emDash}
-            />
-            <Column
-              field="updated_by_login_name"
-              header={t('common.col_updated_by')}
-              sortable
-              body={(row: AppUser) => row.updated_by_login_name ?? emDash}
-            />
-            <Column
-              field="created_at"
-              header={t('common.col_created')}
-              sortable
-              body={(row: AppUser) => formatDateTime(row.created_at)}
-            />
-            <Column
-              field="updated_at"
-              header={t('common.col_updated')}
-              sortable
-              body={(row: AppUser) => formatDateTime(row.updated_at)}
-            />
+            {tw.renderColumns()}
           </DataTable>
           </div>
         </Card>

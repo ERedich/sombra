@@ -8,7 +8,6 @@ import { useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Card } from 'primereact/card'
-import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -26,12 +25,16 @@ import {
 } from '../../layout/crudContextMenuItems'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
+import type { ColumnRegistryEntry } from '../../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import type { TemplateEntity } from './types'
 import {
   keyTakenByOther,
   loadTemplateEntities,
   persistForWorkingSite,
 } from './temporalStorage'
+
+type TemplateRow = TemplateEntity & { site_label: string }
 
 export default function TemplateAppPage() {
   const { t } = useTranslation()
@@ -56,6 +59,41 @@ export default function TemplateAppPage() {
         s.key.toLowerCase().includes(q) || s.name.toLowerCase().includes(q),
     )
   }, [rows, search])
+
+  const enrichedRows = useMemo((): TemplateRow[] => {
+    const u = getStoredUser()
+    const map = new Map<string, string>()
+    for (const s of u?.selectable_working_sites ?? []) {
+      map.set(s.id, `${s.key} — ${s.name}`)
+    }
+    return filteredRows.map((r) => ({
+      ...r,
+      site_label: map.get(r.site_id) ?? r.site_id.slice(0, 8),
+    }))
+  }, [filteredRows])
+
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<TemplateRow>[] => {
+    return [
+      { field: 'key', headerKey: 'common.col_key', sortable: true },
+      { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'site_label',
+        headerKey: 'common.col_site',
+        sortable: true,
+        isSiteReference: true,
+        type: 'text',
+      },
+    ]
+  }, [])
+
+  const tw = useTableWizard<TemplateRow>({
+    appPath: '/template-app',
+    columnDefs: tableColumnDefs,
+    largeTableRowCount: enrichedRows.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
 
   useEffect(() => {
     setSelected((cur) => {
@@ -226,16 +264,21 @@ export default function TemplateAppPage() {
     : t('template.subtitle_no_ws')
 
   const templateCardHeader = (
-    <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
-      <span
-        className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-        aria-hidden
-      >
-        <i className="pi pi-th-large text-xl" />
-      </span>
-      <div className="min-w-0 pt-0">
-        <h1 className="app-card-hero-title">{t('template.title')}</h1>
-        <p className="app-card-hero-desc">{templateCardSubtitle}</p>
+    <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">
+      <div className="flex align-items-start gap-3 min-w-0 flex-1">
+        <span
+          className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+          aria-hidden
+        >
+          <i className="pi pi-th-large text-xl" />
+        </span>
+        <div className="min-w-0 pt-0">
+          <h1 className="app-card-hero-title">{t('template.title')}</h1>
+          <p className="app-card-hero-desc">{templateCardSubtitle}</p>
+        </div>
+      </div>
+      <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
       </div>
     </div>
   )
@@ -249,8 +292,9 @@ export default function TemplateAppPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+      {tw.wizardDialog}
 
-      <div className="p-4 max-w-screen-lg mx-auto flex flex-column gap-3">
+      <div className="p-4 app-page-mw-lg flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}
@@ -281,28 +325,30 @@ export default function TemplateAppPage() {
                 onClick={() => selected && confirmDelete(selected)}
               />
             </ButtonGroup>
-            <IconField
-              iconPosition="left"
-              className="app-crud-toolbar-search flex-shrink-0 ml-auto"
-              style={{ width: 'min(20rem, 100%)' }}
-            >
-              <InputIcon className="pi pi-search" />
-              <InputText
-                ref={toolbarSearchRef}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t('common.search_ellipsis')}
-                aria-label={t('template.search_aria')}
-                className="w-full"
-              />
-            </IconField>
+            <div className="flex align-items-center gap-2 flex-wrap ml-auto">
+              <IconField
+                iconPosition="left"
+                className="app-crud-toolbar-search flex-shrink-0"
+                style={{ width: 'min(20rem, 100%)' }}
+              >
+                <InputIcon className="pi pi-search" />
+                <InputText
+                  ref={toolbarSearchRef}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={t('common.search_ellipsis')}
+                  aria-label={t('template.search_aria')}
+                  className="w-full"
+                />
+              </IconField>
+            </div>
           </div>
           <p className="text-sm text-color-secondary mt-0 mb-3">
             {t('template.help_tab_session')}
           </p>
           <DataTable
-            value={filteredRows}
-            loading={loading}
+            value={tw.prepareRows(enrichedRows)}
+            loading={loading || tw.tableBusy}
             dataKey="id"
             selection={selected}
             onSelectionChange={(e) =>
@@ -319,7 +365,7 @@ export default function TemplateAppPage() {
             selectionMode="single"
             metaKeySelection={false}
             onRowDoubleClick={(e) => {
-              const row = e.data as TemplateEntity
+              const row = e.data as TemplateRow
               setSelected(row)
               openEdit(row)
             }}
@@ -331,9 +377,9 @@ export default function TemplateAppPage() {
                   : t('template.empty_rows')
             }
             stripedRows
+            {...tw.tableLayoutProps}
           >
-            <Column field="key" header={t('common.col_key')} sortable />
-            <Column field="name" header={t('common.col_name')} sortable />
+            {tw.renderColumns()}
           </DataTable>
           </div>
         </Card>

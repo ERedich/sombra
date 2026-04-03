@@ -5,7 +5,6 @@ import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Card } from 'primereact/card'
 import { ColorPicker } from 'primereact/colorpicker'
-import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -24,6 +23,8 @@ import {
   rowAuditSnapshot,
 } from '../layout/crudContextMenuItems'
 import { useRegisterAppToolbarSearch } from '../layout/AppToolbarSearchFocus'
+import type { ColumnRegistryEntry } from '../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../table-wizard'
 import { formatDateTime } from '../utils/dateTime'
 
 /** App layout baseline for CRUD list screens — see `apps/template-app/TemplateAppPage.tsx`. */
@@ -277,7 +278,7 @@ export default function SitesPage() {
     },
   )
 
-  const colourBody = (row: Site) => (
+  const colourBody = useCallback((row: Site) => (
     <div className="flex align-items-center gap-2">
       <span
         className="border-round border-1 border-300 flex-shrink-0"
@@ -290,23 +291,77 @@ export default function SitesPage() {
       />
       <span className="text-sm font-mono">{row.colour}</span>
     </div>
-  )
+  ), [])
+
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<Site>[] => {
+    const em = t('common.em_dash')
+    return [
+      { field: 'key', headerKey: 'common.col_key', sortable: true },
+      { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'colour',
+        headerKey: 'common.col_colour',
+        sortable: true,
+        body: (row) => colourBody(row),
+      },
+      {
+        field: 'created_by_login_name',
+        headerKey: 'common.col_created_by',
+        sortable: true,
+        body: (row) => row.created_by_login_name ?? em,
+      },
+      {
+        field: 'updated_by_login_name',
+        headerKey: 'common.col_updated_by',
+        sortable: true,
+        body: (row) => row.updated_by_login_name ?? em,
+      },
+      {
+        field: 'created_at',
+        headerKey: 'common.col_created',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.created_at),
+      },
+      {
+        field: 'updated_at',
+        headerKey: 'common.col_updated',
+        sortable: true,
+        type: 'datetime',
+        body: (row) => formatDateTime(row.updated_at),
+      },
+    ]
+  }, [t, colourBody])
+
+  const tw = useTableWizard<Site>({
+    appPath: '/sites',
+    columnDefs: tableColumnDefs,
+    largeTableRowCount: filteredSites.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
 
   const sitesCardSubtitle = siteIdParam
     ? t('sites.subtitle_filtered')
     : t('sites.subtitle')
 
   const sitesCardHeader = (
-    <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
-      <span
-        className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-        aria-hidden
-      >
-        <i className="pi pi-building text-xl" />
-      </span>
-      <div className="min-w-0 pt-0">
-        <h1 className="app-card-hero-title">{t('sites.title')}</h1>
-        <p className="app-card-hero-desc">{sitesCardSubtitle}</p>
+    <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">
+      <div className="flex align-items-start gap-3 min-w-0 flex-1">
+        <span
+          className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+          aria-hidden
+        >
+          <i className="pi pi-building text-xl" />
+        </span>
+        <div className="min-w-0 pt-0">
+          <h1 className="app-card-hero-title">{t('sites.title')}</h1>
+          <p className="app-card-hero-desc">{sitesCardSubtitle}</p>
+        </div>
+      </div>
+      <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
       </div>
     </div>
   )
@@ -320,8 +375,9 @@ export default function SitesPage() {
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       <ConfirmDialog dismissableMask />
+      {tw.wizardDialog}
 
-      <div className="p-4 max-w-screen-lg mx-auto flex flex-column gap-3">
+      <div className="p-4 app-page-mw-lg flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}
@@ -368,28 +424,30 @@ export default function SitesPage() {
                 />
               ) : null}
             </div>
-            <IconField
-              iconPosition="left"
-              className="app-crud-toolbar-search flex-shrink-0 ml-auto"
-              style={{ width: 'min(20rem, 100%)' }}
-            >
-              <InputIcon className="pi pi-search" />
-              <InputText
-                ref={toolbarSearchRef}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={t('sites.search_placeholder')}
-                aria-label={t('sites.search_aria')}
-                className="w-full"
-              />
-            </IconField>
+            <div className="flex align-items-center gap-2 flex-wrap ml-auto">
+              <IconField
+                iconPosition="left"
+                className="app-crud-toolbar-search flex-shrink-0"
+                style={{ width: 'min(20rem, 100%)' }}
+              >
+                <InputIcon className="pi pi-search" />
+                <InputText
+                  ref={toolbarSearchRef}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={t('sites.search_placeholder')}
+                  aria-label={t('sites.search_aria')}
+                  className="w-full"
+                />
+              </IconField>
+            </div>
           </div>
           <p className="text-sm text-color-secondary mt-0 mb-3">
             {t('sites.help')}
           </p>
           <DataTable
-            value={filteredSites}
-            loading={loading}
+            value={tw.prepareRows(filteredSites)}
+            loading={loading || tw.tableBusy}
             dataKey="id"
             selection={selectedSite}
             onSelectionChange={(e) => setSelectedSite(e.value as Site | null)}
@@ -414,43 +472,9 @@ export default function SitesPage() {
                 : t('sites.empty')
             }
             stripedRows
+            {...tw.tableLayoutProps}
           >
-            <Column field="key" header={t('common.col_key')} sortable />
-            <Column field="name" header={t('common.col_name')} sortable />
-            <Column
-              field="colour"
-              header={t('common.col_colour')}
-              body={colourBody}
-              sortable
-            />
-            <Column
-              field="created_by_login_name"
-              header={t('common.col_created_by')}
-              sortable
-              body={(row: Site) =>
-                row.created_by_login_name ?? t('common.em_dash')
-              }
-            />
-            <Column
-              field="updated_by_login_name"
-              header={t('common.col_updated_by')}
-              sortable
-              body={(row: Site) =>
-                row.updated_by_login_name ?? t('common.em_dash')
-              }
-            />
-            <Column
-              field="created_at"
-              header={t('common.col_created')}
-              sortable
-              body={(row: Site) => formatDateTime(row.created_at)}
-            />
-            <Column
-              field="updated_at"
-              header={t('common.col_updated')}
-              sortable
-              body={(row: Site) => formatDateTime(row.updated_at)}
-            />
+            {tw.renderColumns()}
           </DataTable>
           </div>
         </Card>

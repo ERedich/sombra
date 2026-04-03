@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from 'primereact/button'
 import { Card } from 'primereact/card'
-import { Column } from 'primereact/column'
 import { DataTable } from 'primereact/datatable'
 import { Dialog } from 'primereact/dialog'
 import { InputText } from 'primereact/inputtext'
@@ -13,6 +12,8 @@ import { Toast } from 'primereact/toast'
 import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { AppShell } from '../../layout/AppShell'
+import type { ColumnRegistryEntry } from '../../table-wizard'
+import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import { formatDateTime } from '../../utils/dateTime'
 
 export type AuditEntry = {
@@ -214,6 +215,105 @@ export default function AuditLogAppPage() {
     void load()
   }, [load])
 
+  const occurredBody = useCallback((row: AuditEntry) => {
+    const d = new Date(row.occurred_at)
+    return (
+      <span className="text-sm white-space-nowrap" title={row.occurred_at}>
+        {Number.isNaN(d.getTime())
+          ? row.occurred_at
+          : formatDateTime(row.occurred_at)}
+      </span>
+    )
+  }, [])
+
+  const operationBody = useCallback((row: AuditEntry) => {
+    return (
+      <Tag
+        value={row.operation.toUpperCase()}
+        severity={operationTagSeverity(row.operation)}
+        className="text-xs font-semibold"
+      />
+    )
+  }, [])
+
+  const resourceIdBody = useCallback(
+    (row: AuditEntry) => (
+      <span className="font-mono text-sm">
+        {row.resource_id ?? emDash}
+        {row.resource_id && row.resource_id_label ? (
+          <span className="text-color-secondary">
+            {' '}
+            [{row.resource_id_label}]
+          </span>
+        ) : null}
+      </span>
+    ),
+    [emDash],
+  )
+
+  const pathBody = useCallback(
+    (row: AuditEntry) => (
+      <span className="text-sm text-color-secondary">{row.path}</span>
+    ),
+    [],
+  )
+
+  const tableColumnDefs = useMemo((): ColumnRegistryEntry<AuditEntry>[] => {
+    return [
+      {
+        field: 'occurred_at',
+        headerKey: 'audit_log.col_when',
+        sortable: true,
+        type: 'datetime',
+        body: occurredBody,
+      },
+      {
+        field: 'operation',
+        headerKey: 'audit_log.col_operation',
+        sortable: true,
+        body: operationBody,
+      },
+      {
+        field: 'resource_type',
+        headerKey: 'audit_log.col_resource',
+        sortable: true,
+      },
+      {
+        field: 'resource_id',
+        headerKey: 'audit_log.col_resource_id',
+        sortable: false,
+        body: resourceIdBody,
+      },
+      { field: 'actor_name', headerKey: 'audit_log.col_actor', sortable: true },
+      {
+        field: 'actor_key',
+        headerKey: 'audit_log.col_actor_key',
+        sortable: true,
+      },
+      {
+        field: 'http_method',
+        headerKey: 'audit_log.col_method',
+        sortable: false,
+      },
+      {
+        field: 'path',
+        headerKey: 'audit_log.col_path',
+        sortable: false,
+        body: pathBody,
+      },
+    ]
+  }, [occurredBody, operationBody, resourceIdBody, pathBody])
+
+  const tw = useTableWizard<AuditEntry>({
+    appPath: '/audit-log',
+    columnDefs: tableColumnDefs,
+    rowGroupCollapsible: false,
+    largeTableRowCount: entries.length,
+    layoutToastRef: toast,
+  })
+
+  useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
+
   const onPageChange = (e: PaginatorPageChangeEvent) => {
     setLimit(e.rows)
     setOffset(e.first)
@@ -227,25 +327,6 @@ export default function AuditLogAppPage() {
     setAppliedTo(draftTo)
     setOffset(0)
   }
-
-  const occurredBody = (row: AuditEntry) => {
-    const d = new Date(row.occurred_at)
-    return (
-      <span className="text-sm white-space-nowrap" title={row.occurred_at}>
-        {Number.isNaN(d.getTime())
-          ? row.occurred_at
-          : formatDateTime(row.occurred_at)}
-      </span>
-    )
-  }
-
-  const operationBody = (row: AuditEntry) => (
-    <Tag
-      value={row.operation.toUpperCase()}
-      severity={operationTagSeverity(row.operation)}
-      className="text-xs font-semibold"
-    />
-  )
 
   const auditLogDeniedHeader = (
     <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
@@ -265,16 +346,21 @@ export default function AuditLogAppPage() {
   )
 
   const auditLogCardHeader = (
-    <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
-      <span
-        className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
-        aria-hidden
-      >
-        <i className="pi pi-history text-xl" />
-      </span>
-      <div className="min-w-0 pt-0">
-        <h1 className="app-card-hero-title">{t('audit_log.title')}</h1>
-        <p className="app-card-hero-desc">{t('audit_log.subtitle_hero')}</p>
+    <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">
+      <div className="flex align-items-start gap-3 min-w-0 flex-1">
+        <span
+          className="app-card-hero-icon flex align-items-center justify-content-center flex-shrink-0"
+          aria-hidden
+        >
+          <i className="pi pi-history text-xl" />
+        </span>
+        <div className="min-w-0 pt-0">
+          <h1 className="app-card-hero-title">{t('audit_log.title')}</h1>
+          <p className="app-card-hero-desc">{t('audit_log.subtitle_hero')}</p>
+        </div>
+      </div>
+      <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        {tw.heroTableWizard}
       </div>
     </div>
   )
@@ -282,7 +368,7 @@ export default function AuditLogAppPage() {
   if (!isAdmin) {
     return (
       <AppShell>
-        <div className="p-4 max-w-screen-lg mx-auto flex flex-column gap-3">
+        <div className="p-4 app-page-mw-lg flex flex-column gap-3">
           <Card
             className="shadow-1 border-round-xl overflow-hidden"
             pt={{ header: { className: 'p-0 border-none' } }}
@@ -302,7 +388,8 @@ export default function AuditLogAppPage() {
   return (
     <AppShell>
       <Toast ref={toast} position="top-right" />
-      <div className="p-4 max-w-screen-xl mx-auto flex flex-column gap-3">
+      {tw.wizardDialog}
+      <div className="p-4 app-page-mw-xl flex flex-column gap-3">
         <Card
           className="shadow-1 border-round-xl overflow-hidden"
           pt={{ header: { className: 'p-0 border-none' } }}
@@ -393,8 +480,8 @@ export default function AuditLogAppPage() {
           </div>
 
           <DataTable
-            value={entries}
-            loading={loading}
+            value={tw.prepareRows(entries)}
+            loading={loading || tw.tableBusy}
             dataKey="id"
             selection={detailEntry}
             onSelectionChange={(e) => setDetailEntry(e.value as AuditEntry | null)}
@@ -402,59 +489,9 @@ export default function AuditLogAppPage() {
             metaKeySelection={false}
             emptyMessage="No audit entries match your filters."
             stripedRows
+            {...tw.tableLayoutProps}
           >
-            <Column
-              field="occurred_at"
-              header={t('audit_log.col_when')}
-              body={occurredBody}
-              sortable
-              style={{ minWidth: '10rem' }}
-            />
-            <Column
-              field="operation"
-              header={t('audit_log.col_operation')}
-              body={operationBody}
-              sortable
-              style={{ width: '7.5rem' }}
-            />
-            <Column
-              field="resource_type"
-              header={t('audit_log.col_resource')}
-              sortable
-            />
-            <Column
-              field="resource_id"
-              header={t('audit_log.col_resource_id')}
-              body={(r: AuditEntry) => (
-                <span className="font-mono text-sm">
-                  {r.resource_id ?? emDash}
-                  {r.resource_id && r.resource_id_label ? (
-                    <span className="text-color-secondary">
-                      {' '}
-                      [{r.resource_id_label}]
-                    </span>
-                  ) : null}
-                </span>
-              )}
-            />
-            <Column field="actor_name" header={t('audit_log.col_actor')} sortable />
-            <Column
-              field="actor_key"
-              header={t('audit_log.col_actor_key')}
-              sortable
-            />
-            <Column
-              field="http_method"
-              header={t('audit_log.col_method')}
-              style={{ width: '5rem' }}
-            />
-            <Column
-              field="path"
-              header={t('audit_log.col_path')}
-              body={(r: AuditEntry) => (
-                <span className="text-sm text-color-secondary">{r.path}</span>
-              )}
-            />
+            {tw.renderColumns()}
           </DataTable>
 
           <Paginator
