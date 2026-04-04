@@ -7,6 +7,7 @@ import SitesPage from './pages/SitesPage'
 import UsersPage from './pages/UsersPage'
 import AuditLogAppPage from './apps/audit-log/AuditLogAppPage'
 import WorkOrdersAppPage from './apps/work-orders/WorkOrdersAppPage'
+import MonitoringAppPage from './apps/monitoring/MonitoringAppPage'
 import WorkPlanningAppPage from './apps/work-planning/WorkPlanningAppPage'
 import AssetManagementAppPage from './apps/asset-management/AssetManagementAppPage'
 import TreeStructureAppPage from './apps/tree-structure/TreeStructureAppPage'
@@ -133,6 +134,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <WorkOrdersAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/monitoring"
+        element={
+          <ProtectedRoute>
+            <MonitoringAppPage />
           </ProtectedRoute>
         }
       />

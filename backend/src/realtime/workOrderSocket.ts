@@ -16,17 +16,43 @@ type Client = { ws: WebSocket; scope: UserSiteScope }
 
 const clients = new Set<Client>()
 
+function broadcastWorkOrderEvent(
+  type: 'work_order_created' | 'work_order_updated',
+  row: WorkOrderBroadcastRow,
+): void {
+  const payload = JSON.stringify({
+    type,
+    work_order: row,
+  })
+  for (const c of clients) {
+    if (!canAccessSite(c.scope, row.site_id)) continue
+    if (c.ws.readyState === WebSocket.OPEN) {
+      c.ws.send(payload)
+    }
+  }
+}
+
 /**
  * Broadcast a newly created work order (list row shape) to connected clients
  * who may access that WO's site.
  */
 export function broadcastWorkOrderCreated(row: WorkOrderBroadcastRow): void {
+  broadcastWorkOrderEvent('work_order_created', row)
+}
+
+/** Broadcast updated work order row to permitted clients. */
+export function broadcastWorkOrderUpdated(row: WorkOrderBroadcastRow): void {
+  broadcastWorkOrderEvent('work_order_updated', row)
+}
+
+/** Broadcast work order deletion to permitted clients. */
+export function broadcastWorkOrderDeleted(workOrderId: string, siteId: string): void {
   const payload = JSON.stringify({
-    type: 'work_order_created',
-    work_order: row,
+    type: 'work_order_deleted',
+    work_order_id: workOrderId,
   })
   for (const c of clients) {
-    if (!canAccessSite(c.scope, row.site_id)) continue
+    if (!canAccessSite(c.scope, siteId)) continue
     if (c.ws.readyState === WebSocket.OPEN) {
       c.ws.send(payload)
     }

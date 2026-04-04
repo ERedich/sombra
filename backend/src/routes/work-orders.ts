@@ -8,7 +8,11 @@ import {
   loadUserSiteScope,
 } from '../auth/siteScope.js'
 import { pool } from '../db.js'
-import { broadcastWorkOrderCreated } from '../realtime/workOrderSocket.js'
+import {
+  broadcastWorkOrderCreated,
+  broadcastWorkOrderDeleted,
+  broadcastWorkOrderUpdated,
+} from '../realtime/workOrderSocket.js'
 import { requireAuth } from '../middleware/auth.js'
 import {
   fieldChanges,
@@ -158,6 +162,29 @@ function parseAssetId(body: unknown): string | undefined {
 function parseWorktime(body: unknown): unknown {
   if (typeof body !== 'object' || body === null) return undefined
   return (body as { worktime?: unknown }).worktime
+}
+
+const WORK_ORDER_STATUS_VALUES = [
+  'open',
+  'assigned',
+  'started',
+  'on_hold',
+  'done',
+  'closed',
+] as const
+const WORK_ORDER_STATUSES = new Set<string>(WORK_ORDER_STATUS_VALUES)
+
+/** Omitted field -> undefined; invalid status -> 'invalid'. */
+function parseStatus(body: unknown): string | undefined | 'invalid' {
+  if (typeof body !== 'object' || body === null) return undefined
+  const v = (body as { status?: unknown }).status
+  if (v === undefined) return undefined
+  if (typeof v !== 'string') return 'invalid'
+  const s = v.trim()
+  if (!WORK_ORDER_STATUSES.has(s)) {
+    return 'invalid'
+  }
+  return s
 }
 
 /** Omitted field → undefined; invalid → 'invalid'. */
@@ -653,6 +680,7 @@ router.patch('/:id', async (req, res) => {
   const workTypeIdOpt = parseWorkTypeId(req.body)
   const categoryIdOpt = parseCategoryId(req.body)
   const workgroupIdOpt = parseWorkgroupId(req.body)
+  const statusOpt = parseStatus(req.body)
 
   if (workTypeIdOpt === 'invalid') {
     res.status(400).json({ error: 'work_type_id must be a valid UUID.' })
@@ -662,7 +690,13 @@ router.patch('/:id', async (req, res) => {
     res.status(400).json({ error: 'category_id must be a valid UUID or null.' })
     return
   }
-  if (workgroupIdOpt === undefined || workgroupIdOpt === 'invalid') {
+  if (statusOpt === 'invalid') {
+    res.status(400).json({
+      error: 'status must be one of: open, assigned, started, on_hold, done, closed.',
+    })
+    return
+  }
+  if (workgroupIdOpt === 'invalid') {
     res.status(400).json({ error: 'workgroup_id is required (a valid UUID).' })
     return
   }
@@ -731,9 +765,10 @@ router.patch('/:id', async (req, res) => {
       return
     }
 
+    const nextWorkgroupId = workgroupIdOpt ?? beforeRow.workgroup_id
     const wgPatch = await getWorkgroupForSite(
       client,
-      workgroupIdOpt,
+      nextWorkgroupId,
       beforeRow.site_id,
     )
     if (!wgPatch) {
@@ -777,6 +812,7 @@ router.patch('/:id', async (req, res) => {
     let nextWorktime = beforeRow.worktime
     let nextDuration = Number(beforeRow.duration)
     let nextWorkTypeId = beforeRow.work_type_id
+    let nextStatus = beforeRow.status
 
     if (beforeRow.work_plan_id && pmId) {
       nextWorkTypeId = pmId
@@ -852,6 +888,9 @@ router.patch('/:id', async (req, res) => {
     if (durationOpt !== undefined) {
       nextDuration = durationOpt
     }
+    if (statusOpt !== undefined) {
+      nextStatus = statusOpt
+    }
 
     const nextPlanEnd =
       nextPlanStart === null
@@ -871,9 +910,10 @@ router.patch('/:id', async (req, res) => {
          category_id = $9,
          duration = $10::numeric,
          workgroup_id = $11,
+         status = $12,
          updated_at = now(),
-         updated_by = $12
-       WHERE id = $13
+         updated_by = $13
+       WHERE id = $14
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
                  plan_start, plan_end, worktime, work_type_id, status,
                  work_plan_id, work_plan_key, duration, category_id, workgroup_id,
@@ -889,7 +929,8 @@ router.patch('/:id', async (req, res) => {
         nextWorkTypeId,
         nextCategoryId,
         nextDuration,
-        workgroupIdOpt,
+        nextWorkgroupId,
+        nextStatus,
         auth.id,
         id,
       ],
@@ -928,6 +969,9 @@ router.patch('/:id', async (req, res) => {
 
     const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
     await client.query('COMMIT')
+    broadcastWorkOrderUpdated(
+      workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
+    )
     res.json({
       work_order: workOrder!,
     })
@@ -1214,6 +1258,7 @@ router.delete('/:id', async (req, res) => {
       path: auditPath,
     })
     await client.query('COMMIT')
+    broadcastWorkOrderDeleted(id, beforeRow.site_id)
     res.status(204).send()
   } catch (e) {
     await client.query('ROLLBACK')

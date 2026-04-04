@@ -110,6 +110,15 @@ type WorkOrderResponse = { work_order: WorkOrder }
 type WorkTypesListResponse = { work_types: WorkType[] }
 type CategoriesListResponse = { categories: Category[] }
 type WorkgroupsListResponse = { workgroups: Workgroup[] }
+type WorkOrderWsEventType =
+  | 'work_order_created'
+  | 'work_order_updated'
+  | 'work_order_deleted'
+type WorkOrderWsMessage = {
+  type?: WorkOrderWsEventType | string
+  work_order?: WorkOrder
+  work_order_id?: string
+}
 
 const WO_STATUS_I18N_KEYS: Record<string, string> = {
   open: 'wo.status_open',
@@ -174,6 +183,17 @@ function statusBody(row: WorkOrder, t: TFunction) {
   )
 }
 
+function sortedWorkOrders(rows: WorkOrder[]): WorkOrder[] {
+  return [...rows].sort((a, b) => b.wo_key - a.wo_key)
+}
+
+function nextStatusInFlow(status: string): string | null {
+  const flow = ['open', 'assigned', 'started', 'on_hold', 'done', 'closed']
+  const i = flow.indexOf(status)
+  if (i < 0 || i >= flow.length - 1) return null
+  return flow[i + 1]
+}
+
 function workTypeColumnBody(
   row: WorkOrder,
   dash: string,
@@ -234,7 +254,13 @@ function siteColumnBody(row: WorkOrder, tr: TFunction) {
   )
 }
 
-export default function WorkOrdersAppPage() {
+export type WorkOrdersPageMode = 'work-orders' | 'monitoring'
+
+export function WorkOrdersPage({
+  mode = 'work-orders',
+}: {
+  mode?: WorkOrdersPageMode
+}) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -278,7 +304,12 @@ export default function WorkOrdersAppPage() {
   /** Prevents late GET /work-orders/:id from overwriting instructions after close or another open. */
   const workOrderInstructionsFetchForIdRef = useRef<string | null>(null)
 
+  const isMonitoring = mode === 'monitoring'
+
   const cardSubTitle = useMemo(() => {
+    if (isMonitoring) {
+      return t('monitoring.subtitle')
+    }
     if (workOrderIdParam) {
       return t('work_orders.subtitle_filtered')
     }
@@ -291,7 +322,7 @@ export default function WorkOrdersAppPage() {
       return t('work_orders.subtitle_no_sites')
     }
     return t('work_orders.subtitle_admin')
-  }, [workOrderIdParam, t])
+  }, [isMonitoring, workOrderIdParam, t])
 
   const filteredRows = useMemo(() => {
     let list = rows
@@ -486,7 +517,7 @@ export default function WorkOrdersAppPage() {
   }, [t, emDash, workTypes])
 
   const tw = useTableWizard<WorkOrder>({
-    appPath: '/work-orders',
+    appPath: isMonitoring ? '/monitoring' : '/work-orders',
     columnDefs: tableColumnDefs,
     largeTableRowCount: filteredRows.length,
     layoutToastRef: toast,
@@ -624,19 +655,32 @@ export default function WorkOrdersAppPage() {
       }
       ws.onmessage = (ev) => {
         try {
-          const data = JSON.parse(ev.data as string) as {
-            type?: string
-            work_order?: WorkOrder
-          }
-          if (data.type !== 'work_order_created' || !data.work_order?.id) {
+          const data = JSON.parse(ev.data as string) as WorkOrderWsMessage
+          if (data.type === 'work_order_created' && data.work_order?.id) {
+            const wo = data.work_order
+            setRows((prev) => {
+              const map = new Map(prev.map((w) => [w.id, w]))
+              map.set(wo.id, wo)
+              return sortedWorkOrders([...map.values()])
+            })
             return
           }
-          const wo = data.work_order as WorkOrder
-          setRows((prev) => {
-            const map = new Map(prev.map((w) => [w.id, w]))
-            map.set(wo.id, wo)
-            return [...map.values()].sort((a, b) => b.wo_key - a.wo_key)
-          })
+          if (isMonitoring && data.type === 'work_order_updated' && data.work_order?.id) {
+            const wo = data.work_order
+            setRows((prev) => {
+              const map = new Map(prev.map((w) => [w.id, w]))
+              map.set(wo.id, wo)
+              return sortedWorkOrders([...map.values()])
+            })
+            setSelected((cur) => (cur?.id === wo.id ? wo : cur))
+            return
+          }
+          if (isMonitoring && data.type === 'work_order_deleted') {
+            const deletedId = data.work_order_id?.trim()
+            if (!deletedId) return
+            setRows((prev) => prev.filter((w) => w.id !== deletedId))
+            setSelected((cur) => (cur?.id === deletedId ? null : cur))
+          }
         } catch {
           /* ignore malformed */
         }
@@ -666,7 +710,7 @@ export default function WorkOrdersAppPage() {
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       ws?.close()
     }
-  }, [])
+  }, [isMonitoring])
 
   const editingWo = useMemo(
     () =>
@@ -999,9 +1043,39 @@ export default function WorkOrdersAppPage() {
     }
   }
 
+  async function quickAdvanceStatus(row: WorkOrder) {
+    const nextStatus = nextStatusInFlow(row.status)
+    if (!nextStatus) return
+    try {
+      const data = await apiJson<WorkOrderResponse>(
+        `/api/work-orders/${encodeURIComponent(row.id)}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            status: nextStatus,
+            workgroup_id: row.workgroup_id,
+          }),
+        },
+      )
+      setRows((prev) =>
+        prev.map((w) => (w.id === row.id ? data.work_order : w)),
+      )
+      setSelected((cur) => (cur?.id === row.id ? data.work_order : cur))
+      showSuccess(t('monitoring.quick_status_success'))
+    } catch (e) {
+      if (e instanceof ApiError) {
+        showError(e.message)
+      } else {
+        showError(t('monitoring.quick_status_error'))
+      }
+    }
+  }
+
   const isAdmin = getStoredUser()?.role === 'admin'
 
   const auditResourceIdForMenu = workOrderIdParam || selected?.id || ''
+
+  const canAdvanceStatus = isMonitoring && !!selected && !!nextStatusInFlow(selected.status)
 
   const crudContextMenuItems: MenuItem[] = [
     ...buildCrudContextMenuModel(
@@ -1028,6 +1102,19 @@ export default function WorkOrdersAppPage() {
         },
       },
     ),
+    ...(isMonitoring
+      ? [
+          { separator: true } as MenuItem,
+          {
+            label: t('monitoring.quick_status'),
+            icon: 'pi pi-bolt',
+            disabled: !canAdvanceStatus,
+            command: () => {
+              if (selected) void quickAdvanceStatus(selected)
+            },
+          } as MenuItem,
+        ]
+      : []),
   ]
 
   const workOrdersCardHeader = (
@@ -1040,7 +1127,9 @@ export default function WorkOrdersAppPage() {
           <i className="pi pi-file-edit text-xl" />
         </span>
         <div className="min-w-0 pt-0">
-          <h1 className="app-card-hero-title">{t('work_orders.title')}</h1>
+          <h1 className="app-card-hero-title">
+            {isMonitoring ? t('monitoring.title') : t('work_orders.title')}
+          </h1>
           <p className="app-card-hero-desc">{cardSubTitle}</p>
         </div>
       </div>
@@ -1074,26 +1163,35 @@ export default function WorkOrdersAppPage() {
         onAfterInstructionsChange={() => void loadWorkOrders({ silent: true })}
       />
 
-      <div className="p-4 w-full app-page-mw-none flex flex-column gap-3">
-        <Card
-          className="shadow-1 border-round-xl overflow-hidden"
-          pt={{ header: { className: 'p-0 border-none' } }}
-          header={workOrdersCardHeader}
-        >
-          <div className="px-1 md:px-2">
-            <div className="flex justify-content-between align-items-center gap-3 flex-wrap mb-3 w-full">
-              <div className="flex align-items-center gap-2 flex-wrap">
+      <div
+        className={[
+          'w-full app-page-mw-none flex flex-column',
+          isMonitoring ? 'p-2 h-full min-h-0 gap-2' : 'p-4 gap-3',
+        ].join(' ')}
+      >
+        {isMonitoring ? (
+          <div className="surface-card p-3 flex flex-column gap-3 min-h-0 flex-1">
+            <div className="flex justify-content-between align-items-center gap-3 flex-wrap w-full">
+              <div className="flex align-items-center gap-3 flex-wrap min-w-0">
+                <div className="min-w-0">
+                  <h1 className="text-xl m-0">{t('monitoring.title')}</h1>
+                  <p className="text-sm text-color-secondary m-0 mt-1">
+                    {cardSubTitle}
+                  </p>
+                </div>
                 <ButtonGroup>
                   <Button
                     type="button"
                     label={t('common.create')}
                     icon="pi pi-plus"
+                    size="small"
                     onClick={openCreate}
                   />
                   <Button
                     type="button"
                     label={t('common.edit')}
                     icon="pi pi-pencil"
+                    size="small"
                     disabled={!selected}
                     onClick={() => selected && openEdit(selected)}
                   />
@@ -1102,31 +1200,40 @@ export default function WorkOrdersAppPage() {
                     label={t('common.delete')}
                     icon="pi pi-trash"
                     severity="danger"
+                    size="small"
                     disabled={!selected}
                     onClick={() => selected && confirmDelete(selected)}
                   />
+                  <Button
+                    type="button"
+                    label={t('monitoring.quick_status')}
+                    icon="pi pi-bolt"
+                    size="small"
+                    disabled={!canAdvanceStatus}
+                    onClick={() => selected && void quickAdvanceStatus(selected)}
+                  />
                 </ButtonGroup>
               </div>
-              <IconField
-                iconPosition="left"
-                className="app-crud-toolbar-search flex-shrink-0 ml-auto"
-                style={{ width: 'min(20rem, 100%)' }}
-              >
-                <InputIcon className="pi pi-search" />
-                <InputText
-                  ref={toolbarSearchRef}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={t('common.search_ellipsis')}
-                  aria-label={t('work_orders.search_aria')}
-                  className="w-full"
-                />
-              </IconField>
+              <div className="flex align-items-center gap-2 ml-auto flex-nowrap">
+                <IconField
+                  iconPosition="left"
+                  className="app-crud-toolbar-search flex-shrink-0"
+                  style={{ width: '20rem' }}
+                >
+                  <InputIcon className="pi pi-search" />
+                  <InputText
+                    ref={toolbarSearchRef}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder={t('common.search_ellipsis')}
+                    aria-label={t('monitoring.search_aria')}
+                    className="w-full"
+                  />
+                </IconField>
+                {tw.heroTableWizard}
+              </div>
             </div>
-            <p className="text-sm text-color-secondary mt-0 mb-3">
-              {t('wo.help_intro')}
-            </p>
-            <div className="w-full overflow-x-auto">
+            <div className="w-full overflow-x-auto flex-1 min-h-0">
               <DataTable
                 {...tableLayoutRest}
                 className={['work-orders-table', twTableClass]
@@ -1137,6 +1244,8 @@ export default function WorkOrdersAppPage() {
                 dataKey="id"
                 selection={selected}
                 tableStyle={{ minWidth: '96rem', width: 'max-content' }}
+                scrollable
+                scrollHeight="flex"
                 onSelectionChange={(e) =>
                   setSelected(e.value as WorkOrder | null)
                 }
@@ -1157,8 +1266,8 @@ export default function WorkOrdersAppPage() {
                 }}
                 emptyMessage={
                   search.trim()
-                    ? t('work_orders.empty_search')
-                    : t('work_orders.empty')
+                    ? t('monitoring.empty_search')
+                    : t('monitoring.empty')
                 }
                 stripedRows
               >
@@ -1166,7 +1275,100 @@ export default function WorkOrdersAppPage() {
               </DataTable>
             </div>
           </div>
-        </Card>
+        ) : (
+          <Card
+            className="shadow-1 border-round-xl overflow-hidden"
+            pt={{ header: { className: 'p-0 border-none' } }}
+            header={workOrdersCardHeader}
+          >
+            <div className="px-1 md:px-2">
+              <div className="flex justify-content-between align-items-center gap-3 flex-wrap mb-3 w-full">
+                <div className="flex align-items-center gap-2 flex-wrap">
+                  <ButtonGroup>
+                    <Button
+                      type="button"
+                      label={t('common.create')}
+                      icon="pi pi-plus"
+                      onClick={openCreate}
+                    />
+                    <Button
+                      type="button"
+                      label={t('common.edit')}
+                      icon="pi pi-pencil"
+                      disabled={!selected}
+                      onClick={() => selected && openEdit(selected)}
+                    />
+                    <Button
+                      type="button"
+                      label={t('common.delete')}
+                      icon="pi pi-trash"
+                      severity="danger"
+                      disabled={!selected}
+                      onClick={() => selected && confirmDelete(selected)}
+                    />
+                  </ButtonGroup>
+                </div>
+                <IconField
+                  iconPosition="left"
+                  className="app-crud-toolbar-search flex-shrink-0 ml-auto"
+                  style={{ width: 'min(20rem, 100%)' }}
+                >
+                  <InputIcon className="pi pi-search" />
+                  <InputText
+                    ref={toolbarSearchRef}
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder={t('common.search_ellipsis')}
+                    aria-label={t('work_orders.search_aria')}
+                    className="w-full"
+                  />
+                </IconField>
+              </div>
+              <p className="text-sm text-color-secondary mt-0 mb-3">
+                {t('wo.help_intro')}
+              </p>
+              <div className="w-full overflow-x-auto">
+                <DataTable
+                  {...tableLayoutRest}
+                  className={['work-orders-table', twTableClass]
+                    .filter(Boolean)
+                    .join(' ')}
+                  value={tw.prepareRows(filteredRows)}
+                  loading={loading || tw.tableBusy}
+                  dataKey="id"
+                  selection={selected}
+                  tableStyle={{ minWidth: '96rem', width: 'max-content' }}
+                  onSelectionChange={(e) =>
+                    setSelected(e.value as WorkOrder | null)
+                  }
+                  contextMenuSelection={selected ?? undefined}
+                  onContextMenuSelectionChange={(e) =>
+                    setSelected(e.value as WorkOrder | null)
+                  }
+                  onContextMenu={(e) => {
+                    e.originalEvent.preventDefault()
+                    crudContextMenuRef.current?.show(e.originalEvent)
+                  }}
+                  selectionMode="single"
+                  metaKeySelection={false}
+                  onRowDoubleClick={(e) => {
+                    const row = e.data as WorkOrder
+                    setSelected(row)
+                    openEdit(row)
+                  }}
+                  emptyMessage={
+                    search.trim()
+                      ? t('work_orders.empty_search')
+                      : t('work_orders.empty')
+                  }
+                  stripedRows
+                >
+                  {tw.renderColumns()}
+                </DataTable>
+              </div>
+            </div>
+          </Card>
+        )}
       </div>
 
       <Dialog
@@ -1535,4 +1737,8 @@ export default function WorkOrdersAppPage() {
       </Dialog>
     </AppShell>
   )
+}
+
+export default function WorkOrdersAppPage() {
+  return <WorkOrdersPage mode="work-orders" />
 }

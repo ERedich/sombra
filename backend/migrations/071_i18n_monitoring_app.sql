@@ -1,0 +1,20 @@
+INSERT INTO ui_translations (locale, msg_key, value) VALUES
+  ('en', 'nav.monitoring', 'Monitoring'),
+  ('de', 'nav.monitoring', 'Monitoring'),
+  ('en', 'monitoring.title', 'Monitoring'),
+  ('de', 'monitoring.title', 'Monitoring'),
+  ('en', 'monitoring.subtitle', 'Live view of work orders with real-time updates.'),
+  ('de', 'monitoring.subtitle', 'Live-Ansicht der Arbeitsauftraege mit Echtzeitaktualisierung.'),
+  ('en', 'monitoring.search_aria', 'Search work orders'),
+  ('de', 'monitoring.search_aria', 'Arbeitsauftraege suchen'),
+  ('en', 'monitoring.empty', 'No work orders found.'),
+  ('de', 'monitoring.empty', 'Keine Arbeitsauftraege gefunden.'),
+  ('en', 'monitoring.empty_search', 'No matching work orders found.'),
+  ('de', 'monitoring.empty_search', 'Keine passenden Arbeitsauftraege gefunden.'),
+  ('en', 'monitoring.quick_status', 'Next status'),
+  ('de', 'monitoring.quick_status', 'Naechster Status'),
+  ('en', 'monitoring.quick_status_success', 'Status updated.'),
+  ('de', 'monitoring.quick_status_success', 'Status aktualisiert.'),
+  ('en', 'monitoring.quick_status_error', 'Failed to update status.'),
+  ('de', 'monitoring.quick_status_error', 'Status konnte nicht aktualisiert werden.')
+ON CONFLICT (locale, msg_key) DO UPDATE SET value = EXCLUDED.value;

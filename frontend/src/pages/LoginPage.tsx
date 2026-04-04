@@ -252,11 +252,7 @@ export default function LoginPage() {
     <div className="login-page">
       <div className="login-page__backdrop" aria-hidden />
       <div className="login-page__layout">
-        <div className="login-page__left">
-          <div className="login-page__brand">
-            <h1 className="login-page__brand-title">{t('shell.brand_name')}</h1>
-          </div>
-        </div>
+        <div className="login-page__left" />
         <aside className="login-page__panel">
           <div
             className="login-page__locale"
