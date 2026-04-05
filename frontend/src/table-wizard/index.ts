@@ -1,4 +1,11 @@
-export type { ColumnRegistryEntry, TableSettingsV1 } from './types'
+export type {
+  ColumnRegistryEntry,
+  ColumnSearchConfig,
+  ColumnSearchInputType,
+  ColumnSearchOption,
+  ColumnSearchMatchMode,
+  TableSettingsV1,
+} from './types'
 export { TW_GROUP_FIELD } from './types'
 export { BulkOperationOverlay } from './BulkOperationOverlay'
 export {

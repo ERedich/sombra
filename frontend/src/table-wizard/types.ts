@@ -12,6 +12,28 @@ export type TableSettingsV1 = {
   dateGroupGranularity?: 'none' | 'year' | 'month' | 'iso_week'
 }
 
+export type ColumnSearchInputType =
+  | 'text'
+  | 'number'
+  | 'date'
+  | 'datetime'
+  | 'multiselect'
+export type ColumnSearchMatchMode = 'contains' | 'equals'
+export type ColumnSearchOption = { label: string; value: string }
+
+export type ColumnSearchConfig<T> = {
+  enabled?: boolean
+  inputType?: ColumnSearchInputType
+  matchModes?: ColumnSearchMatchMode[]
+  defaultMatchMode?: ColumnSearchMatchMode
+  options?: ColumnSearchOption[]
+  /**
+   * Optional accessor used by Searchpanel filtering when table rendering does not
+   * map 1:1 to the raw row field.
+   */
+  getSearchValue?: (row: T) => unknown
+}
+
 export type ColumnRegistryEntry<T> = {
   field: string
   headerKey: string
@@ -23,6 +45,9 @@ export type ColumnRegistryEntry<T> = {
   isSiteReference?: boolean
   type?: 'text' | 'date' | 'datetime'
   body?: (row: T) => ReactNode
+  /** Optional CSS class for `<td>` of this column/row. */
+  cellClassName?: (row: T) => string | undefined
+  search?: ColumnSearchConfig<T>
 }
 
 export const TW_GROUP_FIELD = '__twGroup' as const

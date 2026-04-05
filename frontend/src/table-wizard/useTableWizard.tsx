@@ -667,6 +667,11 @@ export function useTableWizard<T extends Record<string, unknown>>({
           style={w ? { width: w } : undefined}
           frozen={frozen}
           alignFrozen={frozen ? ('left' as const) : undefined}
+          bodyClassName={
+            def?.cellClassName
+              ? (rowData) => def.cellClassName?.(rowData as T) ?? ''
+              : undefined
+          }
           body={
             def?.body
               ? (row) => def.body!(row as T)
@@ -978,6 +983,8 @@ export function useTableWizard<T extends Record<string, unknown>>({
     loading,
     /** Initial layout load or deferred large-table layout apply — merge into list `DataTable` loading. */
     tableBusy,
+    activePresetId,
+    ownPresets,
     /** Apply when a shared preset may have changed (linked layouts). */
     reloadLayouts: loadLayouts,
     toastError,
