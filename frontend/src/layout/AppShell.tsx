@@ -6,8 +6,10 @@ import { useTranslation } from 'react-i18next'
 import { PrimeReactContext } from 'primereact/api'
 import { Button } from 'primereact/button'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
+import { Dialog } from 'primereact/dialog'
 import { OverlayPanel } from 'primereact/overlaypanel'
 import { clearAuth, getStoredUser } from '../auth'
+import { useWorkOrderNotifications } from '../notifications/WorkOrderNotificationsContext'
 import {
   HOME_APP,
   getNavSectionsForUser,
@@ -109,6 +111,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation()
   const { changeTheme } = useContext(PrimeReactContext)
   const user = getStoredUser()
+  const notifications = useWorkOrderNotifications()
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const userNavKey = user ? `${user.id}:${user.role}` : ''
   const navSections = useMemo(
     () => getNavSectionsForUser(getStoredUser()),
@@ -279,6 +283,33 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className={shellClass}>
+      <Dialog
+        header={t('notifications.window_title')}
+        visible={notificationsOpen}
+        onHide={() => setNotificationsOpen(false)}
+        style={{ width: 'min(42rem, 96vw)' }}
+        dismissableMask
+      >
+        <div className="flex flex-column gap-2">
+          {notifications.items.length === 0 ? (
+            <p className="m-0 text-sm text-color-secondary">
+              {t('notifications.empty')}
+            </p>
+          ) : (
+            notifications.items.map((n) => (
+              <div
+                key={n.id}
+                className="border-1 surface-border border-round px-3 py-2"
+              >
+                <div className="text-sm">{n.message}</div>
+                <div className="text-xs text-color-secondary mt-1">
+                  {new Date(n.created_at).toLocaleString()}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </Dialog>
       <ConfirmDialog tagKey="logout" dismissableMask />
       <OverlayPanel
         ref={flyoutRef}
@@ -460,7 +491,26 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </span>
               </div>
             ) : null}
-            <div className="flex justify-content-center w-full">
+            <div className="flex justify-content-center w-full gap-2">
+              <Button
+                type="button"
+                icon="pi pi-bell"
+                rounded
+                text
+                severity="secondary"
+                badge={
+                  notifications.unreadCount > 0
+                    ? String(notifications.unreadCount)
+                    : undefined
+                }
+                badgeClassName="p-badge-danger"
+                onClick={() => {
+                  setNotificationsOpen(true)
+                  void notifications.refresh()
+                  void notifications.markVisibleAsRead()
+                }}
+                aria-label={t('notifications.button_aria')}
+              />
               <Button
                 type="button"
                 icon={darkMode ? 'pi pi-sun' : 'pi pi-moon'}

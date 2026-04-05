@@ -11,8 +11,18 @@ type JwtUserClaims = {
 }
 
 type WorkOrderBroadcastRow = Record<string, unknown> & { site_id: string }
+export type WorkOrderNotificationBroadcast = {
+  id: string
+  user_id: string
+  work_order_id: string
+  kind: string
+  message: string
+  payload_json: Record<string, unknown>
+  created_at: Date
+  read_at: Date | null
+}
 
-type Client = { ws: WebSocket; scope: UserSiteScope }
+type Client = { ws: WebSocket; scope: UserSiteScope; userId: string }
 
 const clients = new Set<Client>()
 
@@ -59,6 +69,38 @@ export function broadcastWorkOrderDeleted(workOrderId: string, siteId: string): 
   }
 }
 
+/** Broadcast per-user notification events to matching websocket clients. */
+export function broadcastWorkOrderNotifications(
+  notifications: WorkOrderNotificationBroadcast[],
+): void {
+  if (notifications.length === 0) return
+  for (const n of notifications) {
+    const payload = JSON.stringify({
+      type: 'work_order_notification',
+      notification: {
+        id: n.id,
+        user_id: n.user_id,
+        work_order_id: n.work_order_id,
+        kind: n.kind,
+        message: n.message,
+        payload_json: n.payload_json,
+        created_at:
+          n.created_at instanceof Date ? n.created_at.toISOString() : n.created_at,
+        read_at:
+          n.read_at instanceof Date
+            ? n.read_at.toISOString()
+            : n.read_at,
+      },
+    })
+    for (const c of clients) {
+      if (c.userId !== n.user_id) continue
+      if (c.ws.readyState === WebSocket.OPEN) {
+        c.ws.send(payload)
+      }
+    }
+  }
+}
+
 export function initWorkOrderRealtime(server: Server): void {
   const wss = new WebSocketServer({ server, path: '/api/ws' })
 
@@ -95,7 +137,7 @@ async function handleConnection(ws: WebSocket, req: import('http').IncomingMessa
     return
   }
 
-  const client: Client = { ws, scope }
+  const client: Client = { ws, scope, userId }
   clients.add(client)
   ws.on('close', () => {
     clients.delete(client)

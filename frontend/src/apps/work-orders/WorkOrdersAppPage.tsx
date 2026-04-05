@@ -114,6 +114,13 @@ export type WorkOrder = {
 
 type WorkOrdersListResponse = { work_orders: WorkOrder[] }
 type WorkOrderResponse = { work_order: WorkOrder }
+type WorkOrderSubscriptionsBulkResponse = {
+  ok: boolean
+  action: 'subscribe' | 'unsubscribe'
+  changed_count: number
+  requested_count: number
+}
+type WorkOrderSubscriptionsListResponse = { work_order_ids: string[] }
 type WorkTypesListResponse = { work_types: WorkType[] }
 type CategoriesListResponse = { categories: Category[] }
 type WorkgroupsListResponse = { workgroups: Workgroup[] }
@@ -338,6 +345,9 @@ export function WorkOrdersPage({
   const [workTypes, setWorkTypes] = useState<WorkType[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [workgroups, setWorkgroups] = useState<Workgroup[]>([])
+  const [subscribedWorkOrderIds, setSubscribedWorkOrderIds] = useState<Set<string>>(
+    new Set(),
+  )
   const [pickedAsset, setPickedAsset] = useState<Asset | null>(null)
   const [assetPickerOpen, setAssetPickerOpen] = useState(false)
   const [selected, setSelected] = useState<WorkOrder | null>(null)
@@ -658,12 +668,20 @@ export function WorkOrdersPage({
         sortField: 'work_instruction_count',
         body: (row) => (
           <WorkAssignmentsIcons
-            row={row}
+            row={{
+              ...row,
+              has_notification_assignment: subscribedWorkOrderIds.has(row.id),
+            }}
             t={t}
+            showNotificationIcon
             onAssignmentClick={(kind) => {
               if (kind === 'instructions') {
                 setInstructionViewWoId(row.id)
                 setInstructionViewOpen(true)
+                return
+              }
+              if (kind === 'notification') {
+                toggleRowSubscription(row)
               }
             }}
           />
@@ -778,6 +796,7 @@ export function WorkOrdersPage({
     categories,
     workgroups,
     rows,
+    subscribedWorkOrderIds,
     isMonitoring,
     recentlyChangedFieldsByWorkOrderId,
   ])
@@ -917,6 +936,21 @@ export function WorkOrdersPage({
   useEffect(() => {
     void loadWorkOrders()
   }, [loadWorkOrders])
+
+  const loadSubscriptions = useCallback(async () => {
+    try {
+      const data = await apiJson<WorkOrderSubscriptionsListResponse>(
+        '/api/work-orders/subscriptions',
+      )
+      setSubscribedWorkOrderIds(new Set(data.work_order_ids ?? []))
+    } catch {
+      setSubscribedWorkOrderIds(new Set())
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSubscriptions()
+  }, [loadSubscriptions])
 
   const loadWorkTypes = useCallback(async () => {
     try {
@@ -1361,6 +1395,7 @@ export function WorkOrdersPage({
           return sortedWorkOrders([...map.values()])
         })
         markMonitoringCreatedRow(data.work_order.id)
+        setSelected(data.work_order)
         setDialogOpen(false)
         showSuccess(t('wo.created'))
       }
@@ -1515,11 +1550,104 @@ export function WorkOrdersPage({
 
   const selectedIsDeleting =
     !!selected && recentlyDeletedWorkOrderIds.has(selected.id)
+  const selectedForSubscription = useMemo(
+    () =>
+      (selected ? [selected] : []).filter(
+        (row) => !recentlyDeletedWorkOrderIds.has(row.id),
+      ),
+    [recentlyDeletedWorkOrderIds, selected],
+  )
+  const hasSubscriptionTargets = selectedForSubscription.length > 0
   const canAdvanceStatus =
     isMonitoring &&
     !!selected &&
     !selectedIsDeleting &&
     !!nextStatusInFlow(selected.status)
+
+  async function bulkSubscription(action: 'subscribe' | 'unsubscribe') {
+    if (!hasSubscriptionTargets) return
+    try {
+      const data = await apiJson<WorkOrderSubscriptionsBulkResponse>(
+        '/api/work-orders/subscriptions/bulk',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            action,
+            work_order_ids: selectedForSubscription.map((row) => row.id),
+          }),
+        },
+      )
+      showSuccess(
+        t(
+          action === 'subscribe'
+            ? 'notifications.subscribe_success'
+            : 'notifications.unsubscribe_success',
+          {
+            changed: data.changed_count,
+            requested: data.requested_count,
+          },
+        ),
+      )
+      setSubscribedWorkOrderIds((prev) => {
+        const next = new Set(prev)
+        for (const row of selectedForSubscription) {
+          if (action === 'subscribe') next.add(row.id)
+          else next.delete(row.id)
+        }
+        return next
+      })
+    } catch (e) {
+      if (e instanceof ApiError) {
+        showError(e.message)
+      } else {
+        showError(t('notifications.subscription_error'))
+      }
+    }
+  }
+
+  function toggleRowSubscription(row: WorkOrder) {
+    const action: 'subscribe' | 'unsubscribe' = subscribedWorkOrderIds.has(row.id)
+      ? 'unsubscribe'
+      : 'subscribe'
+    setSelected(row)
+    void (async () => {
+      try {
+        const data = await apiJson<WorkOrderSubscriptionsBulkResponse>(
+          '/api/work-orders/subscriptions/bulk',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              action,
+              work_order_ids: [row.id],
+            }),
+          },
+        )
+        showSuccess(
+          t(
+            action === 'subscribe'
+              ? 'notifications.subscribe_success'
+              : 'notifications.unsubscribe_success',
+            {
+              changed: data.changed_count,
+              requested: data.requested_count,
+            },
+          ),
+        )
+        setSubscribedWorkOrderIds((prev) => {
+          const next = new Set(prev)
+          if (action === 'subscribe') next.add(row.id)
+          else next.delete(row.id)
+          return next
+        })
+      } catch (e) {
+        if (e instanceof ApiError) {
+          showError(e.message)
+        } else {
+          showError(t('notifications.subscription_error'))
+        }
+      }
+    })()
+  }
 
   const crudContextMenuItems: MenuItem[] = [
     ...buildCrudContextMenuModel(
@@ -1559,6 +1687,19 @@ export function WorkOrdersPage({
           } as MenuItem,
         ]
       : []),
+    { separator: true } as MenuItem,
+    {
+      label: t('notifications.subscribe_action'),
+      icon: 'pi pi-bell',
+      disabled: !hasSubscriptionTargets,
+      command: () => void bulkSubscription('subscribe'),
+    } as MenuItem,
+    {
+      label: t('notifications.unsubscribe_action'),
+      icon: 'pi pi-bell-slash',
+      disabled: !hasSubscriptionTargets,
+      command: () => void bulkSubscription('unsubscribe'),
+    } as MenuItem,
   ]
 
   const workOrdersCardHeader = (
@@ -1689,6 +1830,24 @@ export function WorkOrdersPage({
                     size="small"
                     disabled={!canAdvanceStatus}
                     onClick={() => selected && void quickAdvanceStatus(selected)}
+                  />
+                  <Button
+                    type="button"
+                    label={t('notifications.subscribe_action')}
+                    icon="pi pi-bell"
+                    size="small"
+                    outlined
+                    disabled={!hasSubscriptionTargets}
+                    onClick={() => void bulkSubscription('subscribe')}
+                  />
+                  <Button
+                    type="button"
+                    label={t('notifications.unsubscribe_action')}
+                    icon="pi pi-bell-slash"
+                    size="small"
+                    outlined
+                    disabled={!hasSubscriptionTargets}
+                    onClick={() => void bulkSubscription('unsubscribe')}
                   />
                 </ButtonGroup>
               </div>
@@ -1846,6 +2005,22 @@ export function WorkOrdersPage({
                       severity="danger"
                       disabled={!selected}
                       onClick={() => selected && confirmDelete(selected)}
+                    />
+                    <Button
+                      type="button"
+                      label={t('notifications.subscribe_action')}
+                      icon="pi pi-bell"
+                      outlined
+                      disabled={!hasSubscriptionTargets}
+                      onClick={() => void bulkSubscription('subscribe')}
+                    />
+                    <Button
+                      type="button"
+                      label={t('notifications.unsubscribe_action')}
+                      icon="pi pi-bell-slash"
+                      outlined
+                      disabled={!hasSubscriptionTargets}
+                      onClick={() => void bulkSubscription('unsubscribe')}
                     />
                   </ButtonGroup>
                 </div>

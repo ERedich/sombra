@@ -1,0 +1,20 @@
+INSERT INTO ui_translations (locale, msg_key, value) VALUES
+  ('en', 'notifications.window_title', 'Notifications'),
+  ('de', 'notifications.window_title', 'Benachrichtigungen'),
+  ('en', 'notifications.empty', 'No notifications in the last 24 hours.'),
+  ('de', 'notifications.empty', 'Keine Benachrichtigungen in den letzten 24 Stunden.'),
+  ('en', 'notifications.button_aria', 'Open notifications'),
+  ('de', 'notifications.button_aria', 'Benachrichtigungen oeffnen'),
+  ('en', 'notifications.toast_summary', 'Work Order'),
+  ('de', 'notifications.toast_summary', 'Arbeitsauftrag'),
+  ('en', 'notifications.subscribe_action', 'Subscribe'),
+  ('de', 'notifications.subscribe_action', 'Abonnieren'),
+  ('en', 'notifications.unsubscribe_action', 'Unsubscribe'),
+  ('de', 'notifications.unsubscribe_action', 'Abo entfernen'),
+  ('en', 'notifications.subscribe_success', 'Subscribed {{changed}} of {{requested}} work orders.'),
+  ('de', 'notifications.subscribe_success', '{{changed}} von {{requested}} Arbeitsauftraegen abonniert.'),
+  ('en', 'notifications.unsubscribe_success', 'Unsubscribed {{changed}} of {{requested}} work orders.'),
+  ('de', 'notifications.unsubscribe_success', '{{changed}} von {{requested}} Arbeitsauftraegen abgemeldet.'),
+  ('en', 'notifications.subscription_error', 'Failed to update subscriptions.'),
+  ('de', 'notifications.subscription_error', 'Abonnements konnten nicht aktualisiert werden.')
+ON CONFLICT (locale, msg_key) DO UPDATE SET value = EXCLUDED.value;

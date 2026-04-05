@@ -11,15 +11,24 @@ import { pool } from '../db.js'
 import {
   broadcastWorkOrderCreated,
   broadcastWorkOrderDeleted,
+  broadcastWorkOrderNotifications,
   broadcastWorkOrderUpdated,
 } from '../realtime/workOrderSocket.js'
 import { requireAuth } from '../middleware/auth.js'
 import {
   fieldChanges,
   redactForAudit,
+  serializeRowForAudit,
   writeAudit,
 } from '../audit/auditLog.js'
 import { planEndFromStartAndDurationHours } from '../services/intervalUtc.js'
+import {
+  buildWorkInstructionCreatedNotification,
+  buildWorkInstructionDeletedNotification,
+  buildWorkInstructionUpdatedNotifications,
+  buildWorkOrderFieldChangeNotifications,
+  createNotificationsForSubscribers,
+} from '../notifications/workOrderNotifications.js'
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -341,6 +350,17 @@ async function fetchWorkOrderDetailForResponse(
   return { ...wo, work_instructions }
 }
 
+async function fetchWorkOrderMetaForAccess(
+  client: Pool | PoolClient,
+  id: string,
+): Promise<{ id: string; site_id: string; wo_key: number } | undefined> {
+  const r = await client.query<{ id: string; site_id: string; wo_key: number }>(
+    `SELECT id, site_id, wo_key FROM work_orders WHERE id = $1`,
+    [id],
+  )
+  return r.rows[0]
+}
+
 async function insertWorkInstructionsForOrder(
   client: PoolClient,
   workOrderId: string,
@@ -397,6 +417,144 @@ export function parseWorkInstructionsInput(body: unknown):
 
 const router = Router()
 router.use(requireAuth)
+
+router.get('/subscriptions', async (req, res) => {
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  if (auth.role === 'admin') {
+    const r = await pool.query<{ work_order_id: string }>(
+      `SELECT work_order_id
+       FROM work_order_subscriptions
+       WHERE user_id = $1::uuid`,
+      [auth.id],
+    )
+    res.json({ work_order_ids: r.rows.map((row) => row.work_order_id) })
+    return
+  }
+  const allowed = accessibleSiteIds(scope)
+  if (!allowed || allowed.length === 0) {
+    res.json({ work_order_ids: [] })
+    return
+  }
+  const r = await pool.query<{ work_order_id: string }>(
+    `SELECT s.work_order_id
+     FROM work_order_subscriptions s
+     INNER JOIN work_orders w ON w.id = s.work_order_id
+     WHERE s.user_id = $1::uuid
+       AND w.site_id = ANY($2::uuid[])`,
+    [auth.id, allowed],
+  )
+  res.json({ work_order_ids: r.rows.map((row) => row.work_order_id) })
+})
+
+router.post('/subscriptions/bulk', async (req, res) => {
+  const action =
+    typeof req.body?.action === 'string' ? req.body.action.trim() : ''
+  if (action !== 'subscribe' && action !== 'unsubscribe') {
+    res.status(400).json({ error: 'action must be subscribe or unsubscribe.' })
+    return
+  }
+  const rawIds = Array.isArray(req.body?.work_order_ids)
+    ? req.body.work_order_ids
+    : []
+  if (rawIds.length === 0) {
+    res.status(400).json({ error: 'work_order_ids must not be empty.' })
+    return
+  }
+  const uniqueIds = [...new Set(rawIds)]
+  if (
+    uniqueIds.some(
+      (id) => typeof id !== 'string' || !UUID_RE.test((id as string).trim()),
+    )
+  ) {
+    res.status(400).json({ error: 'All work_order_ids must be UUIDs.' })
+    return
+  }
+  const ids = uniqueIds.map((id) => (id as string).trim())
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const existing = await pool.query<{ id: string; site_id: string }>(
+    `SELECT id, site_id FROM work_orders WHERE id = ANY($1::uuid[])`,
+    [ids],
+  )
+  const allowedIds = existing.rows
+    .filter((row) => canAccessSite(scope, row.site_id))
+    .map((row) => row.id)
+  if (allowedIds.length !== ids.length) {
+    res.status(404).json({ error: 'One or more work orders were not found.' })
+    return
+  }
+  if (action === 'subscribe') {
+    const ins = await pool.query(
+      `INSERT INTO work_order_subscriptions (work_order_id, user_id)
+       SELECT unnest($1::uuid[]), $2::uuid
+       ON CONFLICT (work_order_id, user_id) DO NOTHING`,
+      [allowedIds, auth.id],
+    )
+    res.json({
+      ok: true,
+      action,
+      changed_count: ins.rowCount ?? 0,
+      requested_count: ids.length,
+    })
+    return
+  }
+  const del = await pool.query(
+    `DELETE FROM work_order_subscriptions
+     WHERE user_id = $1::uuid
+       AND work_order_id = ANY($2::uuid[])`,
+    [auth.id, allowedIds],
+  )
+  res.json({
+    ok: true,
+    action,
+    changed_count: del.rowCount ?? 0,
+    requested_count: ids.length,
+  })
+})
+
+router.post('/:id/subscribe', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const wo = await fetchWorkOrderMetaForAccess(pool, id)
+  if (!wo || !canAccessSite(scope, wo.site_id)) {
+    res.status(404).json({ error: 'Work order not found.' })
+    return
+  }
+  await pool.query(
+    `INSERT INTO work_order_subscriptions (work_order_id, user_id)
+     VALUES ($1, $2)
+     ON CONFLICT (work_order_id, user_id) DO NOTHING`,
+    [id, auth.id],
+  )
+  res.status(201).json({ ok: true, work_order_id: id, subscribed: true })
+})
+
+router.delete('/:id/subscribe', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const wo = await fetchWorkOrderMetaForAccess(pool, id)
+  if (!wo || !canAccessSite(scope, wo.site_id)) {
+    res.status(404).json({ error: 'Work order not found.' })
+    return
+  }
+  await pool.query(
+    `DELETE FROM work_order_subscriptions
+     WHERE work_order_id = $1 AND user_id = $2`,
+    [id, auth.id],
+  )
+  res.json({ ok: true, work_order_id: id, subscribed: false })
+})
 
 router.get('/', async (req, res) => {
   const auth = req.authUser!
@@ -747,6 +905,9 @@ router.patch('/:id', async (req, res) => {
 
   const client = await pool.connect()
   try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
@@ -966,9 +1127,20 @@ router.patch('/:id', async (req, res) => {
       httpMethod: req.method,
       path: auditPath,
     })
+    const notificationDrafts = buildWorkOrderFieldChangeNotifications({
+      actorName: auth.name,
+      workOrderId: afterTable.id,
+      workOrderKey: afterTable.wo_key,
+      changes,
+    })
+    notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+      workOrderId: afterTable.id,
+      drafts: notificationDrafts,
+    })
 
     const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
     await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
@@ -1011,12 +1183,16 @@ router.post('/:id/work-instructions', async (req, res) => {
 
   const auth = req.authUser!
   const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
 
   const client = await pool.connect()
   try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
     await client.query('BEGIN')
-    const prev = await client.query<{ site_id: string }>(
-      `SELECT site_id FROM work_orders WHERE id = $1 FOR UPDATE`,
+    const prev = await client.query<{ site_id: string; wo_key: number }>(
+      `SELECT site_id, wo_key FROM work_orders WHERE id = $1 FOR UPDATE`,
       [id],
     )
     const row = prev.rows[0]
@@ -1037,7 +1213,37 @@ router.post('/:id/work-instructions', async (req, res) => {
       res.status(500).json({ error: 'Insert failed.' })
       return
     }
+    const afterState = redactForAudit(
+      'work_instruction',
+      serializeRowForAudit(wi as unknown as Record<string, unknown>),
+    )
+    await writeAudit(client, {
+      actorUserId: auth.id,
+      actorKey: auth.login_name,
+      actorName: auth.name,
+      operation: 'create',
+      resourceType: 'work_instruction',
+      resourceId: wi.id,
+      beforeState: null,
+      afterState,
+      fieldChanges: null,
+      httpMethod: req.method,
+      path: auditPath,
+    })
+    notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+      workOrderId: id,
+      drafts: [
+        buildWorkInstructionCreatedNotification({
+          actorName: auth.name,
+          workOrderId: id,
+          workOrderKey: row.wo_key,
+          workInstructionId: wi.id,
+          sortNr: wi.sort_nr,
+        }),
+      ],
+    })
     await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
     res.status(201).json({ work_instruction: wi })
   } catch (e) {
     await client.query('ROLLBACK')
@@ -1104,12 +1310,16 @@ router.patch('/:id/work-instructions/:wiId', async (req, res) => {
 
   const auth = req.authUser!
   const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
 
   const client = await pool.connect()
   try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
     await client.query('BEGIN')
-    const lockWo = await client.query<{ site_id: string }>(
-      `SELECT w.site_id
+    const lockWo = await client.query<{ site_id: string; wo_key: number }>(
+      `SELECT w.site_id, w.wo_key
        FROM work_orders w
        INNER JOIN work_instructions wi ON wi.work_order_id = w.id
        WHERE w.id = $1 AND wi.id = $2
@@ -1155,7 +1365,41 @@ router.patch('/:id/work-instructions/:wiId', async (req, res) => {
       res.status(404).json({ error: 'Work instruction not found.' })
       return
     }
+    const beforeState = redactForAudit(
+      'work_instruction',
+      serializeRowForAudit(row as unknown as Record<string, unknown>),
+    )
+    const afterState = redactForAudit(
+      'work_instruction',
+      serializeRowForAudit(after as unknown as Record<string, unknown>),
+    )
+    const changes =
+      beforeState && afterState ? fieldChanges(beforeState, afterState) : null
+    await writeAudit(client, {
+      actorUserId: auth.id,
+      actorKey: auth.login_name,
+      actorName: auth.name,
+      operation: 'update',
+      resourceType: 'work_instruction',
+      resourceId: wiId,
+      beforeState,
+      afterState,
+      fieldChanges: changes,
+      httpMethod: req.method,
+      path: auditPath,
+    })
+    notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+      workOrderId: id,
+      drafts: buildWorkInstructionUpdatedNotifications({
+        actorName: auth.name,
+        workOrderId: id,
+        workOrderKey: ok.wo_key,
+        workInstructionId: wiId,
+        changes,
+      }),
+    })
     await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
     res.json({ work_instruction: after })
   } catch (e) {
     await client.query('ROLLBACK')
@@ -1175,12 +1419,22 @@ router.delete('/:id/work-instructions/:wiId', async (req, res) => {
 
   const auth = req.authUser!
   const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
 
   const client = await pool.connect()
   try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
     await client.query('BEGIN')
-    const prev = await client.query<{ site_id: string }>(
-      `SELECT w.site_id
+    const prev = await client.query<{
+      site_id: string
+      wo_key: number
+      sort_nr: number
+      instruction_text: string
+      done: boolean
+    }>(
+      `SELECT w.site_id, w.wo_key, wi.sort_nr, wi.instruction_text, wi.done
        FROM work_instructions wi
        INNER JOIN work_orders w ON w.id = wi.work_order_id
        WHERE wi.id = $1 AND wi.work_order_id = $2`,
@@ -1192,11 +1446,46 @@ router.delete('/:id/work-instructions/:wiId', async (req, res) => {
       res.status(404).json({ error: 'Work instruction not found.' })
       return
     }
+    const beforeState = redactForAudit(
+      'work_instruction',
+      serializeRowForAudit({
+        id: wiId,
+        sort_nr: row.sort_nr,
+        instruction_text: row.instruction_text,
+        done: row.done,
+      }),
+    )
     await client.query(
       `DELETE FROM work_instructions WHERE id = $1 AND work_order_id = $2`,
       [wiId, id],
     )
+    await writeAudit(client, {
+      actorUserId: auth.id,
+      actorKey: auth.login_name,
+      actorName: auth.name,
+      operation: 'delete',
+      resourceType: 'work_instruction',
+      resourceId: wiId,
+      beforeState,
+      afterState: null,
+      fieldChanges: null,
+      httpMethod: req.method,
+      path: auditPath,
+    })
+    notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+      workOrderId: id,
+      drafts: [
+        buildWorkInstructionDeletedNotification({
+          actorName: auth.name,
+          workOrderId: id,
+          workOrderKey: row.wo_key,
+          workInstructionId: wiId,
+          sortNr: row.sort_nr,
+        }),
+      ],
+    })
     await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
     res.status(204).send()
   } catch (e) {
     await client.query('ROLLBACK')

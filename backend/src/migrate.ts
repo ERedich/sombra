@@ -112,6 +112,8 @@ async function main() {
   await runSqlFile('073_i18n_search_panel.sql')
   await runSqlFile('074_i18n_search_panel_range_fields.sql')
   await runSqlFile('075_i18n_search_panel_multiselect.sql')
+  await runSqlFile('076_work_order_subscriptions_notifications.sql')
+  await runSqlFile('077_i18n_wo_notifications.sql')
   await ensureAdminUser()
   await assignAdminDefaultWorkingSite()
   await pool.end()

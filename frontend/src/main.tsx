@@ -16,6 +16,7 @@ import { AppCreateShortcutProvider } from './layout/AppCreateShortcut'
 import { AppToolbarSearchFocusProvider } from './layout/AppToolbarSearchFocus'
 import { OpenLastAppShortcutProvider } from './layout/OpenLastAppShortcutProvider'
 import { QuickAccessProvider } from './layout/QuickAccessProvider'
+import { WorkOrderNotificationsProvider } from './notifications/WorkOrderNotificationsContext'
 
 registerPrimeLocales()
 
@@ -26,15 +27,17 @@ createRoot(document.getElementById('root')!).render(
         <PrimeLocaleSync />
         <HotkeySettingsProvider>
           <QuickAccessProvider>
-            <OpenLastAppShortcutProvider>
-              <AppToolbarSearchFocusProvider>
-                <AppCreateShortcutProvider>
-                  <AppI18nLoader>
-                    <App />
-                  </AppI18nLoader>
-                </AppCreateShortcutProvider>
-              </AppToolbarSearchFocusProvider>
-            </OpenLastAppShortcutProvider>
+            <WorkOrderNotificationsProvider>
+              <OpenLastAppShortcutProvider>
+                <AppToolbarSearchFocusProvider>
+                  <AppCreateShortcutProvider>
+                    <AppI18nLoader>
+                      <App />
+                    </AppI18nLoader>
+                  </AppCreateShortcutProvider>
+                </AppToolbarSearchFocusProvider>
+              </OpenLastAppShortcutProvider>
+            </WorkOrderNotificationsProvider>
           </QuickAccessProvider>
         </HotkeySettingsProvider>
       </PrimeReactProvider>

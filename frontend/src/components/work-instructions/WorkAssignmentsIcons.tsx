@@ -1,12 +1,17 @@
 import type { TFunction } from 'i18next'
 
-export type AssignmentIconKind = 'material' | 'employee' | 'instructions'
+export type AssignmentIconKind =
+  | 'material'
+  | 'employee'
+  | 'instructions'
+  | 'notification'
 
 export type AssignmentIconRow = {
   has_material_assignment?: boolean
   has_employee_assignment?: boolean
   work_instruction_count?: number
   work_instruction_done_count?: number
+  has_notification_assignment?: boolean
 }
 
 function instructionTooltip(t: TFunction, row: AssignmentIconRow): string {
@@ -25,11 +30,14 @@ export function WorkAssignmentsIcons({
   row,
   t,
   onAssignmentClick,
+  showNotificationIcon = false,
 }: {
   row: AssignmentIconRow
   t: TFunction
   /** Called when an icon is clicked; wire up when material/employee/instructions flows exist. */
   onAssignmentClick?: (kind: AssignmentIconKind) => void
+  /** Shows WO subscription icon when true. */
+  showNotificationIcon?: boolean
 }) {
   const material = row.has_material_assignment === true
   const employee = row.has_employee_assignment === true
@@ -37,6 +45,7 @@ export function WorkAssignmentsIcons({
   const done = row.work_instruction_done_count ?? 0
   const instructions = total > 0
   const allInstructionsDone = instructions && done === total
+  const notification = row.has_notification_assignment === true
   const iconClass = 'text-lg'
 
   const btnBase =
@@ -53,6 +62,11 @@ export function WorkAssignmentsIcons({
       return `${btnBase} text-green-400 hover:text-green-500`
     }
     return `${btnBase} hover:text-primary`
+  }
+
+  function notificationBtnClass() {
+    if (!notification) return btnBase
+    return `${btnBase} text-green-400 hover:text-green-500`
   }
 
   const instructionTitle = instructionTooltip(t, row)
@@ -101,6 +115,29 @@ export function WorkAssignmentsIcons({
       >
         <i className={`pi pi-list ${iconClass}`} aria-hidden />
       </button>
+      {showNotificationIcon ? (
+        <button
+          type="button"
+          className={notificationBtnClass()}
+          style={{ opacity: notification ? 1 : 0.2 }}
+          title={
+            notification
+              ? t('notifications.unsubscribe_action')
+              : t('notifications.subscribe_action')
+          }
+          aria-label={
+            notification
+              ? t('notifications.unsubscribe_action')
+              : t('notifications.subscribe_action')
+          }
+          onClick={(e) => {
+            e.stopPropagation()
+            onAssignmentClick?.('notification')
+          }}
+        >
+          <i className={`pi pi-bell ${iconClass}`} aria-hidden />
+        </button>
+      ) : null}
     </div>
   )
 }
