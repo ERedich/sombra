@@ -683,6 +683,47 @@ html.theme-transition-fallback #root {
   color: var(--primary-color);
 }
 
+/* Searchpanel: frosted glass drawer surface */
+.search-panel-sidebar.p-sidebar {
+  border-left: 1px solid color-mix(in srgb, var(--surface-border) 72%, transparent);
+  background:
+    linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--surface-card) 56%, transparent) 0%,
+      color-mix(in srgb, var(--surface-card) 28%, transparent) 100%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.12) 0%,
+      rgba(255, 255, 255, 0.03) 100%
+    );
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  box-shadow:
+    -16px 0 32px rgba(0, 0, 0, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.search-panel-sidebar.p-sidebar .p-sidebar-header,
+.search-panel-sidebar.p-sidebar .p-sidebar-content {
+  background: transparent;
+}
+
+.search-panel-sidebar.p-sidebar .p-sidebar-header {
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-border) 70%, transparent);
+}
+
+/* Monitoring quick-search inputgroup with inline Searchpanel trigger button. */
+.app-monitoring-searchgroup .app-monitoring-searchpanel-trigger.p-button {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.app-monitoring-searchgroup .app-crud-toolbar-search .p-inputtext {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
 /* DataTable row-group subheaders (Table Wizard “Group by”): distinct solid fill */
 .p-datatable .p-datatable-tbody > tr.p-rowgroup-header {
   background: var(--surface-section) !important;

@@ -71,6 +71,7 @@ export function useTableWizard<T extends Record<string, unknown>>({
   frozenScrollHeight = '70vh',
   largeTableRowCount,
   layoutToastRef,
+  defaultMultiSortMeta,
 }: {
   appPath: string
   columnDefs: ColumnRegistryEntry<T>[]
@@ -82,6 +83,11 @@ export function useTableWizard<T extends Record<string, unknown>>({
   largeTableRowCount?: number
   /** Optional toast for “applying layout” on large tables (same ref as page `Toast` is fine). */
   layoutToastRef?: RefObject<Toast | null>
+  /**
+   * Initial multi-sort when no layout preset applies (and fallback for merged server layouts).
+   * Caller should pass a stable reference (e.g. `useMemo`) if the value is not constant.
+   */
+  defaultMultiSortMeta?: { field: string; order: 1 | -1 }[]
 }) {
   const { t } = useTranslation()
   const defsByField = useMemo(() => {
@@ -90,10 +96,17 @@ export function useTableWizard<T extends Record<string, unknown>>({
     return m
   }, [columnDefs])
 
-  const factoryDefaults = useMemo(
-    () => buildDefaultSettings(columnDefs),
-    [columnDefs],
-  )
+  const factoryDefaults = useMemo(() => {
+    const base = buildDefaultSettings(columnDefs)
+    if (!defaultMultiSortMeta?.length) return base
+    return {
+      ...base,
+      multiSortMeta: defaultMultiSortMeta.map((m) => ({
+        field: m.field,
+        order: m.order,
+      })),
+    }
+  }, [columnDefs, defaultMultiSortMeta])
 
   const [applied, setApplied] = useState<TableSettingsV1>(factoryDefaults)
   const [draft, setDraft] = useState<TableSettingsV1>(factoryDefaults)

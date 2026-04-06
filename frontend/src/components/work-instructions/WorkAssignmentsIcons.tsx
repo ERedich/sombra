@@ -64,6 +64,11 @@ export function WorkAssignmentsIcons({
     return `${btnBase} hover:text-primary`
   }
 
+  function employeeBtnClass() {
+    if (!employee) return `${btnBase} hover:text-primary`
+    return `${btnBase} text-green-400 hover:text-primary`
+  }
+
   function notificationBtnClass() {
     if (!notification) return btnBase
     return `${btnBase} text-green-400 hover:text-green-500`
@@ -91,7 +96,7 @@ export function WorkAssignmentsIcons({
       </button>
       <button
         type="button"
-        className={btnClass(employee)}
+        className={employeeBtnClass()}
         style={{ opacity: employee ? 1 : 0.2 }}
         title={t('wo.assignments_employee')}
         aria-label={t('wo.assignments_employee')}

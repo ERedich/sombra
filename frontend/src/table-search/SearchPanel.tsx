@@ -2,6 +2,7 @@ import type { KeyboardEvent } from 'react'
 import type { TFunction } from 'i18next'
 import { Sidebar } from 'primereact/sidebar'
 import { Button } from 'primereact/button'
+import { Calendar } from 'primereact/calendar'
 import { InputText } from 'primereact/inputtext'
 import { MultiSelect } from 'primereact/multiselect'
 import type { SearchableColumnDef, TableSearchSettingsV1 } from './types'
@@ -14,7 +15,6 @@ export function SearchPanel<T extends Record<string, unknown>>({
   draft,
   onDraftRangeFieldChange,
   onDraftMultiValuesChange,
-  onClearField,
   onApply,
   onClear,
   onReset,
@@ -28,7 +28,6 @@ export function SearchPanel<T extends Record<string, unknown>>({
   draft: TableSearchSettingsV1
   onDraftRangeFieldChange: (field: string, bound: 'from' | 'to', value: string) => void
   onDraftMultiValuesChange: (field: string, values: string[]) => void
-  onClearField: (field: string) => void
   onApply: () => void
   onClear: () => void
   onReset: () => void
@@ -39,6 +38,24 @@ export function SearchPanel<T extends Record<string, unknown>>({
     if (event.key !== 'Enter') return
     event.preventDefault()
     onApply()
+  }
+
+  const parseDateValue = (raw: string): Date | null => {
+    const value = raw.trim()
+    if (!value) return null
+    const ms = Date.parse(value)
+    if (!Number.isFinite(ms)) return null
+    return new Date(ms)
+  }
+
+  const toStoredDateValue = (
+    value: Date | null,
+    inputType: SearchableColumnDef<T>['inputType'],
+  ): string => {
+    if (!value) return ''
+    if (inputType === 'datetime') return value.toISOString()
+    // Date-only fields persist as YYYY-MM-DD to keep intent clear.
+    return value.toISOString().slice(0, 10)
   }
 
   const actionButtons = (
@@ -108,19 +125,7 @@ export function SearchPanel<T extends Record<string, unknown>>({
               key={column.field}
               className="surface-ground border-round p-3 flex flex-column gap-2"
             >
-              <div className="flex align-items-center justify-content-between gap-2">
-                <label className="text-sm font-medium">{t(column.headerKey)}</label>
-                <Button
-                  type="button"
-                  icon="pi pi-times"
-                  text
-                  rounded
-                  severity="secondary"
-                  size="small"
-                  onClick={() => onClearField(column.field)}
-                  aria-label={t('search_panel.clear')}
-                />
-              </div>
+              <label className="text-sm font-medium">{t(column.headerKey)}</label>
               {column.inputType === 'multiselect' ? (
                 <MultiSelect
                   value={criterion?.selectedValues ?? []}
@@ -142,19 +147,42 @@ export function SearchPanel<T extends Record<string, unknown>>({
                 <div className="grid">
                   <div className={isRangeField ? 'col-12 md:col-6' : 'col-12'}>
                     <div className="p-inputgroup w-full">
-                      <InputText
-                        value={fromValue}
-                        onChange={(e) =>
-                          onDraftRangeFieldChange(column.field, 'from', e.target.value)
-                        }
-                        onKeyDown={handleEnterApply}
-                        placeholder={
-                          isRangeField
-                            ? t('search_panel.from_placeholder')
-                            : t('common.search_ellipsis')
-                        }
-                        className="w-full"
-                      />
+                      {column.inputType === 'date' || column.inputType === 'datetime' ? (
+                        <Calendar
+                          value={parseDateValue(fromValue)}
+                          onChange={(e) =>
+                            onDraftRangeFieldChange(
+                              column.field,
+                              'from',
+                              toStoredDateValue(
+                                (e.value as Date | null) ?? null,
+                                column.inputType,
+                              ),
+                            )
+                          }
+                          showIcon
+                          showButtonBar
+                          showTime={column.inputType === 'datetime'}
+                          hourFormat="24"
+                          placeholder={t('search_panel.from_placeholder')}
+                          className="w-full"
+                          inputClassName="w-full"
+                        />
+                      ) : (
+                        <InputText
+                          value={fromValue}
+                          onChange={(e) =>
+                            onDraftRangeFieldChange(column.field, 'from', e.target.value)
+                          }
+                          onKeyDown={handleEnterApply}
+                          placeholder={
+                            isRangeField
+                              ? t('search_panel.from_placeholder')
+                              : t('common.search_ellipsis')
+                          }
+                          className="w-full"
+                        />
+                      )}
                       <Button
                         type="button"
                         icon="pi pi-times"
@@ -171,15 +199,38 @@ export function SearchPanel<T extends Record<string, unknown>>({
                   {isRangeField ? (
                     <div className="col-12 md:col-6">
                       <div className="p-inputgroup w-full">
-                        <InputText
-                          value={toValue}
-                          onChange={(e) =>
-                            onDraftRangeFieldChange(column.field, 'to', e.target.value)
-                          }
-                          onKeyDown={handleEnterApply}
-                          placeholder={t('search_panel.to_placeholder')}
-                          className="w-full"
-                        />
+                        {column.inputType === 'date' || column.inputType === 'datetime' ? (
+                          <Calendar
+                            value={parseDateValue(toValue)}
+                            onChange={(e) =>
+                              onDraftRangeFieldChange(
+                                column.field,
+                                'to',
+                                toStoredDateValue(
+                                  (e.value as Date | null) ?? null,
+                                  column.inputType,
+                                ),
+                              )
+                            }
+                            showIcon
+                            showButtonBar
+                            showTime={column.inputType === 'datetime'}
+                            hourFormat="24"
+                            placeholder={t('search_panel.to_placeholder')}
+                            className="w-full"
+                            inputClassName="w-full"
+                          />
+                        ) : (
+                          <InputText
+                            value={toValue}
+                            onChange={(e) =>
+                              onDraftRangeFieldChange(column.field, 'to', e.target.value)
+                            }
+                            onKeyDown={handleEnterApply}
+                            placeholder={t('search_panel.to_placeholder')}
+                            className="w-full"
+                          />
+                        )}
                         <Button
                           type="button"
                           icon="pi pi-times"

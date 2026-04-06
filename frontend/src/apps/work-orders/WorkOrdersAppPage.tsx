@@ -10,6 +10,7 @@ import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Calendar } from 'primereact/calendar'
 import { Card } from 'primereact/card'
+import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -20,6 +21,8 @@ import { InputIcon } from 'primereact/inputicon'
 import { InputNumber } from 'primereact/inputnumber'
 import { InputText } from 'primereact/inputtext'
 import { InputTextarea } from 'primereact/inputtextarea'
+import { MultiSelect } from 'primereact/multiselect'
+import { PickList } from 'primereact/picklist'
 import { Tag } from 'primereact/tag'
 import { Toast } from 'primereact/toast'
 import { TabView, TabPanel } from 'primereact/tabview'
@@ -108,8 +111,10 @@ export type WorkOrder = {
   /** List API: placeholders until material/employee assignment features ship. */
   has_material_assignment?: boolean
   has_employee_assignment?: boolean
+  assigned_employee_ids?: string[]
   work_instruction_count?: number
   work_instruction_done_count?: number
+  hold_reason?: string | null
 }
 
 type WorkOrdersListResponse = { work_orders: WorkOrder[] }
@@ -125,6 +130,36 @@ type WorkTypesListResponse = { work_types: WorkType[] }
 type CategoriesListResponse = { categories: Category[] }
 type WorkgroupsListResponse = { workgroups: Workgroup[] }
 type AssetsListResponse = { assets: Asset[] }
+type EmployeesListResponse = {
+  employees: { id: string; key: string; name: string }[]
+}
+type WorkOrderEmployeePoolItemDto = {
+  employee_id: string
+  employee_key: string
+  employee_name: string
+}
+type WorkOrderEmployeePoolResponse = {
+  available: WorkOrderEmployeePoolItemDto[]
+  assigned: WorkOrderEmployeePoolItemDto[]
+}
+type WorkOrderEmployeeAssignResponse = {
+  work_order: WorkOrder
+  employees: WorkOrderEmployeePoolItemDto[]
+}
+type WoTransactionRow = {
+  id: string
+  work_order_id: string
+  type: string
+  employee_id: string
+  created_by_user_id: string
+  hours: string
+  feedback_text: string
+  created_at: string
+  employee_key: string
+  employee_name: string
+  created_by_login_name: string | null
+}
+type WoTransactionsResponse = { transactions: WoTransactionRow[] }
 type WorkOrderWsEventType =
   | 'work_order_created'
   | 'work_order_updated'
@@ -135,10 +170,17 @@ type WorkOrderWsMessage = {
   work_order_id?: string
 }
 
+type EmployeePickItem = {
+  id: string
+  key: string
+  name: string
+}
+
 const WO_STATUS_I18N_KEYS: Record<string, string> = {
   open: 'wo.status_open',
   assigned: 'wo.status_assigned',
   started: 'wo.status_started',
+  continued: 'wo.status_continued',
   on_hold: 'wo.status_on_hold',
   done: 'wo.status_done',
   closed: 'wo.status_closed',
@@ -179,6 +221,8 @@ function statusSeverity(
       return 'secondary'
     case 'started':
       return 'warning'
+    case 'continued':
+      return 'warning'
     case 'on_hold':
       return 'warning'
     case 'done':
@@ -202,16 +246,156 @@ function sortedWorkOrders(rows: WorkOrder[]): WorkOrder[] {
   return [...rows].sort((a, b) => b.wo_key - a.wo_key)
 }
 
-function nextStatusInFlow(status: string): string | null {
-  const flow = ['open', 'assigned', 'started', 'on_hold', 'done', 'closed']
-  const i = flow.indexOf(status)
-  if (i < 0 || i >= flow.length - 1) return null
-  return flow[i + 1]
+function poolDtoToItem(row: WorkOrderEmployeePoolItemDto): EmployeePickItem {
+  return {
+    id: row.employee_id,
+    key: row.employee_key,
+    name: row.employee_name,
+  }
+}
+
+function workOrderHasLinkedPlan(row: Pick<WorkOrder, 'work_plan_id' | 'work_plan_key'>): boolean {
+  const id = row.work_plan_id?.trim() ?? ''
+  const key = row.work_plan_key?.trim() ?? ''
+  return Boolean(id || key)
+}
+
+/**
+ * Child index of the Feedback TabPanel in the WO edit dialog TabView.
+ * Order is fixed: General (0), Instructions (1), Work plan or `null` at (2), Planning (3), Feedback (4).
+ * When there is no work plan, React still renders `null` at index 2, so Feedback is always 4 — not 3.
+ */
+function feedbackTabIndexForRow(_row: WorkOrder): number {
+  return 4
+}
+
+function WorkOrderStartCell(props: {
+  row: WorkOrder
+  currentEmployeeId: string | null
+  employeeWorkgroupIds: string[]
+  startRequiresAssignment: boolean
+  onStart: (row: WorkOrder) => void
+  onStop: (row: WorkOrder) => void
+  t: TFunction
+  emDash: string
+}) {
+  const {
+    row,
+    currentEmployeeId,
+    employeeWorkgroupIds,
+    startRequiresAssignment,
+    onStart,
+    onStop,
+    t,
+    emDash,
+  } = props
+  const assignedToWo =
+    !!currentEmployeeId &&
+    (row.assigned_employee_ids ?? []).includes(currentEmployeeId)
+  const wgId = row.workgroup_id?.trim() ?? ''
+  const inWorkgroup =
+    wgId.length === 0 || employeeWorkgroupIds.includes(wgId)
+
+  const canStop =
+    startRequiresAssignment ? assignedToWo : !!currentEmployeeId
+  const canStart =
+    !!currentEmployeeId &&
+    inWorkgroup &&
+    (startRequiresAssignment ? assignedToWo : true)
+
+  const playStatuses = new Set(['open', 'assigned', 'on_hold'])
+  const stopStatuses = new Set(['started', 'continued'])
+  const terminalStartStopStatuses = new Set(['done', 'closed'])
+
+  function startDisabledTitle(): string {
+    if (!currentEmployeeId) {
+      return startRequiresAssignment
+        ? t('wo.start_disabled_no_employee')
+        : t('wo.start_disabled_no_employee_user_only')
+    }
+    if (!inWorkgroup) return t('wo.start_disabled_not_in_workgroup')
+    if (startRequiresAssignment && !assignedToWo) {
+      return t('wo.start_disabled_must_assign')
+    }
+    return t('wo.start_tooltip')
+  }
+
+  function stopDisabledTitle(): string {
+    if (!currentEmployeeId) {
+      return startRequiresAssignment
+        ? t('wo.start_disabled_no_employee')
+        : t('wo.start_disabled_no_employee_user_only')
+    }
+    if (startRequiresAssignment && !assignedToWo) {
+      return t('wo.start_disabled_must_assign')
+    }
+    return t('wo.stop_tooltip')
+  }
+
+  if (playStatuses.has(row.status)) {
+    const disabled = !canStart
+    return (
+      <Button
+        type="button"
+        icon="pi pi-play"
+        rounded
+        text
+        severity="success"
+        disabled={disabled}
+        className={disabled ? 'opacity-40' : ''}
+        title={disabled ? startDisabledTitle() : t('wo.start_tooltip')}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (!disabled) onStart(row)
+        }}
+        aria-label={t('wo.start_tooltip')}
+      />
+    )
+  }
+  if (stopStatuses.has(row.status)) {
+    const disabled = !canStop
+    return (
+      <Button
+        type="button"
+        icon="pi pi-stop"
+        rounded
+        text
+        severity="danger"
+        disabled={disabled}
+        className={disabled ? 'opacity-40' : ''}
+        title={disabled ? stopDisabledTitle() : t('wo.stop_tooltip')}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (!disabled) onStop(row)
+        }}
+        aria-label={t('wo.stop_tooltip')}
+      />
+    )
+  }
+  if (terminalStartStopStatuses.has(row.status)) {
+    return (
+      <Button
+        type="button"
+        icon="pi pi-ban"
+        rounded
+        text
+        severity="secondary"
+        disabled
+        className="opacity-40"
+        title={t('wo.start_stop_disabled_terminal')}
+        aria-label={t('wo.start_stop_disabled_terminal')}
+      />
+    )
+  }
+  return <span className="text-sm text-color-secondary">{emDash}</span>
 }
 
 const MONITORING_UPDATE_FLASH_MS = 2200
 const MONITORING_CREATED_HIGHLIGHT_MS = 10_000
 const MONITORING_DELETE_HOLD_MS = 10_000
+const CURRENT_EMPLOYEE_FILTER_VALUE = '__CURRENT_EMPLOYEE__'
+const CURRENT_EMPLOYEE_MISSING_SENTINEL = '__CURRENT_EMPLOYEE_MISSING__'
+const EMPTY_EMPLOYEE_WORKGROUP_IDS: string[] = []
 
 function workTypeColumnBody(
   row: WorkOrder,
@@ -345,6 +529,9 @@ export function WorkOrdersPage({
   const [workTypes, setWorkTypes] = useState<WorkType[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [workgroups, setWorkgroups] = useState<Workgroup[]>([])
+  const [employeesForFilter, setEmployeesForFilter] = useState<
+    { id: string; key: string; name: string }[]
+  >([])
   const [subscribedWorkOrderIds, setSubscribedWorkOrderIds] = useState<Set<string>>(
     new Set(),
   )
@@ -366,6 +553,24 @@ export function WorkOrdersPage({
   const [searchPanelOpen, setSearchPanelOpen] = useState(false)
   const [searchPresetsOpen, setSearchPresetsOpen] = useState(false)
   const [dialogTab, setDialogTab] = useState(0)
+  const [holdDialogOpen, setHoldDialogOpen] = useState(false)
+  const [holdDialogReason, setHoldDialogReason] = useState('')
+  const [holdDialogRow, setHoldDialogRow] = useState<WorkOrder | null>(null)
+  const [holdSubmitting, setHoldSubmitting] = useState(false)
+  const [woTxList, setWoTxList] = useState<WoTransactionRow[]>([])
+  const [woTxLoading, setWoTxLoading] = useState(false)
+  const [fbSelfText, setFbSelfText] = useState('')
+  const [fbSelfHours, setFbSelfHours] = useState<number | null>(0)
+  const [fbExtraEmployeeIds, setFbExtraEmployeeIds] = useState<string[]>([])
+  const [fbExtraText, setFbExtraText] = useState<Record<string, string>>({})
+  const [fbExtraHours, setFbExtraHours] = useState<Record<string, number | null>>(
+    {},
+  )
+  const [fbTargetStatus, setFbTargetStatus] = useState<
+    '' | 'on_hold' | 'done'
+  >('')
+  const [fbHoldReason, setFbHoldReason] = useState('')
+  const [fbSaving, setFbSaving] = useState(false)
   const [formWorkInstructions, setFormWorkInstructions] = useState<
     FormWorkInstruction[]
   >([])
@@ -373,8 +578,22 @@ export function WorkOrdersPage({
   const [instructionViewWoId, setInstructionViewWoId] = useState<string | null>(
     null,
   )
+  const [employeeAssignOpen, setEmployeeAssignOpen] = useState(false)
+  const [employeeAssignLoading, setEmployeeAssignLoading] = useState(false)
+  const [employeeAssignSaving, setEmployeeAssignSaving] = useState(false)
+  const [employeeAssignDirty, setEmployeeAssignDirty] = useState(false)
+  const [employeeAssignWoId, setEmployeeAssignWoId] = useState<string | null>(null)
+  const [employeeSourcePool, setEmployeeSourcePool] = useState<EmployeePickItem[]>(
+    [],
+  )
+  const [employeeTargetPool, setEmployeeTargetPool] = useState<EmployeePickItem[]>(
+    [],
+  )
   /** Prevents late GET /work-orders/:id from overwriting instructions after close or another open. */
   const workOrderInstructionsFetchForIdRef = useRef<string | null>(null)
+  const employeeTargetPoolRef = useRef<EmployeePickItem[]>([])
+  const employeeInitialSourceRef = useRef<EmployeePickItem[]>([])
+  const employeeInitialTargetRef = useRef<EmployeePickItem[]>([])
   const flashTimeoutsRef = useRef<Record<string, ReturnType<typeof setTimeout>>>(
     {},
   )
@@ -387,8 +606,61 @@ export function WorkOrdersPage({
   const deleteHoldTimeoutsRef = useRef<
     Record<string, ReturnType<typeof setTimeout>>
   >({})
+  const postStartWorkOrderRef = useRef<(row: WorkOrder) => void>(() => {})
+  const openFeedbackTabRef = useRef<(row: WorkOrder) => void>(() => {})
 
   const isMonitoring = mode === 'monitoring'
+  const authUserSnapshot = getStoredUser()
+  const currentEmployeeId = authUserSnapshot?.employee_id ?? null
+  const employeeWorkgroupIds =
+    authUserSnapshot?.employee_workgroup_ids ?? EMPTY_EMPLOYEE_WORKGROUP_IDS
+  const [woStartRequiresAssignment, setWoStartRequiresAssignment] =
+    useState(true)
+  const [woUserAutoAssignOnStart, setWoUserAutoAssignOnStart] = useState(true)
+  const [feedbackPoolAvailable, setFeedbackPoolAvailable] = useState<
+    WorkOrderEmployeePoolItemDto[]
+  >([])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const data = await apiJson<{
+          wo: {
+            start_requires_assignment: boolean
+            user_auto_assign_on_start?: boolean
+          }
+        }>('/api/app-parameters')
+        if (!cancelled) {
+          setWoStartRequiresAssignment(
+            data.wo?.start_requires_assignment !== false,
+          )
+          setWoUserAutoAssignOnStart(
+            data.wo?.user_auto_assign_on_start !== false,
+          )
+        }
+      } catch {
+        if (!cancelled) {
+          setWoStartRequiresAssignment(true)
+          setWoUserAutoAssignOnStart(true)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const loadFeedbackEmployeePool = useCallback(async (woId: string) => {
+    try {
+      const data = await apiJson<WorkOrderEmployeePoolResponse>(
+        `/api/work-orders/${encodeURIComponent(woId)}/employees/pool`,
+      )
+      setFeedbackPoolAvailable(data.available ?? [])
+    } catch {
+      setFeedbackPoolAvailable([])
+    }
+  }, [])
 
   const flashMonitoringWorkOrderRow = useCallback(
     (id: string, durationMs = MONITORING_UPDATE_FLASH_MS) => {
@@ -550,6 +822,18 @@ export function WorkOrdersPage({
         label: `${group.key} ${emDash} ${group.name}`,
       }))
       .sort((a, b) => a.label.localeCompare(b.label))
+    const employeeOptions = [
+      {
+        value: CURRENT_EMPLOYEE_FILTER_VALUE,
+        label: t('monitoring.employee_current_option'),
+      },
+      ...employeesForFilter
+        .map((employee) => ({
+          value: employee.id,
+          label: `${employee.key} ${emDash} ${employee.name}`,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    ]
     const createdByOptions = [...new Set(rows.map((r) => r.created_by_login_name).filter((v): v is string => !!v))]
       .sort((a, b) => a.localeCompare(b))
       .map((value) => ({ value, label: value }))
@@ -562,6 +846,23 @@ export function WorkOrdersPage({
         headerKey: 'wo.col_key',
         sortable: true,
         search: { inputType: 'number', getSearchValue: (row) => row.wo_key },
+      },
+      {
+        field: 'wo_start',
+        headerKey: 'wo.col_start',
+        sortable: false,
+        body: (row) => (
+          <WorkOrderStartCell
+            row={row}
+            currentEmployeeId={currentEmployeeId}
+            employeeWorkgroupIds={employeeWorkgroupIds}
+            startRequiresAssignment={woStartRequiresAssignment}
+            onStart={(r) => postStartWorkOrderRef.current(r)}
+            onStop={(r) => openFeedbackTabRef.current(r)}
+            t={t}
+            emDash={emDash}
+          />
+        ),
       },
       {
         field: 'short_text',
@@ -623,6 +924,18 @@ export function WorkOrdersPage({
         },
       },
       {
+        field: 'assigned_employee_ids',
+        headerKey: 'monitoring.col_employee',
+        sortable: false,
+        defaultVisible: false,
+        body: () => emDash,
+        search: {
+          inputType: 'multiselect',
+          options: employeeOptions,
+          getSearchValue: (row) => row.assigned_employee_ids ?? [],
+        },
+      },
+      {
         field: 'work_plan_key',
         headerKey: 'wo.field_work_plan',
         sortable: true,
@@ -675,6 +988,10 @@ export function WorkOrdersPage({
             t={t}
             showNotificationIcon
             onAssignmentClick={(kind) => {
+              if (kind === 'employee') {
+                void openEmployeeAssignment(row)
+                return
+              }
               if (kind === 'instructions') {
                 setInstructionViewWoId(row.id)
                 setInstructionViewOpen(true)
@@ -797,8 +1114,12 @@ export function WorkOrdersPage({
     workgroups,
     rows,
     subscribedWorkOrderIds,
+    employeesForFilter,
     isMonitoring,
     recentlyChangedFieldsByWorkOrderId,
+    currentEmployeeId,
+    employeeWorkgroupIds,
+    woStartRequiresAssignment,
   ])
 
   const searchableColumns = useMemo(
@@ -811,6 +1132,29 @@ export function WorkOrdersPage({
     searchableColumns,
     enabled: isMonitoring,
   })
+
+  const resolvedMonitoringSearch = useMemo(() => {
+    if (!isMonitoring) return tableSearch.applied
+    const criterion = tableSearch.applied.criteria.assigned_employee_ids
+    const selectedValues = criterion?.selectedValues ?? []
+    if (!selectedValues.includes(CURRENT_EMPLOYEE_FILTER_VALUE)) {
+      return tableSearch.applied
+    }
+    const resolvedValues = selectedValues.map((value) => {
+      if (value !== CURRENT_EMPLOYEE_FILTER_VALUE) return value
+      return currentEmployeeId ?? CURRENT_EMPLOYEE_MISSING_SENTINEL
+    })
+    return {
+      ...tableSearch.applied,
+      criteria: {
+        ...tableSearch.applied.criteria,
+        assigned_employee_ids: {
+          ...(criterion ?? { from: '', to: '', selectedValues: [] }),
+          selectedValues: [...new Set(resolvedValues)],
+        },
+      },
+    }
+  }, [currentEmployeeId, isMonitoring, tableSearch.applied])
 
   const searchPresetQuickOptions = useMemo(
     () =>
@@ -836,7 +1180,7 @@ export function WorkOrdersPage({
       list = list.filter((w) => rowMatchesGlobalSearch(w, q, t))
     }
     if (isMonitoring) {
-      list = applyColumnSearch(list, tableSearch.applied, searchableColumns)
+      list = applyColumnSearch(list, resolvedMonitoringSearch, searchableColumns)
     }
     return list
   }, [
@@ -844,16 +1188,22 @@ export function WorkOrdersPage({
     rows,
     search,
     searchableColumns,
-    tableSearch.applied,
+    resolvedMonitoringSearch,
     t,
     workOrderIdParam,
   ])
+
+  const workOrdersDefaultMultiSortMeta = useMemo(
+    () => [{ field: 'wo_key', order: -1 as const }],
+    [],
+  )
 
   const tw = useTableWizard<WorkOrder>({
     appPath: isMonitoring ? '/monitoring' : '/work-orders',
     columnDefs: tableColumnDefs,
     largeTableRowCount: filteredRows.length,
     layoutToastRef: toast,
+    defaultMultiSortMeta: workOrdersDefaultMultiSortMeta,
   })
 
   useTableWizardToastEffect(toast, tw.toastError, tw.clearToastError, t)
@@ -902,6 +1252,43 @@ export function WorkOrdersPage({
     },
     [t],
   )
+
+  const postStartWo = useCallback(
+    async (row: WorkOrder) => {
+      try {
+        const data = await apiJson<WorkOrderResponse>(
+          `/api/work-orders/${encodeURIComponent(row.id)}/actions/start`,
+          { method: 'POST', body: JSON.stringify({}) },
+        )
+        setRows((prev) =>
+          prev.map((w) => (w.id === row.id ? data.work_order : w)),
+        )
+        setSelected((cur) =>
+          cur?.id === row.id ? data.work_order : cur,
+        )
+        flashMonitoringWorkOrderRow(data.work_order.id)
+        flashMonitoringChangedFields(row, data.work_order)
+        showSuccess(t('wo.updated'))
+      } catch (e) {
+        if (e instanceof ApiError) {
+          showError(e.message)
+        } else {
+          showError(t('wo.save_fail'))
+        }
+      }
+    },
+    [
+      flashMonitoringChangedFields,
+      flashMonitoringWorkOrderRow,
+      showError,
+      showSuccess,
+      t,
+    ],
+  )
+
+  postStartWorkOrderRef.current = (r) => {
+    void postStartWo(r)
+  }
 
   useEffect(() => {
     if (!tableSearchToastError) return
@@ -990,6 +1377,19 @@ export function WorkOrdersPage({
   useEffect(() => {
     void loadWorkgroups()
   }, [loadWorkgroups])
+
+  const loadEmployeesForFilter = useCallback(async () => {
+    try {
+      const data = await apiJson<EmployeesListResponse>('/api/employees')
+      setEmployeesForFilter(data.employees ?? [])
+    } catch {
+      setEmployeesForFilter([])
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadEmployeesForFilter()
+  }, [loadEmployeesForFilter])
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -1207,7 +1607,7 @@ export function WorkOrdersPage({
     ? formatDateTime(planEndPreview.toISOString())
     : emDash
 
-  const linkedToWorkPlan = Boolean(editingWo?.work_plan_id)
+  const linkedToWorkPlan = editingWo ? workOrderHasLinkedPlan(editingWo) : false
 
   const workPlanTabIntervalType = useMemo(() => {
     const raw = editingWo?.work_plan_interval_time_type
@@ -1262,34 +1662,83 @@ export function WorkOrdersPage({
 
   useRegisterCreateShortcut(openCreate)
 
-  async function openEdit(row: WorkOrder) {
+  function resetFeedbackForm() {
+    setFbSelfText('')
+    setFbSelfHours(0)
+    setFbExtraEmployeeIds([])
+    setFbExtraText({})
+    setFbExtraHours({})
+    setFbTargetStatus('')
+    setFbHoldReason('')
+  }
+
+  async function openEdit(row: WorkOrder, initialTab?: number) {
     const id = row.id
     workOrderInstructionsFetchForIdRef.current = id
-    setEditingId(id)
-    setFormShortText(row.short_text)
-    setFormAssetId(row.asset_id)
-    setPickedAsset(null)
-    setFormInstruction(row.instruction_text)
-    setFormPlanStart(row.plan_start ? new Date(row.plan_start) : null)
-    setFormDurationHours(Number(row.duration ?? '0'))
-    setFormWorktime(parseWorktimeNum(row.worktime))
-    setFormWorkTypeId(row.work_type_id)
-    setFormCategoryId(row.category_id ?? null)
-    setFormWorkgroupId(row.workgroup_id)
-    setFormStatus(row.status)
-    setAssetPickerOpen(false)
-    setDialogTab(0)
-    setFormWorkInstructions(
-      row.work_instructions?.length
-        ? workInstructionsFromApi(row.work_instructions)
-        : [],
-    )
+
+    const rowFeedbackIdx = feedbackTabIndexForRow(row)
+    const openingToFeedbackTab =
+      initialTab !== undefined && initialTab === rowFeedbackIdx
+
+    const applyRowToForm = (r: WorkOrder, tabIndex: number) => {
+      setEditingId(id)
+      setFormShortText(r.short_text)
+      setFormAssetId(r.asset_id)
+      setPickedAsset(null)
+      setFormInstruction(r.instruction_text)
+      setFormPlanStart(r.plan_start ? new Date(r.plan_start) : null)
+      setFormDurationHours(Number(r.duration ?? '0'))
+      setFormWorktime(parseWorktimeNum(r.worktime))
+      setFormWorkTypeId(r.work_type_id)
+      setFormCategoryId(r.category_id ?? null)
+      setFormWorkgroupId(r.workgroup_id)
+      setFormStatus(r.status)
+      setAssetPickerOpen(false)
+      setDialogTab(tabIndex)
+      if (tabIndex === feedbackTabIndexForRow(r)) {
+        resetFeedbackForm()
+      }
+      setFormWorkInstructions(
+        r.work_instructions?.length
+          ? workInstructionsFromApi(r.work_instructions)
+          : [],
+      )
+    }
+
+    // Stop / Create Feedback: list rows often omit work_plan_*; opening the dialog first
+    // with a 4-tab layout then merging detail (5 tabs) shifts indices so index 3 becomes Planning.
+    // Fetch first, merge, then open with the correct Feedback index in one paint.
+    if (openingToFeedbackTab) {
+      try {
+        const data = await apiJson<WorkOrderResponse>(
+          `/api/work-orders/${encodeURIComponent(id)}`,
+        )
+        if (workOrderInstructionsFetchForIdRef.current !== id) return
+        const wo = data.work_order
+        setRows((prev) => prev.map((w) => (w.id === id ? wo : w)))
+        setSelected((cur) => (cur?.id === id ? wo : cur))
+        applyRowToForm(wo, feedbackTabIndexForRow(wo))
+        setDialogOpen(true)
+      } catch {
+        if (workOrderInstructionsFetchForIdRef.current !== id) return
+        applyRowToForm(row, rowFeedbackIdx)
+        setDialogOpen(true)
+      }
+      return
+    }
+
+    const tab = initialTab ?? 0
+    applyRowToForm(row, tab)
     setDialogOpen(true)
     try {
       const data = await apiJson<WorkOrderResponse>(
         `/api/work-orders/${encodeURIComponent(id)}`,
       )
       if (workOrderInstructionsFetchForIdRef.current !== id) return
+      setRows((prev) =>
+        prev.map((w) => (w.id === id ? data.work_order : w)),
+      )
+      setSelected((cur) => (cur?.id === id ? data.work_order : cur))
       setFormWorkInstructions(
         workInstructionsFromApi(data.work_order.work_instructions ?? []),
       )
@@ -1303,28 +1752,272 @@ export function WorkOrdersPage({
     }
   }
 
-  async function saveWorkOrder() {
+  openFeedbackTabRef.current = (row) => {
+    void openEdit(row, feedbackTabIndexForRow(row))
+  }
+
+  const loadWoTransactions = useCallback(
+    async (woId: string) => {
+      setWoTxLoading(true)
+      try {
+        const data = await apiJson<WoTransactionsResponse>(
+          `/api/work-orders/${encodeURIComponent(woId)}/transactions`,
+        )
+        setWoTxList(data.transactions ?? [])
+      } catch (e) {
+        setWoTxList([])
+        if (e instanceof ApiError) {
+          showError(e.message)
+        }
+      } finally {
+        setWoTxLoading(false)
+      }
+    },
+    [showError],
+  )
+
+  const editingRowForFeedback = useMemo(
+    () => (editingId ? rows.find((w) => w.id === editingId) ?? null : null),
+    [editingId, rows],
+  )
+  /** Must match TabView: Work plan panel uses `linkedToWorkPlan` from `editingWo`, not list-only row. */
+  const feedbackTabIdx =
+    editingId != null && editingWo != null
+      ? feedbackTabIndexForRow(editingWo)
+      : -1
+
+  useEffect(() => {
+    if (
+      !dialogOpen ||
+      !editingId ||
+      feedbackTabIdx < 0 ||
+      dialogTab !== feedbackTabIdx
+    ) {
+      setFeedbackPoolAvailable([])
+      return
+    }
+    if (woStartRequiresAssignment || !woUserAutoAssignOnStart) {
+      setFeedbackPoolAvailable([])
+      return
+    }
+    void loadFeedbackEmployeePool(editingId)
+  }, [
+    dialogOpen,
+    editingId,
+    dialogTab,
+    feedbackTabIdx,
+    woStartRequiresAssignment,
+    woUserAutoAssignOnStart,
+    loadFeedbackEmployeePool,
+  ])
+
+  const fbExtraEmployeeOptions = useMemo(() => {
+    if (!editingRowForFeedback) return []
+    const assignedSet = new Set(
+      editingRowForFeedback.assigned_employee_ids ?? [],
+    )
+    const allowPool =
+      !woStartRequiresAssignment && woUserAutoAssignOnStart
+    const idSet = new Set<string>()
+    for (const eid of assignedSet) {
+      if (eid !== currentEmployeeId) idSet.add(eid)
+    }
+    if (allowPool) {
+      for (const p of feedbackPoolAvailable) {
+        if (p.employee_id !== currentEmployeeId) {
+          idSet.add(p.employee_id)
+        }
+      }
+    }
+    const idToLabel = new Map<string, string>()
+    for (const e of employeesForFilter) {
+      if (idSet.has(e.id)) {
+        idToLabel.set(e.id, `${e.key} ${emDash} ${e.name}`)
+      }
+    }
+    if (allowPool) {
+      for (const p of feedbackPoolAvailable) {
+        if (
+          idSet.has(p.employee_id) &&
+          !idToLabel.has(p.employee_id)
+        ) {
+          idToLabel.set(
+            p.employee_id,
+            `${p.employee_key} ${emDash} ${p.employee_name}`,
+          )
+        }
+      }
+    }
+    return [...idSet]
+      .sort((a, b) =>
+        (idToLabel.get(a) ?? a).localeCompare(idToLabel.get(b) ?? b),
+      )
+      .map((id) => ({
+        value: id,
+        label: idToLabel.get(id) ?? id,
+      }))
+  }, [
+    editingRowForFeedback,
+    employeesForFilter,
+    currentEmployeeId,
+    emDash,
+    woStartRequiresAssignment,
+    woUserAutoAssignOnStart,
+    feedbackPoolAvailable,
+  ])
+
+  useEffect(() => {
+    if (!dialogOpen || !editingId || feedbackTabIdx < 0) return
+    if (dialogTab !== feedbackTabIdx) return
+    void loadWoTransactions(editingId)
+  }, [dialogOpen, dialogTab, editingId, feedbackTabIdx, loadWoTransactions])
+
+  function openHoldDialog(row: WorkOrder) {
+    setHoldDialogRow(row)
+    setHoldDialogReason('')
+    setHoldDialogOpen(true)
+  }
+
+  async function submitHoldDialog() {
+    const row = holdDialogRow
+    const reason = holdDialogReason.trim()
+    if (!row || !reason) {
+      showError(t('wo.hold_reason_required'))
+      return
+    }
+    setHoldSubmitting(true)
+    try {
+      const data = await apiJson<WorkOrderResponse>(
+        `/api/work-orders/${encodeURIComponent(row.id)}/actions/hold`,
+        { method: 'POST', body: JSON.stringify({ reason }) },
+      )
+      setRows((prev) => prev.map((w) => (w.id === row.id ? data.work_order : w)))
+      setSelected((cur) => (cur?.id === row.id ? data.work_order : cur))
+      flashMonitoringWorkOrderRow(data.work_order.id)
+      flashMonitoringChangedFields(row, data.work_order)
+      showSuccess(t('wo.updated'))
+      setHoldDialogOpen(false)
+      setHoldDialogRow(null)
+      setHoldDialogReason('')
+    } catch (e) {
+      if (e instanceof ApiError) {
+        showError(e.message)
+      } else {
+        showError(t('wo.save_fail'))
+      }
+    } finally {
+      setHoldSubmitting(false)
+    }
+  }
+
+  async function submitFeedbackForm(rowOverride?: WorkOrder | null) {
+    if (!editingId) return
+    const row = rowOverride ?? editingRowForFeedback
+    if (!row) return
+    const entries: {
+      employee_id: string
+      feedback_text: string
+      hours: number
+    }[] = []
+    const selfId = currentEmployeeId
+    const selfAssigned =
+      !!selfId && (row.assigned_employee_ids ?? []).includes(selfId)
+    const showSelfFeedback =
+      !!selfId && (selfAssigned || !woStartRequiresAssignment)
+    if (showSelfFeedback) {
+      const text = fbSelfText.trim()
+      const h = fbSelfHours ?? 0
+      if (text.length > 0 || h > 0) {
+        entries.push({
+          employee_id: selfId,
+          feedback_text: text,
+          hours: h,
+        })
+      }
+    }
+    for (const eid of fbExtraEmployeeIds) {
+      const text = (fbExtraText[eid] ?? '').trim()
+      const h = Number(fbExtraHours[eid] ?? 0)
+      if (text.length > 0 || h > 0) {
+        entries.push({
+          employee_id: eid,
+          feedback_text: text,
+          hours: h,
+        })
+      }
+    }
+    if (entries.length === 0) {
+      showError(t('wo.feedback_entries_required'))
+      return
+    }
+    if (fbTargetStatus === 'on_hold' && !fbHoldReason.trim()) {
+      showError(t('wo.hold_reason_required'))
+      return
+    }
+    setFbSaving(true)
+    try {
+      const body: Record<string, unknown> = { entries }
+      if (fbTargetStatus === 'on_hold') {
+        body.target_status = 'on_hold'
+        body.hold_reason = fbHoldReason.trim()
+      } else if (fbTargetStatus === 'done') {
+        body.target_status = 'done'
+      }
+      const data = await apiJson<WorkOrderResponse>(
+        `/api/work-orders/${encodeURIComponent(editingId)}/actions/feedback`,
+        { method: 'POST', body: JSON.stringify(body) },
+      )
+      setRows((prev) =>
+        prev.map((w) => (w.id === editingId ? data.work_order : w)),
+      )
+      setSelected((cur) =>
+        cur?.id === editingId ? data.work_order : cur,
+      )
+      flashMonitoringWorkOrderRow(data.work_order.id)
+      flashMonitoringChangedFields(row, data.work_order)
+      showSuccess(t('wo.updated'))
+      resetFeedbackForm()
+      await loadWoTransactions(editingId)
+    } catch (e) {
+      if (e instanceof ApiError) {
+        showError(e.message)
+      } else {
+        showError(t('wo.save_fail'))
+      }
+    } finally {
+      setFbSaving(false)
+    }
+  }
+
+  type SaveWorkOrderOk =
+    | { ok: true; workOrder?: WorkOrder }
+    | { ok: false }
+
+  async function saveWorkOrder(options?: {
+    keepOpen?: boolean
+    skipSuccessToast?: boolean
+  }): Promise<SaveWorkOrderOk> {
     const shortText = formShortText.trim()
     const instruction = formInstruction.trim()
     if (!shortText) {
       showError(t('wo.err_short_text'))
-      return
+      return { ok: false }
     }
     if (!instruction) {
       showError(t('wo.err_instruction'))
-      return
+      return { ok: false }
     }
     if (instruction.length > 2000) {
       showError(t('wo.err_instruction_len'))
-      return
+      return { ok: false }
     }
     if (!formAssetId) {
       showError(t('wo.err_asset'))
-      return
+      return { ok: false }
     }
     if (formWorktime == null || formWorktime < 0 || !Number.isFinite(formWorktime)) {
       showError(t('wo.err_worktime'))
-      return
+      return { ok: false }
     }
     if (
       formDurationHours == null ||
@@ -1332,7 +2025,7 @@ export function WorkOrdersPage({
       formDurationHours < 0
     ) {
       showError(t('wp.err_duration'))
-      return
+      return { ok: false }
     }
 
     const resolvedWorkTypeId = linkedToWorkPlan
@@ -1340,11 +2033,11 @@ export function WorkOrdersPage({
       : formWorkTypeId
     if (!resolvedWorkTypeId) {
       showError(t('wo.err_work_type'))
-      return
+      return { ok: false }
     }
     if (!formWorkgroupId) {
       showError(t('wo.err_workgroup'))
-      return
+      return { ok: false }
     }
 
     const body: Record<string, unknown> = {
@@ -1382,8 +2075,13 @@ export function WorkOrdersPage({
         )
         flashMonitoringWorkOrderRow(data.work_order.id)
         flashMonitoringChangedFields(before, data.work_order)
-        showSuccess(t('wo.updated'))
-        setDialogOpen(false)
+        if (!options?.skipSuccessToast) {
+          showSuccess(t('wo.updated'))
+        }
+        if (!options?.keepOpen) {
+          setDialogOpen(false)
+        }
+        return { ok: true, workOrder: data.work_order }
       } else {
         const data = await apiJson<WorkOrderResponse>('/api/work-orders', {
           method: 'POST',
@@ -1398,6 +2096,7 @@ export function WorkOrdersPage({
         setSelected(data.work_order)
         setDialogOpen(false)
         showSuccess(t('wo.created'))
+        return { ok: true }
       }
     } catch (e) {
       if (e instanceof ApiError) {
@@ -1405,9 +2104,19 @@ export function WorkOrdersPage({
       } else {
         showError(t('wo.save_fail'))
       }
+      return { ok: false }
     } finally {
       setSaving(false)
     }
+  }
+
+  async function saveAndSubmitFeedback() {
+    const saveResult = await saveWorkOrder({
+      keepOpen: true,
+      skipSuccessToast: true,
+    })
+    if (!saveResult.ok || !saveResult.workOrder) return
+    await submitFeedbackForm(saveResult.workOrder)
   }
 
   async function createDummyWorkOrder() {
@@ -1514,33 +2223,108 @@ export function WorkOrdersPage({
     }
   }
 
-  async function quickAdvanceStatus(row: WorkOrder) {
-    const nextStatus = nextStatusInFlow(row.status)
-    if (!nextStatus) return
+  const employeePoolItemTemplate = useCallback((item: EmployeePickItem) => {
+    return (
+      <div className="flex flex-column gap-0 py-1">
+        <span className="text-sm font-medium">{item.key}</span>
+        <span className="text-xs text-color-secondary">{item.name}</span>
+      </div>
+    )
+  }, [])
+
+  function closeEmployeeAssignmentDialog() {
+    if (employeeAssignSaving) return
+    setEmployeeAssignOpen(false)
+    setEmployeeAssignWoId(null)
+    setEmployeeAssignDirty(false)
+    setEmployeeAssignLoading(false)
+    setEmployeeSourcePool([])
+    setEmployeeTargetPool([])
+    employeeTargetPoolRef.current = []
+    employeeInitialSourceRef.current = []
+    employeeInitialTargetRef.current = []
+  }
+
+  async function openEmployeeAssignment(row: WorkOrder) {
+    setSelected(row)
+    setEmployeeAssignWoId(row.id)
+    setEmployeeAssignOpen(true)
+    setEmployeeAssignLoading(true)
+    setEmployeeAssignDirty(false)
     try {
-      const data = await apiJson<WorkOrderResponse>(
-        `/api/work-orders/${encodeURIComponent(row.id)}`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({
-            status: nextStatus,
-            workgroup_id: row.workgroup_id,
-          }),
-        },
+      const data = await apiJson<WorkOrderEmployeePoolResponse>(
+        `/api/work-orders/${encodeURIComponent(row.id)}/employees/pool`,
       )
-      setRows((prev) =>
-        prev.map((w) => (w.id === row.id ? data.work_order : w)),
-      )
-      setSelected((cur) => (cur?.id === row.id ? data.work_order : cur))
-      flashMonitoringWorkOrderRow(data.work_order.id)
-      flashMonitoringChangedFields(row, data.work_order)
-      showSuccess(t('monitoring.quick_status_success'))
+      const source = (data.available ?? []).map(poolDtoToItem)
+      const target = (data.assigned ?? []).map(poolDtoToItem)
+      setEmployeeSourcePool(source)
+      setEmployeeTargetPool(target)
+      employeeTargetPoolRef.current = target
+      employeeInitialSourceRef.current = source
+      employeeInitialTargetRef.current = target
     } catch (e) {
       if (e instanceof ApiError) {
         showError(e.message)
       } else {
-        showError(t('monitoring.quick_status_error'))
+        showError(t('wo.assignment_load_fail'))
       }
+      closeEmployeeAssignmentDialog()
+    } finally {
+      setEmployeeAssignLoading(false)
+    }
+  }
+
+  const onEmployeePickListChange = useCallback(
+    (e: { source: EmployeePickItem[]; target: EmployeePickItem[] }) => {
+      setEmployeeSourcePool(e.source)
+      setEmployeeTargetPool(e.target)
+      employeeTargetPoolRef.current = e.target
+      setEmployeeAssignDirty(true)
+    },
+    [],
+  )
+
+  function revertEmployeeAssignment() {
+    const source = employeeInitialSourceRef.current
+    const target = employeeInitialTargetRef.current
+    setEmployeeSourcePool(source)
+    setEmployeeTargetPool(target)
+    employeeTargetPoolRef.current = target
+    setEmployeeAssignDirty(false)
+  }
+
+  async function saveEmployeeAssignment() {
+    if (!employeeAssignWoId) return
+    setEmployeeAssignSaving(true)
+    try {
+      const before = rows.find((w) => w.id === employeeAssignWoId) ?? null
+      const data = await apiJson<WorkOrderEmployeeAssignResponse>(
+        `/api/work-orders/${encodeURIComponent(employeeAssignWoId)}/employees`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            employee_ids: employeeTargetPoolRef.current.map((item) => item.id),
+          }),
+        },
+      )
+      setRows((prev) =>
+        prev.map((w) => (w.id === employeeAssignWoId ? data.work_order : w)),
+      )
+      setSelected((cur) =>
+        cur?.id === employeeAssignWoId ? data.work_order : cur,
+      )
+      flashMonitoringWorkOrderRow(data.work_order.id)
+      flashMonitoringChangedFields(before, data.work_order)
+      showSuccess(t('wo.assignment_saved'))
+      closeEmployeeAssignmentDialog()
+    } catch (e) {
+      if (e instanceof ApiError) {
+        showError(e.message)
+      } else {
+        showError(t('wo.assignment_save_fail'))
+      }
+    } finally {
+      setEmployeeAssignSaving(false)
     }
   }
 
@@ -1550,6 +2334,8 @@ export function WorkOrdersPage({
 
   const selectedIsDeleting =
     !!selected && recentlyDeletedWorkOrderIds.has(selected.id)
+  const canOpenEmployeeAssignment =
+    !!selected && !selectedIsDeleting && !employeeAssignSaving
   const selectedForSubscription = useMemo(
     () =>
       (selected ? [selected] : []).filter(
@@ -1558,11 +2344,6 @@ export function WorkOrdersPage({
     [recentlyDeletedWorkOrderIds, selected],
   )
   const hasSubscriptionTargets = selectedForSubscription.length > 0
-  const canAdvanceStatus =
-    isMonitoring &&
-    !!selected &&
-    !selectedIsDeleting &&
-    !!nextStatusInFlow(selected.status)
 
   async function bulkSubscription(action: 'subscribe' | 'unsubscribe') {
     if (!hasSubscriptionTargets) return
@@ -1674,19 +2455,38 @@ export function WorkOrdersPage({
         },
       },
     ),
-    ...(isMonitoring
-      ? [
-          { separator: true } as MenuItem,
-          {
-            label: t('monitoring.quick_status'),
-            icon: 'pi pi-bolt',
-            disabled: !canAdvanceStatus,
-            command: () => {
-              if (selected) void quickAdvanceStatus(selected)
-            },
-          } as MenuItem,
-        ]
-      : []),
+    { separator: true } as MenuItem,
+    {
+      label: t('wo.employee_assignment_action'),
+      icon: 'pi pi-user-plus',
+      disabled: !canOpenEmployeeAssignment,
+      command: () => {
+        if (selected) void openEmployeeAssignment(selected)
+      },
+    } as MenuItem,
+    { separator: true } as MenuItem,
+    {
+      label: t('wo.action_set_hold'),
+      icon: 'pi pi-pause',
+      disabled:
+        !selected ||
+        selectedIsDeleting ||
+        (selected.status !== 'started' && selected.status !== 'continued'),
+      command: () => {
+        if (selected) openHoldDialog(selected)
+      },
+    } as MenuItem,
+    {
+      label: t('wo.action_create_feedback'),
+      icon: 'pi pi-comments',
+      disabled:
+        !selected ||
+        selectedIsDeleting ||
+        (selected.status !== 'started' && selected.status !== 'continued'),
+      command: () => {
+        if (selected) openFeedbackTabRef.current(selected)
+      },
+    } as MenuItem,
     { separator: true } as MenuItem,
     {
       label: t('notifications.subscribe_action'),
@@ -1742,7 +2542,6 @@ export function WorkOrdersPage({
         draft={tableSearch.draft}
         onDraftRangeFieldChange={tableSearch.setDraftRangeField}
         onDraftMultiValuesChange={tableSearch.setDraftMultiValues}
-        onClearField={tableSearch.clearDraftField}
         onApply={() => {
           tableSearch.applyDraft()
           setSearchPanelOpen(false)
@@ -1781,6 +2580,81 @@ export function WorkOrdersPage({
         reportError={showError}
         onAfterInstructionsChange={() => void loadWorkOrders({ silent: true })}
       />
+      <Dialog
+        header={t('wo.employee_assignment_title')}
+        visible={employeeAssignOpen}
+        onHide={closeEmployeeAssignmentDialog}
+        style={{ width: 'min(56rem, 98vw)' }}
+        footer={
+          <div className="flex justify-content-between align-items-center gap-2 flex-wrap w-full">
+            <Button
+              type="button"
+              label={t('wo.employee_assignment_revert')}
+              icon="pi pi-undo"
+              severity="secondary"
+              outlined
+              onClick={revertEmployeeAssignment}
+              disabled={
+                !employeeAssignDirty || employeeAssignSaving || employeeAssignLoading
+              }
+            />
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                label={t('common.cancel')}
+                severity="secondary"
+                outlined
+                onClick={closeEmployeeAssignmentDialog}
+                disabled={employeeAssignSaving}
+              />
+              <Button
+                type="button"
+                label={t('common.save')}
+                icon="pi pi-check"
+                onClick={() => void saveEmployeeAssignment()}
+                loading={employeeAssignSaving}
+                disabled={
+                  !employeeAssignDirty || employeeAssignSaving || employeeAssignLoading
+                }
+              />
+            </div>
+          </div>
+        }
+      >
+        <p className="text-sm text-color-secondary mt-0 mb-3">
+          {t('wo.employee_assignment_hint')}
+        </p>
+        {employeeAssignLoading ? (
+          <div className="text-sm text-color-secondary py-4">
+            {t('common.loading')}
+          </div>
+        ) : (
+          <div
+            className={
+              employeeAssignSaving ? 'opacity-60 pointer-events-none select-none' : ''
+            }
+          >
+            <PickList
+              className="wo-employee-picklist w-full"
+              dataKey="id"
+              source={employeeSourcePool}
+              target={employeeTargetPool}
+              onChange={onEmployeePickListChange}
+              itemTemplate={employeePoolItemTemplate}
+              sourceHeader={t('wo.pool_available')}
+              targetHeader={t('wo.pool_assigned')}
+              filter
+              filterBy="key,name"
+              sourceFilterPlaceholder={t('common.search_ellipsis')}
+              targetFilterPlaceholder={t('common.search_ellipsis')}
+              showSourceControls={false}
+              showTargetControls={false}
+              metaKeySelection={false}
+              breakpoint="768px"
+            />
+          </div>
+        )}
+      </Dialog>
 
       <div
         className={[
@@ -1825,11 +2699,11 @@ export function WorkOrdersPage({
                   />
                   <Button
                     type="button"
-                    label={t('monitoring.quick_status')}
-                    icon="pi pi-bolt"
+                    label={t('wo.employee_assignment_action')}
+                    icon="pi pi-user-plus"
                     size="small"
-                    disabled={!canAdvanceStatus}
-                    onClick={() => selected && void quickAdvanceStatus(selected)}
+                    disabled={!canOpenEmployeeAssignment}
+                    onClick={() => selected && void openEmployeeAssignment(selected)}
                   />
                   <Button
                     type="button"
@@ -1865,36 +2739,35 @@ export function WorkOrdersPage({
                   className="w-15rem"
                   disabled={!isMonitoring || searchPresetQuickOptions.length === 0}
                 />
-                <IconField
-                  iconPosition="left"
-                  className="app-crud-toolbar-search flex-shrink-0"
+                <div
+                  className="p-inputgroup app-monitoring-searchgroup flex-shrink-0"
                   style={{ width: '20rem' }}
                 >
-                  <InputIcon className="pi pi-search" />
-                  <InputText
-                    ref={toolbarSearchRef}
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder={t('common.search_ellipsis')}
-                    aria-label={t('monitoring.search_aria')}
-                    className="w-full"
+                  <IconField iconPosition="left" className="app-crud-toolbar-search w-full">
+                    <InputIcon className="pi pi-search" />
+                    <InputText
+                      ref={toolbarSearchRef}
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder={t('common.search_ellipsis')}
+                      aria-label={t('monitoring.search_aria')}
+                      className="w-full"
+                    />
+                  </IconField>
+                  <Button
+                    type="button"
+                    icon="pi pi-sliders-h"
+                    size="small"
+                    outlined
+                    severity={
+                      tableSearch.activeCriteriaCount > 0 ? 'help' : 'secondary'
+                    }
+                    className="app-monitoring-searchpanel-trigger"
+                    aria-label={t('search_panel.title')}
+                    onClick={() => setSearchPanelOpen(true)}
+                    disabled={tableSearch.loading}
                   />
-                </IconField>
-                <Button
-                  type="button"
-                  label={t('search_panel.title')}
-                  icon="pi pi-sliders-h"
-                  size="small"
-                  outlined
-                  badge={
-                    tableSearch.activeCriteriaCount > 0
-                      ? String(tableSearch.activeCriteriaCount)
-                      : undefined
-                  }
-                  badgeClassName="p-badge-info"
-                  onClick={() => setSearchPanelOpen(true)}
-                  disabled={tableSearch.loading}
-                />
+                </div>
                 {tw.heroTableWizard}
               </div>
             </div>
@@ -2008,6 +2881,13 @@ export function WorkOrdersPage({
                     />
                     <Button
                       type="button"
+                      label={t('wo.employee_assignment_action')}
+                      icon="pi pi-user-plus"
+                      disabled={!canOpenEmployeeAssignment}
+                      onClick={() => selected && void openEmployeeAssignment(selected)}
+                    />
+                    <Button
+                      type="button"
                       label={t('notifications.subscribe_action')}
                       icon="pi pi-bell"
                       outlined
@@ -2093,23 +2973,24 @@ export function WorkOrdersPage({
         }
         visible={dialogOpen}
         onHide={() => {
+          if (saving || fbSaving) return
           workOrderInstructionsFetchForIdRef.current = null
           setAssetPickerOpen(false)
           setDialogOpen(false)
         }}
-        dismissableMask={!saving}
+        dismissableMask={!(saving || fbSaving)}
         className="work-order-dialog"
         style={{ width: 'min(92rem, 98vw)' }}
         breakpoints={{ '1280px': '98vw', '960px': '96vw', '640px': '100vw' }}
         footer={
-          <div className="flex justify-content-end gap-2">
+          <div className="flex justify-content-end gap-2 flex-wrap">
             <Button
               type="button"
               label={t('common.cancel')}
               severity="secondary"
               outlined
               onClick={() => setDialogOpen(false)}
-              disabled={saving}
+              disabled={saving || fbSaving}
             />
             <Button
               type="button"
@@ -2117,7 +2998,20 @@ export function WorkOrdersPage({
               icon="pi pi-check"
               onClick={() => void saveWorkOrder()}
               loading={saving}
+              disabled={saving || fbSaving}
             />
+            {editingId &&
+            feedbackTabIdx >= 0 &&
+            dialogTab === feedbackTabIdx ? (
+              <Button
+                type="button"
+                label={t('wo.feedback_save_and_submit')}
+                icon="pi pi-check"
+                onClick={() => void saveAndSubmitFeedback()}
+                loading={saving || fbSaving}
+                disabled={saving || fbSaving}
+              />
+            ) : null}
           </div>
         }
       >
@@ -2210,7 +3104,7 @@ export function WorkOrdersPage({
                   </div>
                 </div>
               </div>
-              {editingId && editingWo?.work_plan_id ? (
+              {editingId && editingWo && workOrderHasLinkedPlan(editingWo) ? (
                 <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
                   <span className="text-sm font-medium">
                     {t('wo.field_work_plan')}
@@ -2449,7 +3343,271 @@ export function WorkOrdersPage({
               </div>
             </div>
           </TabPanel>
+          {editingId ? (
+            <TabPanel header={t('wo.tab_feedback')}>
+              <div className="app-modal-tab-content flex flex-column gap-3 pt-2">
+                    <div className="grid">
+                      {currentEmployeeId &&
+                      ((editingRowForFeedback?.assigned_employee_ids ?? []).includes(
+                        currentEmployeeId,
+                      ) ||
+                        !woStartRequiresAssignment) ? (
+                        <div className="col-12 md:col-6 flex flex-column gap-2">
+                          <span className="text-sm font-medium">
+                            {t('wo.feedback_self_section')}
+                          </span>
+                          <label className="text-xs text-color-secondary">
+                            {t('wo.feedback_text')}
+                          </label>
+                          <InputTextarea
+                            value={fbSelfText}
+                            onChange={(e) => setFbSelfText(e.target.value)}
+                            rows={3}
+                            className="w-full"
+                            disabled={fbSaving}
+                          />
+                          <label className="text-xs text-color-secondary">
+                            {t('wo.feedback_hours')}
+                          </label>
+                          <InputNumber
+                            value={fbSelfHours}
+                            onValueChange={(e) => setFbSelfHours(e.value ?? 0)}
+                            min={0}
+                            maxFractionDigits={2}
+                            className="w-full"
+                            inputClassName="w-full min-w-0"
+                            disabled={fbSaving}
+                          />
+                        </div>
+                      ) : null}
+                      <div className="col-12 md:col-6 flex flex-column gap-2">
+                        <label className="text-sm font-medium">
+                          {t('wo.feedback_additional_employees')}
+                        </label>
+                        <MultiSelect
+                          value={fbExtraEmployeeIds}
+                          onChange={(e) => {
+                            const ids = (e.value as string[]) ?? []
+                            setFbExtraEmployeeIds(ids)
+                            setFbExtraText((prev) => {
+                              const next: Record<string, string> = {}
+                              for (const id of ids) {
+                                next[id] = prev[id] ?? ''
+                              }
+                              return next
+                            })
+                            setFbExtraHours((prev) => {
+                              const next: Record<string, number | null> = {}
+                              for (const id of ids) {
+                                next[id] = prev[id] ?? 0
+                              }
+                              return next
+                            })
+                          }}
+                          options={fbExtraEmployeeOptions}
+                          optionLabel="label"
+                          optionValue="value"
+                          display="chip"
+                          className="w-full"
+                          disabled={
+                            fbSaving || fbExtraEmployeeOptions.length === 0
+                          }
+                          placeholder={t('common.search_ellipsis')}
+                        />
+                        {fbExtraEmployeeIds.map((eid) => (
+                          <div
+                            key={eid}
+                            className="flex flex-column gap-2 border-200 border-1 border-round p-2"
+                          >
+                            <span className="text-sm font-medium">
+                              {fbExtraEmployeeOptions.find((o) => o.value === eid)
+                                ?.label ?? eid}
+                            </span>
+                            <InputTextarea
+                              value={fbExtraText[eid] ?? ''}
+                              onChange={(e) =>
+                                setFbExtraText((prev) => ({
+                                  ...prev,
+                                  [eid]: e.target.value,
+                                }))
+                              }
+                              rows={2}
+                              className="w-full"
+                              disabled={fbSaving}
+                              placeholder={t('wo.feedback_text')}
+                            />
+                            <InputNumber
+                              value={fbExtraHours[eid] ?? 0}
+                              onValueChange={(e) =>
+                                setFbExtraHours((prev) => ({
+                                  ...prev,
+                                  [eid]: e.value ?? 0,
+                                }))
+                              }
+                              min={0}
+                              maxFractionDigits={2}
+                              className="w-full"
+                              inputClassName="w-full min-w-0"
+                              disabled={fbSaving}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="col-12 md:col-6 flex flex-column gap-2">
+                        <label className="text-sm font-medium">
+                          {t('wo.feedback_target_status')}
+                        </label>
+                        <Dropdown
+                          value={fbTargetStatus}
+                          options={[
+                            {
+                              value: '',
+                              label: t('wo.feedback_status_no_change'),
+                            },
+                            {
+                              value: 'on_hold',
+                              label: t(WO_STATUS_I18N_KEYS.on_hold),
+                            },
+                            {
+                              value: 'done',
+                              label: t(WO_STATUS_I18N_KEYS.done),
+                            },
+                          ]}
+                          onChange={(e) =>
+                            setFbTargetStatus(
+                              (e.value as '' | 'on_hold' | 'done') ?? '',
+                            )
+                          }
+                          optionLabel="label"
+                          optionValue="value"
+                          className="w-full"
+                          disabled={fbSaving}
+                        />
+                      </div>
+                      {fbTargetStatus === 'on_hold' ? (
+                        <div className="col-12 flex flex-column gap-2">
+                          <label className="text-sm font-medium">
+                            {t('wo.hold_reason_label')}
+                          </label>
+                          <InputTextarea
+                            value={fbHoldReason}
+                            onChange={(e) => setFbHoldReason(e.target.value)}
+                            rows={3}
+                            className="w-full"
+                            disabled={fbSaving}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
+                    <Button
+                      type="button"
+                      label={t('wo.feedback_submit')}
+                      icon="pi pi-check"
+                      onClick={() => void submitFeedbackForm()}
+                      loading={fbSaving}
+                    />
+                <h3 className="text-sm font-medium mt-3 mb-0">
+                  {t('transactions.title')}
+                </h3>
+                {woTxLoading ? (
+                  <p className="text-sm text-color-secondary m-0">
+                    {t('common.loading')}
+                  </p>
+                ) : (
+                  <DataTable
+                    value={woTxList}
+                    dataKey="id"
+                    size="small"
+                    emptyMessage={emDash}
+                  >
+                    <Column
+                      field="created_at"
+                      header={t('transactions.col_created_at')}
+                      body={(r: WoTransactionRow) =>
+                        formatDateTime(r.created_at)
+                      }
+                    />
+                    <Column
+                      field="employee_key"
+                      header={t('transactions.col_employee')}
+                      body={(r: WoTransactionRow) =>
+                        `${r.employee_key} ${emDash} ${r.employee_name}`
+                      }
+                    />
+                    <Column
+                      field="hours"
+                      header={t('transactions.col_hours')}
+                    />
+                    <Column
+                      field="feedback_text"
+                      header={t('transactions.col_feedback')}
+                      style={{ maxWidth: '24rem' }}
+                    />
+                    <Column
+                      field="created_by_login_name"
+                      header={t('common.col_created_by')}
+                      body={(r: WoTransactionRow) =>
+                        r.created_by_login_name ?? emDash
+                      }
+                    />
+                  </DataTable>
+                )}
+              </div>
+            </TabPanel>
+          ) : null}
         </TabView>
+      </Dialog>
+
+      <Dialog
+        header={t('wo.hold_dialog_title')}
+        visible={holdDialogOpen}
+        onHide={() => {
+          if (holdSubmitting) return
+          setHoldDialogOpen(false)
+          setHoldDialogRow(null)
+          setHoldDialogReason('')
+        }}
+        style={{ width: 'min(36rem, 96vw)' }}
+        dismissableMask={!holdSubmitting}
+        footer={
+          <div className="flex justify-content-end gap-2">
+            <Button
+              type="button"
+              label={t('common.cancel')}
+              severity="secondary"
+              outlined
+              disabled={holdSubmitting}
+              onClick={() => {
+                setHoldDialogOpen(false)
+                setHoldDialogRow(null)
+                setHoldDialogReason('')
+              }}
+            />
+            <Button
+              type="button"
+              label={t('common.save')}
+              icon="pi pi-check"
+              loading={holdSubmitting}
+              onClick={() => void submitHoldDialog()}
+            />
+          </div>
+        }
+      >
+        <div className="flex flex-column gap-2">
+          <label htmlFor="wo-hold-reason" className="text-sm font-medium">
+            {t('wo.hold_reason_label')}
+          </label>
+          <InputTextarea
+            id="wo-hold-reason"
+            value={holdDialogReason}
+            onChange={(e) => setHoldDialogReason(e.target.value)}
+            rows={4}
+            className="w-full"
+            disabled={holdSubmitting}
+            maxLength={2000}
+            autoResize
+          />
+        </div>
       </Dialog>
     </AppShell>
   )

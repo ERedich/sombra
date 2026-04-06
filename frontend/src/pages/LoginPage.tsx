@@ -410,6 +410,10 @@ export default function LoginPage() {
 function normalizeAuthUserFromApi(u: AuthUser): AuthUser {
   return {
     ...u,
+    employee_id: u.employee_id ?? null,
+    employee_workgroup_ids: Array.isArray(u.employee_workgroup_ids)
+      ? u.employee_workgroup_ids
+      : [],
     working_site_id: u.working_site_id ?? null,
     allow_site_change_on_login: Boolean(u.allow_site_change_on_login),
     additional_site_ids: Array.isArray(u.additional_site_ids)

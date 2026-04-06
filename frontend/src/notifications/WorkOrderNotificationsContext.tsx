@@ -8,8 +8,9 @@ import {
   useRef,
   useState,
 } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { Button } from 'primereact/button'
 import { Toast } from 'primereact/toast'
 import type { ToastMessage } from 'primereact/toast'
 import { ApiError, apiBase, apiJson } from '../api'
@@ -73,6 +74,7 @@ export function WorkOrderNotificationsProvider({
   children: ReactNode
 }) {
   const location = useLocation()
+  const navigate = useNavigate()
   const { t } = useTranslation()
   const toastRef = useRef<Toast>(null)
   const [items, setItems] = useState<WorkOrderNotificationItem[]>([])
@@ -129,6 +131,16 @@ export function WorkOrderNotificationsProvider({
     }
   }, [items])
 
+  const openWorkOrderFromToast = useCallback(
+    (workOrderId: string) => {
+      const id = workOrderId.trim()
+      if (!id) return
+      toastRef.current?.clear()
+      navigate(`/work-orders?workOrderId=${encodeURIComponent(id)}`)
+    },
+    [navigate],
+  )
+
   useEffect(() => {
     if (location.pathname === '/login' || !getToken()) {
       setItems([])
@@ -172,11 +184,35 @@ export function WorkOrderNotificationsProvider({
           if (!n.read_at) {
             setUnreadCount((v) => v + 1)
           }
+          const payloadWorkOrderId =
+            typeof n.payload_json?.work_order_id === 'string'
+              ? n.payload_json.work_order_id.trim()
+              : ''
+          const fallbackWorkOrderId = n.work_order_id?.trim() ?? ''
+          const workOrderId = payloadWorkOrderId || fallbackWorkOrderId
           const msg: ToastMessage = {
             severity: 'info',
             summary: t('notifications.toast_summary'),
             detail: n.message,
             life: 5000,
+          }
+          if (workOrderId) {
+            msg.content = () => (
+              <div className="flex flex-column gap-2">
+                <div className="font-medium">{t('notifications.toast_summary')}</div>
+                <div className="text-sm">{n.message}</div>
+                <div>
+                  <Button
+                    type="button"
+                    label={t('common.jump_to_file')}
+                    icon="pi pi-external-link"
+                    size="small"
+                    outlined
+                    onClick={() => openWorkOrderFromToast(workOrderId)}
+                  />
+                </div>
+              </div>
+            )
           }
           toastRef.current?.show(msg)
         } catch {
@@ -206,7 +242,7 @@ export function WorkOrderNotificationsProvider({
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       ws?.close()
     }
-  }, [location.pathname, t])
+  }, [location.pathname, openWorkOrderFromToast, t])
 
   const value = useMemo(
     () => ({

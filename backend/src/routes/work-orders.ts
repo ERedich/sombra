@@ -23,10 +23,18 @@ import {
 } from '../audit/auditLog.js'
 import { planEndFromStartAndDurationHours } from '../services/intervalUtc.js'
 import {
+  getWoStartRequiresAssignment,
+  getWoUserAutoAssignOnStart,
+} from '../services/appSettings.js'
+import {
+  buildWorkOrderEmployeeAssignedNotifications,
+  buildWorkOrderEmployeeDeassignedNotifications,
   buildWorkInstructionCreatedNotification,
   buildWorkInstructionDeletedNotification,
   buildWorkInstructionUpdatedNotifications,
   buildWorkOrderFieldChangeNotifications,
+  buildWorkOrderPutOnHoldNotification,
+  buildWorkOrderStartedNotification,
   createNotificationsForSubscribers,
 } from '../notifications/workOrderNotifications.js'
 const UUID_RE =
@@ -50,6 +58,7 @@ type WorkOrderTableRow = {
   duration: string
   category_id: string | null
   workgroup_id: string
+  hold_reason: string | null
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -78,8 +87,22 @@ type WorkOrderRow = WorkOrderTableRow & {
   workgroup_name: string
   has_material_assignment: boolean
   has_employee_assignment: boolean
+  assigned_employee_ids: string[]
   work_instruction_count: number
   work_instruction_done_count: number
+}
+
+type WorkOrderEmployeeRow = {
+  employee_id: string
+  employee_key: string
+  employee_name: string
+}
+
+type EmployeeSiteRow = {
+  id: string
+  site_id: string
+  key: string
+  name: string
 }
 
 function workingSiteIdOr403(res: Response, auth: AuthUser): string | null {
@@ -112,6 +135,7 @@ async function fetchWorkOrderWithJoins(
 const LIST_SQL = `
 SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
        w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.work_type_id, w.status,
+       w.hold_reason,
        w.work_plan_id, w.work_plan_key, w.duration, w.workgroup_id,
        w.created_at, w.updated_at, w.created_by, w.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
@@ -126,7 +150,19 @@ SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
        cat.key AS category_key, cat.name AS category_name,
        wg.key AS workgroup_key, wg.name AS workgroup_name,
        false AS has_material_assignment,
-       false AS has_employee_assignment,
+       EXISTS(
+         SELECT 1
+         FROM work_order_employees woe
+         WHERE woe.work_order_id = w.id
+       ) AS has_employee_assignment,
+       COALESCE(
+         (
+           SELECT array_agg(woe.employee_id::text ORDER BY woe.employee_id::text)
+           FROM work_order_employees woe
+           WHERE woe.work_order_id = w.id
+         ),
+         ARRAY[]::text[]
+       ) AS assigned_employee_ids,
        (SELECT COUNT(*)::int FROM work_instructions wi WHERE wi.work_order_id = w.id)
          AS work_instruction_count,
        (SELECT COUNT(*)::int FROM work_instructions wi
@@ -177,6 +213,7 @@ const WORK_ORDER_STATUS_VALUES = [
   'open',
   'assigned',
   'started',
+  'continued',
   'on_hold',
   'done',
   'closed',
@@ -194,6 +231,213 @@ function parseStatus(body: unknown): string | undefined | 'invalid' {
     return 'invalid'
   }
   return s
+}
+
+async function loadUserEmployeeId(
+  client: Pool | PoolClient,
+  userId: string,
+): Promise<string | null> {
+  const r = await client.query<{ employee_id: string | null }>(
+    `SELECT employee_id FROM users WHERE id = $1`,
+    [userId],
+  )
+  return r.rows[0]?.employee_id ?? null
+}
+
+async function isEmployeeAssignedToWorkOrder(
+  client: PoolClient,
+  workOrderId: string,
+  employeeId: string,
+): Promise<boolean> {
+  const r = await client.query(
+    `SELECT 1 FROM work_order_employees WHERE work_order_id = $1 AND employee_id = $2`,
+    [workOrderId, employeeId],
+  )
+  return (r.rowCount ?? 0) > 0
+}
+
+async function isEmployeeMemberOfWorkgroup(
+  client: PoolClient,
+  workgroupId: string,
+  employeeId: string,
+): Promise<boolean> {
+  const r = await client.query(
+    `SELECT 1 FROM workgroup_employees WHERE workgroup_id = $1 AND employee_id = $2`,
+    [workgroupId, employeeId],
+  )
+  return (r.rowCount ?? 0) > 0
+}
+
+/**
+ * Ensures feedback row employee is on the WO: already assigned, or SWB off and (self only, or UAA on with site/WG rules + insert).
+ */
+async function ensureEmployeeAllowedForFeedbackEntry(
+  client: PoolClient,
+  args: {
+    workOrderId: string
+    woSiteId: string
+    woWorkgroupId: string | null
+    entryEmployeeId: string
+    startRequiresAssignment: boolean
+    userAutoAssignOnStart: boolean
+    actorEmployeeId: string | null
+  },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const {
+    workOrderId,
+    woSiteId,
+    woWorkgroupId,
+    entryEmployeeId,
+    startRequiresAssignment,
+    userAutoAssignOnStart,
+    actorEmployeeId,
+  } = args
+
+  if (
+    await isEmployeeAssignedToWorkOrder(
+      client,
+      workOrderId,
+      entryEmployeeId,
+    )
+  ) {
+    return { ok: true }
+  }
+
+  if (startRequiresAssignment) {
+    return {
+      ok: false,
+      error:
+        'Each feedback entry must use an employee assigned to this work order.',
+    }
+  }
+
+  if (!userAutoAssignOnStart) {
+    if (actorEmployeeId && entryEmployeeId === actorEmployeeId) {
+      return { ok: true }
+    }
+    return {
+      ok: false,
+      error:
+        'Each feedback entry must use an employee assigned to this work order.',
+    }
+  }
+
+  const empR = await client.query<{ site_id: string }>(
+    `SELECT site_id FROM employees WHERE id = $1`,
+    [entryEmployeeId],
+  )
+  const emp = empR.rows[0]
+  if (!emp || emp.site_id !== woSiteId) {
+    return {
+      ok: false,
+      error:
+        'Feedback employees must exist and belong to the same site as the work order.',
+    }
+  }
+
+  const wgId =
+    typeof woWorkgroupId === 'string' && UUID_RE.test(woWorkgroupId.trim())
+      ? woWorkgroupId.trim()
+      : null
+  if (wgId !== null) {
+    const inWg = await isEmployeeMemberOfWorkgroup(client, wgId, entryEmployeeId)
+    if (!inWg) {
+      return {
+        ok: false,
+        error:
+          'When a workgroup is set, feedback can only reference employees in that workgroup.',
+      }
+    }
+  }
+
+  await client.query(
+    `INSERT INTO work_order_employees (work_order_id, employee_id)
+     VALUES ($1, $2)
+     ON CONFLICT DO NOTHING`,
+    [workOrderId, entryEmployeeId],
+  )
+  return { ok: true }
+}
+
+type FeedbackEntryInput = {
+  employee_id: string
+  feedback_text: string
+  hours: number
+}
+
+function parseFeedbackActionBody(body: unknown):
+  | {
+      ok: true
+      entries: FeedbackEntryInput[]
+      target_status: 'on_hold' | 'done' | null
+      hold_reason: string | null
+    }
+  | { ok: false; error: string } {
+  if (typeof body !== 'object' || body === null) {
+    return { ok: false, error: 'Invalid body.' }
+  }
+  const o = body as Record<string, unknown>
+  const rawEntries = o.entries
+  if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
+    return { ok: false, error: 'entries must be a non-empty array.' }
+  }
+  const entries: FeedbackEntryInput[] = []
+  for (const el of rawEntries) {
+    if (typeof el !== 'object' || el === null) {
+      return { ok: false, error: 'Each entry must be an object.' }
+    }
+    const e = el as Record<string, unknown>
+    const eid = typeof e.employee_id === 'string' ? e.employee_id.trim() : ''
+    if (!UUID_RE.test(eid)) {
+      return { ok: false, error: 'Each entry needs a valid employee_id.' }
+    }
+    const ft = typeof e.feedback_text === 'string' ? e.feedback_text.trim() : ''
+    const hRaw = e.hours
+    const hours =
+      typeof hRaw === 'number'
+        ? hRaw
+        : typeof hRaw === 'string'
+          ? Number(hRaw)
+          : NaN
+    if (!Number.isFinite(hours) || hours < 0) {
+      return { ok: false, error: 'Each entry needs a non-negative hours value.' }
+    }
+    if (ft === '' && hours <= 0) {
+      return { ok: false, error: 'Each entry needs feedback text or hours > 0.' }
+    }
+    if (ft.length > 10000) {
+      return { ok: false, error: 'Feedback text is too long.' }
+    }
+    entries.push({ employee_id: eid, feedback_text: ft, hours })
+  }
+  const ts = o.target_status
+  let target_status: 'on_hold' | 'done' | null = null
+  if (ts === undefined || ts === null || ts === '') {
+    target_status = null
+  } else if (ts === 'on_hold' || ts === 'done') {
+    target_status = ts
+  } else {
+    return { ok: false, error: 'target_status must be on_hold, done, or omitted.' }
+  }
+  let hold_reason: string | null = null
+  if (typeof o.hold_reason === 'string') {
+    const hr = o.hold_reason.trim()
+    hold_reason = hr === '' ? null : hr
+  } else if (o.hold_reason !== undefined && o.hold_reason !== null) {
+    return { ok: false, error: 'hold_reason must be a string.' }
+  }
+  if (target_status === 'on_hold') {
+    if (!hold_reason) {
+      return {
+        ok: false,
+        error: 'hold_reason is required when target_status is on_hold.',
+      }
+    }
+    if (hold_reason.length > 2000) {
+      return { ok: false, error: 'hold_reason is too long.' }
+    }
+  }
+  return { ok: true, entries, target_status, hold_reason }
 }
 
 /** Omitted field → undefined; invalid → 'invalid'. */
@@ -319,6 +563,21 @@ async function categoryBelongsToSite(
   return r.rows.length > 0
 }
 
+async function fetchWorkOrderEmployees(
+  client: Pool | PoolClient,
+  workOrderId: string,
+): Promise<WorkOrderEmployeeRow[]> {
+  const r = await client.query<WorkOrderEmployeeRow>(
+    `SELECT e.id AS employee_id, e.key AS employee_key, e.name AS employee_name
+     FROM work_order_employees woe
+     INNER JOIN employees e ON e.id = woe.employee_id
+     WHERE woe.work_order_id = $1
+     ORDER BY e.name ASC, e.key ASC`,
+    [workOrderId],
+  )
+  return r.rows
+}
+
 export type WorkInstructionDto = {
   id: string
   sort_nr: number
@@ -353,9 +612,26 @@ async function fetchWorkOrderDetailForResponse(
 async function fetchWorkOrderMetaForAccess(
   client: Pool | PoolClient,
   id: string,
-): Promise<{ id: string; site_id: string; wo_key: number } | undefined> {
-  const r = await client.query<{ id: string; site_id: string; wo_key: number }>(
-    `SELECT id, site_id, wo_key FROM work_orders WHERE id = $1`,
+): Promise<
+  | {
+      id: string
+      site_id: string
+      wo_key: number
+      workgroup_id: string | null
+      status: string
+    }
+  | undefined
+> {
+  const r = await client.query<{
+    id: string
+    site_id: string
+    wo_key: number
+    workgroup_id: string | null
+    status: string
+  }>(
+    `SELECT id, site_id, wo_key, workgroup_id, status
+     FROM work_orders
+     WHERE id = $1`,
     [id],
   )
   return r.rows[0]
@@ -602,6 +878,874 @@ router.get('/:id', async (req, res) => {
   })
 })
 
+router.get('/:id/employees', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const wo = await fetchWorkOrderMetaForAccess(pool, id)
+  if (!wo || !canAccessSite(scope, wo.site_id)) {
+    res.status(404).json({ error: 'Work order not found.' })
+    return
+  }
+  const employees = await fetchWorkOrderEmployees(pool, id)
+  res.json({ employees })
+})
+
+router.get('/:id/employees/pool', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const wo = await fetchWorkOrderMetaForAccess(pool, id)
+  if (!wo || !canAccessSite(scope, wo.site_id)) {
+    res.status(404).json({ error: 'Work order not found.' })
+    return
+  }
+  const assigned = await fetchWorkOrderEmployees(pool, id)
+  const assignedIds = assigned.map((row) => row.employee_id)
+
+  const availableSql =
+    wo.workgroup_id === null
+      ? `SELECT e.id AS employee_id, e.key AS employee_key, e.name AS employee_name
+         FROM employees e
+         WHERE e.site_id = $1
+           AND NOT (e.id = ANY($2::uuid[]))
+         ORDER BY e.name ASC, e.key ASC`
+      : `SELECT e.id AS employee_id, e.key AS employee_key, e.name AS employee_name
+         FROM workgroup_employees we
+         INNER JOIN employees e ON e.id = we.employee_id
+         WHERE we.workgroup_id = $1
+           AND e.site_id = $2
+           AND NOT (e.id = ANY($3::uuid[]))
+         ORDER BY e.name ASC, e.key ASC`
+
+  const available = wo.workgroup_id === null
+    ? (
+        await pool.query<WorkOrderEmployeeRow>(availableSql, [
+          wo.site_id,
+          assignedIds,
+        ])
+      ).rows
+    : (
+        await pool.query<WorkOrderEmployeeRow>(availableSql, [
+          wo.workgroup_id,
+          wo.site_id,
+          assignedIds,
+        ])
+      ).rows
+
+  res.json({ available, assigned })
+})
+
+router.put('/:id/employees', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+
+  const raw = (req.body as { employee_ids?: unknown })?.employee_ids
+  if (!Array.isArray(raw)) {
+    res.status(400).json({ error: 'employee_ids must be an array of UUIDs.' })
+    return
+  }
+  const employeeIds: string[] = []
+  for (const x of raw) {
+    if (typeof x !== 'string') {
+      res.status(400).json({ error: 'employee_ids must be an array of UUIDs.' })
+      return
+    }
+    const v = x.trim()
+    if (!UUID_RE.test(v)) {
+      res.status(400).json({ error: 'employee_ids must contain valid UUIDs.' })
+      return
+    }
+    employeeIds.push(v)
+  }
+  const uniqueIds = [...new Set(employeeIds)]
+
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
+
+  const client = await pool.connect()
+  try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
+    await client.query('BEGIN')
+
+    const woR = await client.query<{
+      id: string
+      site_id: string
+      wo_key: number
+      workgroup_id: string | null
+      status: string
+    }>(
+      `SELECT id, site_id, wo_key, workgroup_id, status
+       FROM work_orders
+       WHERE id = $1
+       FOR UPDATE`,
+      [id],
+    )
+    const wo = woR.rows[0]
+    if (!wo || !canAccessSite(scope, wo.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+
+    const beforeAssignedR = await client.query<{ employee_id: string }>(
+      `SELECT employee_id
+       FROM work_order_employees
+       WHERE work_order_id = $1`,
+      [id],
+    )
+    const beforeAssignedIds = new Set(
+      beforeAssignedR.rows.map((row) => row.employee_id),
+    )
+
+    const beforeRowR = await client.query<WorkOrderTableRow>(
+      `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+              plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
+              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              created_at, updated_at, created_by, updated_by
+       FROM work_orders
+       WHERE id = $1
+       FOR UPDATE`,
+      [id],
+    )
+    const beforeRow = beforeRowR.rows[0]
+    if (!beforeRow) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+
+    if (uniqueIds.length > 0) {
+      const empR = await client.query<EmployeeSiteRow>(
+        `SELECT id, site_id, key, name
+         FROM employees
+         WHERE id = ANY($1::uuid[])`,
+        [uniqueIds],
+      )
+      const byId = new Map(empR.rows.map((row) => [row.id, row]))
+      for (const eid of uniqueIds) {
+        const employee = byId.get(eid)
+        if (!employee || employee.site_id !== wo.site_id) {
+          await client.query('ROLLBACK')
+          res.status(400).json({
+            error:
+              'Each employee must exist and belong to the same site as the work order.',
+          })
+          return
+        }
+      }
+    }
+
+    if (wo.workgroup_id !== null && uniqueIds.length > 0) {
+      const memberR = await client.query<{ employee_id: string }>(
+        `SELECT employee_id
+         FROM workgroup_employees
+         WHERE workgroup_id = $1
+           AND employee_id = ANY($2::uuid[])`,
+        [wo.workgroup_id, uniqueIds],
+      )
+      if (memberR.rows.length !== uniqueIds.length) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error:
+            'When a workgroup is set, only employees assigned to that workgroup can be assigned.',
+        })
+        return
+      }
+    }
+
+    if (uniqueIds.length === 0) {
+      await client.query(
+        `DELETE FROM work_order_employees
+         WHERE work_order_id = $1`,
+        [id],
+      )
+    } else {
+      await client.query(
+        `DELETE FROM work_order_employees
+         WHERE work_order_id = $1
+           AND employee_id <> ALL($2::uuid[])`,
+        [id, uniqueIds],
+      )
+      await client.query(
+        `INSERT INTO work_order_employees (work_order_id, employee_id)
+         SELECT $1::uuid, x::uuid
+         FROM unnest($2::uuid[]) AS t(x)
+         ON CONFLICT DO NOTHING`,
+        [id, uniqueIds],
+      )
+    }
+
+    const nextStatus =
+      beforeRow.status === 'open' && uniqueIds.length > 0
+        ? 'assigned'
+        : beforeRow.status
+
+    const afterR = await client.query<WorkOrderTableRow>(
+      `UPDATE work_orders
+       SET status = $1,
+           updated_at = now(),
+           updated_by = $2
+       WHERE id = $3
+       RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                 plan_start, plan_end, worktime, work_type_id, status,
+                 hold_reason,
+                 work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                 created_at, updated_at, created_by, updated_by`,
+      [nextStatus, auth.id, id],
+    )
+    const afterTable = afterR.rows[0]
+    if (!afterTable) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+
+    const beforeState = redactForAudit(
+      'work_order',
+      rowToAuditRecord(beforeRow),
+    )
+    const afterState = redactForAudit(
+      'work_order',
+      rowToAuditRecord(afterTable),
+    )
+    const changes =
+      beforeState && afterState ? fieldChanges(beforeState, afterState) : null
+
+    await writeAudit(client, {
+      actorUserId: auth.id,
+      actorKey: auth.login_name,
+      actorName: auth.name,
+      operation: 'update',
+      resourceType: 'work_order',
+      resourceId: afterTable.id,
+      beforeState,
+      afterState,
+      fieldChanges: changes,
+      httpMethod: req.method,
+      path: auditPath,
+    })
+    const notificationDrafts = buildWorkOrderFieldChangeNotifications({
+      actorUserId: auth.id,
+      actorName: auth.name,
+      workOrderId: afterTable.id,
+      workOrderKey: afterTable.wo_key,
+      changes,
+    })
+    const addedEmployeeIds = uniqueIds.filter((employeeId) => !beforeAssignedIds.has(employeeId))
+    const removedEmployeeIds = [...beforeAssignedIds].filter(
+      (employeeId) => !uniqueIds.includes(employeeId),
+    )
+    if (addedEmployeeIds.length > 0) {
+      const addedEmployeesR = await client.query<EmployeeSiteRow>(
+        `SELECT id, site_id, key, name
+         FROM employees
+         WHERE id = ANY($1::uuid[])`,
+        [addedEmployeeIds],
+      )
+      notificationDrafts.push(
+        ...buildWorkOrderEmployeeAssignedNotifications({
+          actorUserId: auth.id,
+          actorName: auth.name,
+          workOrderId: afterTable.id,
+          workOrderKey: afterTable.wo_key,
+          employees: addedEmployeesR.rows.map((row) => ({
+            id: row.id,
+            key: row.key,
+            name: row.name,
+          })),
+        }),
+      )
+    }
+    if (removedEmployeeIds.length > 0) {
+      const removedEmployeesR = await client.query<EmployeeSiteRow>(
+        `SELECT id, site_id, key, name
+         FROM employees
+         WHERE id = ANY($1::uuid[])`,
+        [removedEmployeeIds],
+      )
+      notificationDrafts.push(
+        ...buildWorkOrderEmployeeDeassignedNotifications({
+          actorUserId: auth.id,
+          actorName: auth.name,
+          workOrderId: afterTable.id,
+          workOrderKey: afterTable.wo_key,
+          employees: removedEmployeesR.rows.map((row) => ({
+            id: row.id,
+            key: row.key,
+            name: row.name,
+          })),
+        }),
+      )
+    }
+    notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+      workOrderId: afterTable.id,
+      drafts: notificationDrafts,
+    })
+
+    const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
+    const employees = await fetchWorkOrderEmployees(client, afterTable.id)
+    await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
+    broadcastWorkOrderUpdated(
+      workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
+    )
+    res.json({ work_order: workOrder!, employees })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
+router.get('/:id/transactions', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const wo = await fetchWorkOrderMetaForAccess(pool, id)
+  if (!wo || !canAccessSite(scope, wo.site_id)) {
+    res.status(404).json({ error: 'Work order not found.' })
+    return
+  }
+  const r = await pool.query<{
+    id: string
+    work_order_id: string
+    type: string
+    employee_id: string
+    created_by_user_id: string
+    hours: string
+    feedback_text: string
+    created_at: Date
+    employee_key: string
+    employee_name: string
+    created_by_login_name: string | null
+  }>(
+    `SELECT t.id, t.work_order_id, t.type, t.employee_id, t.created_by_user_id,
+            t.hours, t.feedback_text, t.created_at,
+            e.key AS employee_key, e.name AS employee_name,
+            u.login_name AS created_by_login_name
+     FROM transactions t
+     INNER JOIN employees e ON e.id = t.employee_id
+     INNER JOIN users u ON u.id = t.created_by_user_id
+     WHERE t.work_order_id = $1 AND t.type = 'INT'
+     ORDER BY t.created_at DESC, t.id DESC`,
+    [id],
+  )
+  res.json({ transactions: r.rows })
+})
+
+router.post('/:id/actions/start', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
+  const client = await pool.connect()
+  try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
+    await client.query('BEGIN')
+    const prev = await client.query<WorkOrderTableRow>(
+      `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+              plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
+              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              created_at, updated_at, created_by, updated_by
+       FROM work_orders
+       WHERE id = $1
+       FOR UPDATE`,
+      [id],
+    )
+    const beforeRow = prev.rows[0]
+    if (!beforeRow || !canAccessSite(scope, beforeRow.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+    const allowedFrom = new Set(['open', 'assigned', 'on_hold'])
+    if (!allowedFrom.has(beforeRow.status)) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'Start is only allowed when the work order is open, assigned, or on hold.',
+      })
+      return
+    }
+    const startRequiresAssignment =
+      await getWoStartRequiresAssignment(pool)
+    const actorEmployeeId = await loadUserEmployeeId(client, auth.id)
+    if (!actorEmployeeId) {
+      await client.query('ROLLBACK')
+      res.status(403).json({
+        error:
+          'Your user account must be linked to an employee to start a work order.',
+      })
+      return
+    }
+    if (beforeRow.workgroup_id !== null) {
+      const inWorkgroup = await isEmployeeMemberOfWorkgroup(
+        client,
+        beforeRow.workgroup_id,
+        actorEmployeeId,
+      )
+      if (!inWorkgroup) {
+        await client.query('ROLLBACK')
+        res.status(403).json({
+          error:
+            'Your linked employee must be a member of this work order\'s workgroup to start work.',
+        })
+        return
+      }
+    }
+    if (startRequiresAssignment) {
+      const assigned = await isEmployeeAssignedToWorkOrder(
+        client,
+        id,
+        actorEmployeeId,
+      )
+      if (!assigned) {
+        await client.query('ROLLBACK')
+        res.status(403).json({
+          error:
+            'You must be linked to an employee assigned to this work order to start it.',
+        })
+        return
+      }
+    }
+    if (!startRequiresAssignment) {
+      const userAutoAssignOnStart = await getWoUserAutoAssignOnStart(pool)
+      if (userAutoAssignOnStart) {
+        const alreadyAssigned = await isEmployeeAssignedToWorkOrder(
+          client,
+          id,
+          actorEmployeeId,
+        )
+        if (!alreadyAssigned) {
+          await client.query(
+            `INSERT INTO work_order_employees (work_order_id, employee_id)
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
+            [id, actorEmployeeId],
+          )
+        }
+      }
+    }
+    const afterStatus =
+      beforeRow.status === 'on_hold' ? 'continued' : 'started'
+    const nextHoldReason =
+      beforeRow.status === 'on_hold' ? null : beforeRow.hold_reason
+    const r = await client.query<WorkOrderTableRow>(
+      `UPDATE work_orders SET
+         status = $1,
+         hold_reason = $2,
+         updated_at = now(),
+         updated_by = $3
+       WHERE id = $4
+       RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                 plan_start, plan_end, worktime, work_type_id, status,
+                 hold_reason,
+                 work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                 created_at, updated_at, created_by, updated_by`,
+      [afterStatus, nextHoldReason, auth.id, id],
+    )
+    const afterTable = r.rows[0]
+    if (!afterTable) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+    const beforeState = redactForAudit(
+      'work_order',
+      rowToAuditRecord(beforeRow),
+    )
+    const afterState = redactForAudit(
+      'work_order',
+      rowToAuditRecord(afterTable),
+    )
+    const changes =
+      beforeState && afterState ? fieldChanges(beforeState, afterState) : null
+    await writeAudit(client, {
+      actorUserId: auth.id,
+      actorKey: auth.login_name,
+      actorName: auth.name,
+      operation: 'update',
+      resourceType: 'work_order',
+      resourceId: afterTable.id,
+      beforeState,
+      afterState,
+      fieldChanges: changes,
+      httpMethod: req.method,
+      path: auditPath,
+    })
+    notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+      workOrderId: afterTable.id,
+      drafts: [
+        buildWorkOrderStartedNotification({
+          actorUserId: auth.id,
+          actorName: auth.name,
+          workOrderId: afterTable.id,
+          workOrderKey: afterTable.wo_key,
+          beforeStatus: beforeRow.status,
+          afterStatus,
+        }),
+      ],
+    })
+    const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
+    await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
+    broadcastWorkOrderUpdated(
+      workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
+    )
+    res.json({ work_order: workOrder! })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
+router.post('/:id/actions/hold', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const reasonRaw = (req.body as { reason?: unknown })?.reason
+  if (typeof reasonRaw !== 'string' || !reasonRaw.trim()) {
+    res.status(400).json({ error: 'reason is required.' })
+    return
+  }
+  const reason = reasonRaw.trim()
+  if (reason.length > 2000) {
+    res.status(400).json({ error: 'reason is too long.' })
+    return
+  }
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
+  const client = await pool.connect()
+  try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
+    await client.query('BEGIN')
+    const prev = await client.query<WorkOrderTableRow>(
+      `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+              plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
+              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              created_at, updated_at, created_by, updated_by
+       FROM work_orders
+       WHERE id = $1
+       FOR UPDATE`,
+      [id],
+    )
+    const beforeRow = prev.rows[0]
+    if (!beforeRow || !canAccessSite(scope, beforeRow.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+    if (beforeRow.status !== 'started' && beforeRow.status !== 'continued') {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'Hold is only allowed when the work order is started or continued.',
+      })
+      return
+    }
+    const r = await client.query<WorkOrderTableRow>(
+      `UPDATE work_orders SET
+         status = 'on_hold',
+         hold_reason = $1,
+         updated_at = now(),
+         updated_by = $2
+       WHERE id = $3
+       RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                 plan_start, plan_end, worktime, work_type_id, status,
+                 hold_reason,
+                 work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                 created_at, updated_at, created_by, updated_by`,
+      [reason, auth.id, id],
+    )
+    const afterTable = r.rows[0]
+    if (!afterTable) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+    const beforeState = redactForAudit(
+      'work_order',
+      rowToAuditRecord(beforeRow),
+    )
+    const afterState = redactForAudit(
+      'work_order',
+      rowToAuditRecord(afterTable),
+    )
+    const changes =
+      beforeState && afterState ? fieldChanges(beforeState, afterState) : null
+    await writeAudit(client, {
+      actorUserId: auth.id,
+      actorKey: auth.login_name,
+      actorName: auth.name,
+      operation: 'update',
+      resourceType: 'work_order',
+      resourceId: afterTable.id,
+      beforeState,
+      afterState,
+      fieldChanges: changes,
+      httpMethod: req.method,
+      path: auditPath,
+    })
+    notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+      workOrderId: afterTable.id,
+      drafts: [
+        buildWorkOrderPutOnHoldNotification({
+          actorUserId: auth.id,
+          actorName: auth.name,
+          workOrderId: afterTable.id,
+          workOrderKey: afterTable.wo_key,
+          reason,
+        }),
+      ],
+    })
+    const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
+    await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
+    broadcastWorkOrderUpdated(
+      workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
+    )
+    res.json({ work_order: workOrder! })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
+router.post('/:id/actions/feedback', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+  const parsed = parseFeedbackActionBody(req.body)
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error })
+    return
+  }
+  const { entries, target_status, hold_reason } = parsed
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
+  const client = await pool.connect()
+  try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
+    await client.query('BEGIN')
+    const prev = await client.query<WorkOrderTableRow>(
+      `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+              plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
+              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              created_at, updated_at, created_by, updated_by
+       FROM work_orders
+       WHERE id = $1
+       FOR UPDATE`,
+      [id],
+    )
+    const beforeRow = prev.rows[0]
+    if (!beforeRow || !canAccessSite(scope, beforeRow.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+    if (beforeRow.status !== 'started' && beforeRow.status !== 'continued') {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'Feedback is only allowed when the work order is started or continued.',
+      })
+      return
+    }
+    const startRequiresAssignment =
+      await getWoStartRequiresAssignment(client)
+    const userAutoAssignOnStart = await getWoUserAutoAssignOnStart(client)
+    const actorEmployeeId = await loadUserEmployeeId(client, auth.id)
+    const woWgRaw = beforeRow.workgroup_id
+    const woWorkgroupId =
+      typeof woWgRaw === 'string' && UUID_RE.test(woWgRaw.trim())
+        ? woWgRaw.trim()
+        : null
+    for (const ent of entries) {
+      const ensured = await ensureEmployeeAllowedForFeedbackEntry(client, {
+        workOrderId: id,
+        woSiteId: beforeRow.site_id,
+        woWorkgroupId,
+        entryEmployeeId: ent.employee_id,
+        startRequiresAssignment,
+        userAutoAssignOnStart,
+        actorEmployeeId,
+      })
+      if (!ensured.ok) {
+        await client.query('ROLLBACK')
+        res.status(400).json({ error: ensured.error })
+        return
+      }
+    }
+    for (const ent of entries) {
+      await client.query(
+        `INSERT INTO transactions (
+           work_order_id, type, employee_id, created_by_user_id, hours, feedback_text
+         ) VALUES ($1, 'INT', $2, $3, $4, $5)`,
+        [id, ent.employee_id, auth.id, ent.hours, ent.feedback_text],
+      )
+    }
+    let afterTable = beforeRow
+    if (target_status === 'on_hold') {
+      const r = await client.query<WorkOrderTableRow>(
+        `UPDATE work_orders SET
+           status = 'on_hold',
+           hold_reason = $1,
+           updated_at = now(),
+           updated_by = $2
+         WHERE id = $3
+         RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                   plan_start, plan_end, worktime, work_type_id, status,
+                   hold_reason,
+                   work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                   created_at, updated_at, created_by, updated_by`,
+        [hold_reason!, auth.id, id],
+      )
+      afterTable = r.rows[0]!
+      const beforeState = redactForAudit(
+        'work_order',
+        rowToAuditRecord(beforeRow),
+      )
+      const afterState = redactForAudit(
+        'work_order',
+        rowToAuditRecord(afterTable),
+      )
+      const changes =
+        beforeState && afterState ? fieldChanges(beforeState, afterState) : null
+      await writeAudit(client, {
+        actorUserId: auth.id,
+        actorKey: auth.login_name,
+        actorName: auth.name,
+        operation: 'update',
+        resourceType: 'work_order',
+        resourceId: afterTable.id,
+        beforeState,
+        afterState,
+        fieldChanges: changes,
+        httpMethod: req.method,
+        path: auditPath,
+      })
+      notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+        workOrderId: afterTable.id,
+        drafts: [
+          buildWorkOrderPutOnHoldNotification({
+            actorUserId: auth.id,
+            actorName: auth.name,
+            workOrderId: afterTable.id,
+            workOrderKey: afterTable.wo_key,
+            reason: hold_reason!,
+          }),
+        ],
+      })
+    } else if (target_status === 'done') {
+      const r = await client.query<WorkOrderTableRow>(
+        `UPDATE work_orders SET
+           status = 'done',
+           hold_reason = NULL,
+           updated_at = now(),
+           updated_by = $1
+         WHERE id = $2
+         RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                   plan_start, plan_end, worktime, work_type_id, status,
+                   hold_reason,
+                   work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                   created_at, updated_at, created_by, updated_by`,
+        [auth.id, id],
+      )
+      afterTable = r.rows[0]!
+      const beforeState = redactForAudit(
+        'work_order',
+        rowToAuditRecord(beforeRow),
+      )
+      const afterState = redactForAudit(
+        'work_order',
+        rowToAuditRecord(afterTable),
+      )
+      const changes =
+        beforeState && afterState ? fieldChanges(beforeState, afterState) : null
+      await writeAudit(client, {
+        actorUserId: auth.id,
+        actorKey: auth.login_name,
+        actorName: auth.name,
+        operation: 'update',
+        resourceType: 'work_order',
+        resourceId: afterTable.id,
+        beforeState,
+        afterState,
+        fieldChanges: changes,
+        httpMethod: req.method,
+        path: auditPath,
+      })
+      const notificationDrafts = buildWorkOrderFieldChangeNotifications({
+        actorUserId: auth.id,
+        actorName: auth.name,
+        workOrderId: afterTable.id,
+        workOrderKey: afterTable.wo_key,
+        changes,
+      })
+      notificationsToBroadcast = await createNotificationsForSubscribers(client, {
+        workOrderId: afterTable.id,
+        drafts: notificationDrafts,
+      })
+    }
+    const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
+    await client.query('COMMIT')
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
+    broadcastWorkOrderUpdated(
+      workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
+    )
+    res.json({ work_order: workOrder! })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
 router.post('/', async (req, res) => {
   const shortText =
     typeof req.body?.short_text === 'string' ? req.body.short_text.trim() : ''
@@ -780,6 +1924,7 @@ router.post('/', async (req, res) => {
     const tableRow = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
               plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
               work_plan_id, work_plan_key, duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders WHERE id = $1`,
@@ -850,7 +1995,8 @@ router.patch('/:id', async (req, res) => {
   }
   if (statusOpt === 'invalid') {
     res.status(400).json({
-      error: 'status must be one of: open, assigned, started, on_hold, done, closed.',
+      error:
+        'status must be one of: open, assigned, started, continued, on_hold, done, closed.',
     })
     return
   }
@@ -912,6 +2058,7 @@ router.patch('/:id', async (req, res) => {
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
               plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
               work_plan_id, work_plan_key, duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
@@ -923,6 +2070,15 @@ router.patch('/:id', async (req, res) => {
     if (!beforeRow || !canAccessSite(scope, beforeRow.site_id)) {
       await client.query('ROLLBACK')
       res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+
+    if (statusOpt !== undefined && statusOpt !== beforeRow.status) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'Status cannot be changed via this endpoint. Use Start, Hold, or Feedback actions.',
+      })
       return
     }
 
@@ -939,6 +2095,31 @@ router.patch('/:id', async (req, res) => {
           'workgroup_id must reference a workgroup for this work order site.',
       })
       return
+    }
+
+    const assignedEmployeeIdsR = await client.query<{ employee_id: string }>(
+      `SELECT employee_id
+       FROM work_order_employees
+       WHERE work_order_id = $1`,
+      [id],
+    )
+    const assignedEmployeeIds = assignedEmployeeIdsR.rows.map((row) => row.employee_id)
+    if (assignedEmployeeIds.length > 0) {
+      const allowedMemberR = await client.query<{ employee_id: string }>(
+        `SELECT employee_id
+         FROM workgroup_employees
+         WHERE workgroup_id = $1
+           AND employee_id = ANY($2::uuid[])`,
+        [nextWorkgroupId, assignedEmployeeIds],
+      )
+      if (allowedMemberR.rows.length !== assignedEmployeeIds.length) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error:
+            'Cannot change workgroup while assigned employees are not members of the target workgroup.',
+        })
+        return
+      }
     }
 
     const pmId = beforeRow.work_plan_id
@@ -1077,6 +2258,7 @@ router.patch('/:id', async (req, res) => {
        WHERE id = $14
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
                  plan_start, plan_end, worktime, work_type_id, status,
+                 hold_reason,
                  work_plan_id, work_plan_key, duration, category_id, workgroup_id,
                  created_at, updated_at, created_by, updated_by`,
       [
@@ -1128,6 +2310,7 @@ router.patch('/:id', async (req, res) => {
       path: auditPath,
     })
     const notificationDrafts = buildWorkOrderFieldChangeNotifications({
+      actorUserId: auth.id,
       actorName: auth.name,
       workOrderId: afterTable.id,
       workOrderKey: afterTable.wo_key,
@@ -1234,6 +2417,7 @@ router.post('/:id/work-instructions', async (req, res) => {
       workOrderId: id,
       drafts: [
         buildWorkInstructionCreatedNotification({
+          actorUserId: auth.id,
           actorName: auth.name,
           workOrderId: id,
           workOrderKey: row.wo_key,
@@ -1391,6 +2575,7 @@ router.patch('/:id/work-instructions/:wiId', async (req, res) => {
     notificationsToBroadcast = await createNotificationsForSubscribers(client, {
       workOrderId: id,
       drafts: buildWorkInstructionUpdatedNotifications({
+        actorUserId: auth.id,
         actorName: auth.name,
         workOrderId: id,
         workOrderKey: ok.wo_key,
@@ -1476,6 +2661,7 @@ router.delete('/:id/work-instructions/:wiId', async (req, res) => {
       workOrderId: id,
       drafts: [
         buildWorkInstructionDeletedNotification({
+          actorUserId: auth.id,
           actorName: auth.name,
           workOrderId: id,
           workOrderKey: row.wo_key,
@@ -1513,6 +2699,7 @@ router.delete('/:id', async (req, res) => {
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
               plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
               work_plan_id, work_plan_key, duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders

@@ -42,6 +42,12 @@ export const NAV_SECTIONS: NavSection[] = [
     icon: 'pi pi-cog',
     children: [
       { path: '/hotkeys', labelKey: 'nav.keyboard_shortcuts', icon: 'pi pi-key' },
+      {
+        path: '/app-parameters',
+        labelKey: 'nav.app_parameters',
+        icon: 'pi pi-sliders-h',
+        adminOnly: true,
+      },
       { path: '/translations', labelKey: 'nav.translations', icon: 'pi pi-language' },
       { path: '/template-app', labelKey: 'nav.template_app', icon: 'pi pi-book' },
     ],
@@ -86,6 +92,11 @@ export const NAV_SECTIONS: NavSection[] = [
       { path: '/tree-structure', labelKey: 'nav.tree_structure', icon: 'pi pi-list' },
       { path: '/work-orders', labelKey: 'nav.work_orders', icon: 'pi pi-file-edit' },
       { path: '/monitoring', labelKey: 'nav.monitoring', icon: 'pi pi-eye' },
+      {
+        path: '/transactions',
+        labelKey: 'nav.transactions',
+        icon: 'pi pi-list',
+      },
       {
         path: '/work-planning',
         labelKey: 'nav.work_planning',

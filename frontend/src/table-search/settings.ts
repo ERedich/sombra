@@ -113,6 +113,11 @@ export function applyColumnSearch<T extends Record<string, unknown>>(
           toComparable(v),
         )
         if (selectedValues.length === 0) return true
+        if (Array.isArray(searchValue)) {
+          if (searchValue.length === 0) return false
+          const currentValues = searchValue.map((v) => toComparable(v))
+          return currentValues.some((v) => selectedValues.includes(v))
+        }
         const currentValue = toComparable(searchValue)
         return selectedValues.includes(currentValue)
       }

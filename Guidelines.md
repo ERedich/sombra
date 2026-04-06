@@ -23,6 +23,39 @@ The backend maintains an **append-only** `audit_log` table in PostgreSQL for eve
 
 - **Quick access:** Every new app must be available in **Quick access** (the keyboard-driven app launcher). Register it in [`frontend/src/navigation/registeredApps.ts`](frontend/src/navigation/registeredApps.ts) with `path`, **`labelKey`** (an i18n message key such as `nav.my_app`, not raw English), and `icon` (and `adminOnly` when restricted to administrators), in the same order as the sidebar where applicable. The launcher reads this list via [`frontend/src/layout/QuickAccessProvider.tsx`](frontend/src/layout/QuickAccessProvider.tsx).
 
+## Common Abbreviations
+
+- **WO:** Work Order
+- **SP:** Search Panel
+- **MW:** Modal Window
+- **QS:** Quick Search or Global Search
+- **PS:** Preset (done in searchpanel)
+- **WP:** Work Plan
+
+## WO Process (work orders)
+
+Product rules for **starting** and **stopping** work on a work order (WO). The **API** is authoritative; the **Work orders** and **Monitoring** UIs disable **Start** when the same conditions would cause `POST /api/work-orders/:id/actions/start` to return **403** (tooltips explain the reason).
+
+### Start work
+
+- **Endpoint:** `POST /api/work-orders/:id/actions/start` ([`backend/src/routes/work-orders.ts`](backend/src/routes/work-orders.ts)).
+- **Allowed statuses:** `open`, `assigned`, `on_hold` (from hold, status becomes `continued`; otherwise `started`).
+- **Site access:** The user must be allowed to see the WO’s site (same as other WO APIs); otherwise **404**.
+- **Linked employee:** `users.employee_id` must be set. Users without a linked employee cannot start.
+- **Workgroup membership:** Every WO in the list/detail model has a **`workgroup_id`**. The linked employee must appear in **`workgroup_employees`** for that workgroup. This applies even when assignment is not required for start: it prevents starting (or auto-assigning oneself on start) outside the WO’s crew.
+- **Assignment (SWB — “start work behaviour”):** App setting **`start_requires_assignment`** (see **App parameters** → work orders, [`backend/src/services/appSettings.ts`](backend/src/services/appSettings.ts)). When **true** (default), the linked employee must also be listed in **`work_order_employees`** for that WO. When **false**, any user with a linked employee who passes the workgroup check may start.
+- **Auto-assign (UAA):** When **`start_requires_assignment`** is **false** and **`user_auto_assign_on_start`** is **true** (defaults in code), the server adds employees to **`work_order_employees`** when needed: on **start** (the actor), and on **feedback** (every employee referenced in a feedback entry), using the same **site** and **workgroup** rules as manual assignment (`PUT /api/work-orders/:id/employees`). If UAA is **off** and SWB is **off**, only the **current user’s** linked employee may appear in feedback without a prior WO assignment (legacy behaviour for self-only).
+
+### Stop work (feedback)
+
+- **UI:** The **Stop** control opens the WO dialog on the **Feedback** tab (there is no separate “stop” HTTP action; wrapping up uses **feedback** and related routes).
+- **Who can click Stop:** The SPA uses the same **linked employee** and **SWB assignment** gating as for **Start** (so unassigned users do not open feedback from the grid when SWB requires assignment). **Workgroup membership** is enforced on **start** in the API; the **Stop** button is not additionally gated by workgroup in the UI so operators who are already running the WO can still open feedback.
+
+### Configuration and auth payload
+
+- **App parameters** UI persists WO behaviour into **`app_settings`** (`wo` key). Changes apply to new requests immediately.
+- **`GET /api/auth/me`** and login responses include **`employee_workgroup_ids`** (UUID strings for `workgroup_employees` rows for the user’s linked employee) so the SPA can disable **Start** without per-row round-trips. After **workgroup membership** changes for that employee, the user should **refresh** the session (re-login or reload so `/api/auth/me` runs) for tooltips and disabled state to stay accurate.
+
 ## Internationalization (i18n)
 
 - **UI chrome:** Fixed copy (labels, buttons, placeholders for controlled text, table headers, navigation, dialogs, toasts, etc.) must use **i18next** with stable **`msg_key`** strings and `t('…')` in the React app. Do **not** translate user-entered content, API-returned domain fields, or audit payloads.

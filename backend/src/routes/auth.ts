@@ -22,6 +22,9 @@ export type PublicAuthUser = {
   login_name: string
   name: string
   role: string
+  employee_id: string | null
+  /** Workgroup UUIDs the linked employee belongs to (empty if no employee). */
+  employee_workgroup_ids: string[]
   working_site_id: string | null
   /** app_locales.code */
   locale: string
@@ -62,6 +65,26 @@ async function loadPreferredLocale(userId: string): Promise<string> {
   return r.rows[0]?.preferred_locale ?? 'en'
 }
 
+async function loadLinkedEmployeeId(userId: string): Promise<string | null> {
+  const r = await pool.query<{ employee_id: string | null }>(
+    `SELECT employee_id FROM users WHERE id = $1`,
+    [userId],
+  )
+  return r.rows[0]?.employee_id ?? null
+}
+
+async function loadEmployeeWorkgroupIds(
+  employeeId: string,
+): Promise<string[]> {
+  const r = await pool.query<{ workgroup_id: string }>(
+    `SELECT workgroup_id::text AS workgroup_id
+     FROM workgroup_employees
+     WHERE employee_id = $1`,
+    [employeeId],
+  )
+  return r.rows.map((row) => row.workgroup_id)
+}
+
 /** Resolves requested locale to an enabled app_locales.code, defaulting to `en`. */
 async function resolveLocale(requested: unknown): Promise<string> {
   const raw =
@@ -83,6 +106,11 @@ async function buildPublicAuthUser(
   role: string,
 ): Promise<PublicAuthUser> {
   const locale = await loadPreferredLocale(id)
+  const employee_id = await loadLinkedEmployeeId(id)
+  const employee_workgroup_ids =
+    employee_id !== null
+      ? await loadEmployeeWorkgroupIds(employee_id)
+      : []
   const scope = await loadUserSiteScope(pool, id, role)
   const accessible_site_ids = await getAccessibleSiteIdsForResponse(scope)
   const choiceIds = [
@@ -106,6 +134,8 @@ async function buildPublicAuthUser(
     login_name,
     name,
     role,
+    employee_id,
+    employee_workgroup_ids,
     working_site_id: scope.workingSiteId,
     locale,
     allow_site_change_on_login: scope.allowSiteChangeOnLogin,

@@ -8,6 +8,9 @@ export type AuthUser = {
   login_name: string
   name: string
   role: string
+  employee_id: string | null
+  /** Workgroup UUIDs for the linked employee; empty if none. */
+  employee_workgroup_ids: string[]
   working_site_id: string | null
   /** app_locales.code */
   locale: string
@@ -27,6 +30,8 @@ function normalizeAuthUser(u: AuthUser & { key?: string }): AuthUser {
   if (typeof u.allow_site_change_on_login !== 'boolean') {
     u.allow_site_change_on_login = false
   }
+  if (u.employee_id === undefined) u.employee_id = null
+  if (!Array.isArray(u.employee_workgroup_ids)) u.employee_workgroup_ids = []
   if (u.working_site_id === undefined) u.working_site_id = null
   if (typeof u.locale !== 'string' || u.locale.length === 0) u.locale = 'en'
   return u as AuthUser

@@ -38,6 +38,15 @@ export type AdditionalSiteRef = { id: string; key: string; name: string }
 
 export type UserGroupRef = { id: string; key: string; name: string; site_id: string }
 
+export type EmployeeRef = {
+  id: string
+  key: string
+  name: string
+  site_id: string
+  site_key: string
+  site_name: string
+}
+
 export type AppUser = {
   id: string
   login_name: string
@@ -56,6 +65,12 @@ export type AppUser = {
   working_site_key: string | null
   working_site_name: string | null
   working_site_colour: string | null
+  employee_id: string | null
+  employee_key: string | null
+  employee_name: string | null
+  employee_site_id: string | null
+  employee_site_key: string | null
+  employee_site_name: string | null
   groups: UserGroupRef[]
 }
 
@@ -63,6 +78,7 @@ type UsersListResponse = { users: AppUser[] }
 type UserResponse = { user: AppUser }
 type SitesListResponse = { sites: Site[] }
 type UserGroupsListResponse = { user_groups: UserGroup[] }
+type EmployeesListResponse = { employees: EmployeeRef[] }
 
 
 /** Matches seeded bootstrap account; API rejects edit/delete for this user. */
@@ -76,6 +92,7 @@ type UserFormFieldKey =
   | 'email'
   | 'password'
   | 'working_site'
+  | 'employee'
 
 function inferFieldErrorsFromApiMessage(
   msg: string,
@@ -90,6 +107,7 @@ function inferFieldErrorsFromApiMessage(
   }
   if (m.includes('password')) out.password = true
   if (m.includes('working_site')) out.working_site = true
+  if (m.includes('employee')) out.employee = true
   if (m.includes('already exists')) {
     out.login_name = true
     out.email = true
@@ -125,7 +143,9 @@ export default function UsersPage() {
     useState(false)
   const [siteOptions, setSiteOptions] = useState<Site[]>([])
   const [allUserGroups, setAllUserGroups] = useState<UserGroup[]>([])
+  const [allEmployees, setAllEmployees] = useState<EmployeeRef[]>([])
   const [formGroupIds, setFormGroupIds] = useState<string[]>([])
+  const [formEmployeeId, setFormEmployeeId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState(0)
   const [selectedUser, setSelectedUser] = useState<AppUser | null>(null)
   const [search, setSearch] = useState('')
@@ -157,6 +177,10 @@ export default function UsersPage() {
   const groupOptionsFiltered = useMemo(
     () => allUserGroups.filter((g) => allowedSiteIdsForGroups.has(g.site_id)),
     [allUserGroups, allowedSiteIdsForGroups],
+  )
+  const employeeOptionsFiltered = useMemo(
+    () => allEmployees.filter((e) => allowedSiteIdsForGroups.has(e.site_id)),
+    [allEmployees, allowedSiteIdsForGroups],
   )
 
   const roleOptions = useMemo(
@@ -191,6 +215,8 @@ export default function UsersPage() {
         u.login_name.toLowerCase().includes(q) ||
         u.name.toLowerCase().includes(q) ||
         u.role.toLowerCase().includes(q) ||
+        (u.employee_name?.toLowerCase().includes(q) ?? false) ||
+        (u.employee_key?.toLowerCase().includes(q) ?? false) ||
         (u.email?.toLowerCase().includes(q) ?? false) ||
         (u.created_by_login_name?.toLowerCase().includes(q) ?? false) ||
         (u.updated_by_login_name?.toLowerCase().includes(q) ?? false) ||
@@ -220,15 +246,18 @@ export default function UsersPage() {
     if (!dialogOpen) return
     void (async () => {
       try {
-        const [sitesData, groupsData] = await Promise.all([
+        const [sitesData, groupsData, employeesData] = await Promise.all([
           apiJson<SitesListResponse>('/api/sites'),
           apiJson<UserGroupsListResponse>('/api/user-groups'),
+          apiJson<EmployeesListResponse>('/api/employees'),
         ])
         setSiteOptions(sitesData.sites ?? [])
         setAllUserGroups(groupsData.user_groups ?? [])
+        setAllEmployees(employeesData.employees ?? [])
       } catch {
         setSiteOptions([])
         setAllUserGroups([])
+        setAllEmployees([])
       }
     })()
   }, [dialogOpen])
@@ -238,6 +267,12 @@ export default function UsersPage() {
       setFormAllowSiteChangeOnLogin(false)
     }
   }, [formAdditionalSiteIds.length])
+
+  useEffect(() => {
+    if (!formEmployeeId) return
+    if (employeeOptionsFiltered.some((x) => x.id === formEmployeeId)) return
+    setFormEmployeeId(null)
+  }, [employeeOptionsFiltered, formEmployeeId])
 
   const showError = useCallback(
     (detail: string) => {
@@ -295,6 +330,7 @@ export default function UsersPage() {
     setFormWorkingSiteId(getStoredUser()?.working_site_id ?? null)
     setFormAdditionalSiteIds([])
     setFormGroupIds([])
+    setFormEmployeeId(null)
     setFormAllowSiteChangeOnLogin(false)
     setFieldErrors({})
     setActiveTab(0)
@@ -313,6 +349,7 @@ export default function UsersPage() {
     setFormWorkingSiteId(row.working_site_id)
     setFormAdditionalSiteIds(row.additional_sites.map((s) => s.id))
     setFormGroupIds(row.groups?.map((g) => g.id) ?? [])
+    setFormEmployeeId(row.employee_id)
     setFormAllowSiteChangeOnLogin(row.allow_site_change_on_login)
     setFieldErrors({})
     setActiveTab(0)
@@ -365,6 +402,7 @@ export default function UsersPage() {
       allow_site_change_on_login:
         formAdditionalSiteIds.length > 0 && formAllowSiteChangeOnLogin,
       user_group_ids: formGroupIds,
+      employee_id: formEmployeeId,
     }
     setSaving(true)
     try {
@@ -542,6 +580,15 @@ export default function UsersPage() {
         body: workingSiteBody,
       },
       {
+        field: 'employee_name',
+        headerKey: 'users.field_employee_optional',
+        sortable: true,
+        body: (row) =>
+          row.employee_name && row.employee_key
+            ? `${row.employee_name} (${row.employee_key})`
+            : emDash,
+      },
+      {
         field: 'created_by_login_name',
         headerKey: 'common.col_created_by',
         sortable: true,
@@ -568,7 +615,7 @@ export default function UsersPage() {
         body: (row) => formatDateTime(row.updated_at),
       },
     ]
-  }, [emDash, workingSiteBody])
+  }, [emDash, t, workingSiteBody])
 
   const tw = useTableWizard<AppUser>({
     appPath: '/users',
@@ -840,6 +887,54 @@ export default function UsersPage() {
                   invalid={fieldErrors.password === true}
                 />
               </div>
+              <div className="flex flex-column gap-2">
+                <label htmlFor="user-employee" className="text-sm font-medium">
+                  {t('users.field_employee_optional')}
+                </label>
+                <Dropdown
+                  inputId="user-employee"
+                  value={formEmployeeId}
+                  onChange={(e) => {
+                    setFormEmployeeId((e.value as string | null) ?? null)
+                    setFieldErrors((p) => ({ ...p, employee: false }))
+                  }}
+                  options={employeeOptionsFiltered}
+                  optionLabel="name"
+                  optionValue="id"
+                  className="w-full"
+                  disabled={saving}
+                  showClear
+                  filter
+                  placeholder={t('users.placeholder_employee_optional')}
+                  invalid={fieldErrors.employee === true}
+                  itemTemplate={(opt) => {
+                    const e = opt as EmployeeRef
+                    return (
+                      <span>
+                        {e.name}{' '}
+                        <span className="text-color-secondary text-sm">
+                          ({e.key}) · {e.site_key}
+                        </span>
+                      </span>
+                    )
+                  }}
+                  valueTemplate={(opt) => {
+                    if (!opt) return <span>{t('users.placeholder_employee_optional')}</span>
+                    const e = opt as EmployeeRef
+                    return (
+                      <span>
+                        {e.name}{' '}
+                        <span className="text-color-secondary text-sm">
+                          ({e.key})
+                        </span>
+                      </span>
+                    )
+                  }}
+                />
+              </div>
+              <p className="text-xs text-color-secondary m-0">
+                {t('users.employee_note')}
+              </p>
             </div>
           </TabPanel>
           <TabPanel header={t('users.tab_site')}>

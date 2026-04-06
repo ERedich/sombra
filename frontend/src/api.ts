@@ -1,4 +1,4 @@
-import { clearAuth, getToken } from './auth'
+import { clearAuth, getToken, setAuth, type AuthUser } from './auth'
 
 /**
  * Empty string = same origin (use Vite `server.proxy` in dev, or nginx in prod).
@@ -137,4 +137,21 @@ export async function apiBlob(path: string): Promise<Blob> {
     throw new ApiError(msg, res.status, data)
   }
   return res.blob()
+}
+
+/**
+ * Re-sync `cmms_user` from the server (e.g. after `users.employee_id` was set).
+ * JWT does not carry `employee_id`; without this, WO Start stays disabled until re-login.
+ */
+export async function refreshStoredAuthUser(): Promise<void> {
+  const token = getToken()
+  if (!token) return
+  try {
+    const data = await apiJson<{ user: AuthUser }>('/api/auth/me')
+    if (data?.user) {
+      setAuth(token, data.user)
+    }
+  } catch {
+    /* 401 → fetchWithAuth clears session; other errors leave stored user as-is */
+  }
 }

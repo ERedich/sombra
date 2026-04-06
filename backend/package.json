@@ -12,6 +12,7 @@
     "migrate:nav-i18n": "tsx scripts/apply-nav-i18n.ts",
     "seed:assets": "tsx scripts/seed-40-assets.ts",
     "seed:assets-4000": "tsx scripts/seed-4000-assets.ts",
+    "seed:dummy-org": "tsx scripts/seed-dummy-org-data.ts",
     "db:copy": "node scripts/pg-copy.mjs",
     "parity:interval": "tsx scripts/compare-interval-sql-vs-ts.ts"
   },

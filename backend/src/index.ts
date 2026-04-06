@@ -24,6 +24,8 @@ import workPlansRouter, { generatorActorSystem } from './routes/work-plans.js'
 import tableLayoutsRouter from './routes/table-layouts.js'
 import searchPresetsRouter from './routes/search-presets.js'
 import notificationsRouter from './routes/notifications.js'
+import transactionsRouter from './routes/transactions.js'
+import appParametersRouter from './routes/app-parameters.js'
 import { runWorkPlanGenerator } from './services/workPlanWoGen.js'
 import localesRouter from './routes/locales.js'
 import translationsRouter from './routes/translations.js'
@@ -71,6 +73,8 @@ app.use('/api/work-plans', workPlansRouter)
 app.use('/api/table-layouts', tableLayoutsRouter)
 app.use('/api/search-presets', searchPresetsRouter)
 app.use('/api/notifications', notificationsRouter)
+app.use('/api/transactions', transactionsRouter)
+app.use('/api/app-parameters', appParametersRouter)
 
 app.get('/api/health', async (_req, res) => {
   try {

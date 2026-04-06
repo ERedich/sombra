@@ -33,6 +33,7 @@ type UserTableRow = {
   updated_by: string | null
   working_site_id: string | null
   allow_site_change_on_login: boolean
+  employee_id: string | null
 }
 
 type UserRow = UserTableRow & {
@@ -43,6 +44,11 @@ type UserRow = UserTableRow & {
   working_site_key: string | null
   working_site_name: string | null
   working_site_colour: string | null
+  employee_key: string | null
+  employee_name: string | null
+  employee_site_id: string | null
+  employee_site_key: string | null
+  employee_site_name: string | null
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -52,6 +58,18 @@ function isUniqueViolation(err: unknown): boolean {
     'code' in err &&
     (err as { code?: string }).code === '23505'
   )
+}
+
+function getPgConstraintName(err: unknown): string | null {
+  if (
+    typeof err === 'object' &&
+    err !== null &&
+    'constraint' in err &&
+    typeof (err as { constraint?: unknown }).constraint === 'string'
+  ) {
+    return (err as { constraint: string }).constraint
+  }
+  return null
 }
 
 function rowToAuditRecord(
@@ -158,6 +176,53 @@ async function replaceUserGroups(
   return {}
 }
 
+function parseOptionalEmployeeId(raw: unknown): { value: string | null; error?: string } {
+  if (raw === undefined || raw === null) return { value: null }
+  if (typeof raw !== 'string') {
+    return { value: null, error: 'employee_id must be a UUID or null.' }
+  }
+  const trimmed = raw.trim()
+  if (trimmed === '') return { value: null }
+  if (!UUID_RE.test(trimmed)) {
+    return { value: null, error: 'Invalid employee_id.' }
+  }
+  return { value: trimmed }
+}
+
+async function validateEmployeeAssignment(
+  client: PoolClient,
+  employeeId: string | null,
+  allowedSiteIds: Set<string>,
+  currentUserId: string | null,
+): Promise<{ status: number; error: string } | null> {
+  if (!employeeId) return null
+  const employee = await client.query<{ id: string; site_id: string }>(
+    `SELECT id, site_id FROM employees WHERE id = $1`,
+    [employeeId],
+  )
+  const row = employee.rows[0]
+  if (!row) return { status: 400, error: 'Employee not found.' }
+  if (!allowedSiteIds.has(row.site_id)) {
+    return {
+      status: 400,
+      error:
+        'Employee must belong to the user working site or additional sites.',
+    }
+  }
+  const existing = await client.query<{ id: string }>(
+    `SELECT id
+     FROM users
+     WHERE employee_id = $1
+       AND ($2::uuid IS NULL OR id <> $2::uuid)
+     LIMIT 1`,
+    [employeeId, currentUserId],
+  )
+  if (existing.rows[0]) {
+    return { status: 409, error: 'Employee is already linked to another user.' }
+  }
+  return null
+}
+
 type NormalizedSites = {
   working_site_id: string | null
   additional_site_ids: string[]
@@ -197,12 +262,17 @@ async function normalizeSiteAssignment(
 const USER_SELECT = `
   u.id, u.login_name, u.name, u.email, u.role, u.created_at, u.updated_at,
   u.created_by, u.updated_by,
-  u.working_site_id, u.allow_site_change_on_login,
+  u.working_site_id, u.allow_site_change_on_login, u.employee_id,
   cb.login_name AS created_by_login_name,
   ub.login_name AS updated_by_login_name,
   ws.key AS working_site_key,
   ws.name AS working_site_name,
   ws.colour AS working_site_colour,
+  e.key AS employee_key,
+  e.name AS employee_name,
+  e.site_id AS employee_site_id,
+  es.key AS employee_site_key,
+  es.name AS employee_site_name,
   COALESCE(
     (SELECT json_agg(json_build_object('id', s.id, 'key', s.key, 'name', s.name) ORDER BY s.name, s.key)
      FROM user_additional_sites uas
@@ -239,6 +309,8 @@ async function fetchUserWithJoins(
      LEFT JOIN users cb ON cb.id = u.created_by
      LEFT JOIN users ub ON ub.id = u.updated_by
      LEFT JOIN sites ws ON ws.id = u.working_site_id
+     LEFT JOIN employees e ON e.id = u.employee_id
+     LEFT JOIN sites es ON es.id = e.site_id
      WHERE u.id = $1`,
     [id],
   )
@@ -256,6 +328,8 @@ router.get('/', async (_req, res) => {
      LEFT JOIN users cb ON cb.id = u.created_by
      LEFT JOIN users ub ON ub.id = u.updated_by
      LEFT JOIN sites ws ON ws.id = u.working_site_id
+     LEFT JOIN employees e ON e.id = u.employee_id
+     LEFT JOIN sites es ON es.id = e.site_id
      ORDER BY u.login_name ASC`,
   )
   res.json({ users: r.rows.map(mapUserRow) })
@@ -273,6 +347,8 @@ router.get('/:id', async (req, res) => {
      LEFT JOIN users cb ON cb.id = u.created_by
      LEFT JOIN users ub ON ub.id = u.updated_by
      LEFT JOIN sites ws ON ws.id = u.working_site_id
+     LEFT JOIN employees e ON e.id = u.employee_id
+     LEFT JOIN sites es ON es.id = e.site_id
      WHERE u.id = $1`,
     [id],
   )
@@ -324,6 +400,12 @@ router.post('/', async (req, res) => {
   const allowRaw = req.body?.allow_site_change_on_login
   const allow_site_change_on_login =
     typeof allowRaw === 'boolean' ? allowRaw : false
+  const employeeParsed = parseOptionalEmployeeId(req.body?.employee_id)
+  if (employeeParsed.error) {
+    res.status(400).json({ error: employeeParsed.error })
+    return
+  }
+  const employee_id = employeeParsed.value
 
   if (!loginName || !name || !password) {
     res.status(400).json({
@@ -366,13 +448,30 @@ router.post('/', async (req, res) => {
       return
     }
 
+    const allowedSites = new Set<string>()
+    if (norm.working_site_id) allowedSites.add(norm.working_site_id)
+    for (const x of norm.additional_site_ids) allowedSites.add(x)
+    const employeeValidation = await validateEmployeeAssignment(
+      client,
+      employee_id,
+      allowedSites,
+      null,
+    )
+    if (employeeValidation) {
+      await client.query('ROLLBACK')
+      res
+        .status(employeeValidation.status)
+        .json({ error: employeeValidation.error })
+      return
+    }
+
     const passwordHash = await bcrypt.hash(password, 10)
     const ins = await client.query<{ id: string }>(
       `INSERT INTO users (
          login_name, name, email, password_hash, role, created_by,
-         working_site_id, allow_site_change_on_login
+         working_site_id, allow_site_change_on_login, employee_id
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
       [
         loginName,
@@ -383,6 +482,7 @@ router.post('/', async (req, res) => {
         auth.id,
         norm.working_site_id,
         norm.allow_site_change_on_login,
+        employee_id,
       ],
     )
     const newId = ins.rows[0]?.id
@@ -393,9 +493,6 @@ router.post('/', async (req, res) => {
     }
     await replaceAdditionalSites(client, newId, norm.additional_site_ids)
 
-    const allowedSites = new Set<string>()
-    if (norm.working_site_id) allowedSites.add(norm.working_site_id)
-    for (const x of norm.additional_site_ids) allowedSites.add(x)
     const rg = await replaceUserGroups(
       client,
       newId,
@@ -410,7 +507,7 @@ router.post('/', async (req, res) => {
 
     const persisted = await client.query<UserTableRow>(
       `SELECT id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-              working_site_id, allow_site_change_on_login
+              working_site_id, allow_site_change_on_login, employee_id
        FROM users WHERE id = $1`,
       [newId],
     )
@@ -440,6 +537,10 @@ router.post('/', async (req, res) => {
   } catch (e) {
     await client.query('ROLLBACK')
     if (isUniqueViolation(e)) {
+      if (getPgConstraintName(e) === 'ux_users_employee_id_not_null') {
+        res.status(409).json({ error: 'Employee is already linked to another user.' })
+        return
+      }
       res
         .status(409)
         .json({ error: 'A user with this login name or email already exists.' })
@@ -462,6 +563,7 @@ router.patch('/:id', async (req, res) => {
   const updates: string[] = []
   const values: unknown[] = []
   let n = 1
+  let requestedEmployeeId: string | null | undefined
 
   if (req.body?.login_name !== undefined) {
     const loginName =
@@ -510,6 +612,16 @@ router.patch('/:id', async (req, res) => {
     updates.push(`password_hash = $${n++}`)
     values.push(hash)
   }
+  if ('employee_id' in req.body) {
+    const employeeParsed = parseOptionalEmployeeId(req.body.employee_id)
+    if (employeeParsed.error) {
+      res.status(400).json({ error: employeeParsed.error })
+      return
+    }
+    requestedEmployeeId = employeeParsed.value
+    updates.push(`employee_id = $${n++}`)
+    values.push(requestedEmployeeId)
+  }
 
   const hasSitePatch =
     'working_site_id' in req.body ||
@@ -524,7 +636,7 @@ router.patch('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<UserTableRow>(
       `SELECT id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-              working_site_id, allow_site_change_on_login
+              working_site_id, allow_site_change_on_login, employee_id
        FROM users
        WHERE id = $1
        FOR UPDATE`,
@@ -588,6 +700,33 @@ router.patch('/:id', async (req, res) => {
       values.push(norm.allow_site_change_on_login)
     }
 
+    if (requestedEmployeeId !== undefined || hasSitePatch) {
+      const allowedSites = new Set<string>()
+      const workingSiteId = norm
+        ? norm.working_site_id
+        : beforeRow.working_site_id
+      const additionalSiteIds = norm ? norm.additional_site_ids : beforeAddIds
+      if (workingSiteId) allowedSites.add(workingSiteId)
+      for (const x of additionalSiteIds) allowedSites.add(x)
+      const effectiveEmployeeId =
+        requestedEmployeeId !== undefined
+          ? requestedEmployeeId
+          : beforeRow.employee_id
+      const employeeValidation = await validateEmployeeAssignment(
+        client,
+        effectiveEmployeeId,
+        allowedSites,
+        id,
+      )
+      if (employeeValidation) {
+        await client.query('ROLLBACK')
+        res
+          .status(employeeValidation.status)
+          .json({ error: employeeValidation.error })
+        return
+      }
+    }
+
     if (updates.length === 0 && !hasSitePatch && !hasGroupPatch) {
       await client.query('ROLLBACK')
       res.status(400).json({ error: 'No fields to update.' })
@@ -603,7 +742,7 @@ router.patch('/:id', async (req, res) => {
       const sql = `UPDATE users SET ${updates.join(', ')}
                    WHERE id = $${n}
                    RETURNING id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-                             working_site_id, allow_site_change_on_login`
+                             working_site_id, allow_site_change_on_login, employee_id`
       const r = await client.query<UserTableRow>(sql, values)
       afterTable = r.rows[0]!
     } else {
@@ -666,6 +805,10 @@ router.patch('/:id', async (req, res) => {
   } catch (e) {
     await client.query('ROLLBACK')
     if (isUniqueViolation(e)) {
+      if (getPgConstraintName(e) === 'ux_users_employee_id_not_null') {
+        res.status(409).json({ error: 'Employee is already linked to another user.' })
+        return
+      }
       res
         .status(409)
         .json({ error: 'A user with this login name or email already exists.' })
@@ -696,7 +839,7 @@ router.delete('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<UserTableRow>(
       `SELECT id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-              working_site_id, allow_site_change_on_login
+              working_site_id, allow_site_change_on_login, employee_id
        FROM users
        WHERE id = $1
        FOR UPDATE`,

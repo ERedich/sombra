@@ -10,6 +10,7 @@ import { Dialog } from 'primereact/dialog'
 import { OverlayPanel } from 'primereact/overlaypanel'
 import { clearAuth, getStoredUser } from '../auth'
 import { useWorkOrderNotifications } from '../notifications/WorkOrderNotificationsContext'
+import { renderNotificationMessage } from '../notifications/renderNotificationMessage'
 import {
   HOME_APP,
   getNavSectionsForUser,
@@ -113,6 +114,30 @@ export function AppShell({ children }: { children: ReactNode }) {
   const user = getStoredUser()
   const notifications = useWorkOrderNotifications()
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const navigateToWorkOrderFromNotification = useCallback(
+    (workOrderId: string) => {
+      setNotificationsOpen(false)
+      navigate(`/work-orders?workOrderId=${encodeURIComponent(workOrderId)}`)
+    },
+    [navigate],
+  )
+
+  const navigateToUserFromNotification = useCallback(
+    (userId: string) => {
+      setNotificationsOpen(false)
+      navigate(`/users?userId=${encodeURIComponent(userId)}`)
+    },
+    [navigate],
+  )
+
+  const navigateToEmployeeFromNotification = useCallback(
+    (employeeId: string) => {
+      setNotificationsOpen(false)
+      navigate(`/employees?employeeId=${encodeURIComponent(employeeId)}`)
+    },
+    [navigate],
+  )
+
   const userNavKey = user ? `${user.id}:${user.role}` : ''
   const navSections = useMemo(
     () => getNavSectionsForUser(getStoredUser()),
@@ -301,7 +326,13 @@ export function AppShell({ children }: { children: ReactNode }) {
                 key={n.id}
                 className="border-1 surface-border border-round px-3 py-2"
               >
-                <div className="text-sm">{n.message}</div>
+                <div className="text-sm">
+                  {renderNotificationMessage(n, {
+                    onWorkOrderClick: navigateToWorkOrderFromNotification,
+                    onActorClick: navigateToUserFromNotification,
+                    onEmployeeClick: navigateToEmployeeFromNotification,
+                  })}
+                </div>
                 <div className="text-xs text-color-secondary mt-1">
                   {new Date(n.created_at).toLocaleString()}
                 </div>

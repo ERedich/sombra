@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
+import { useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
+import { refreshStoredAuthUser } from './api'
 import { getToken } from './auth'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
@@ -8,6 +10,7 @@ import UsersPage from './pages/UsersPage'
 import AuditLogAppPage from './apps/audit-log/AuditLogAppPage'
 import WorkOrdersAppPage from './apps/work-orders/WorkOrdersAppPage'
 import MonitoringAppPage from './apps/monitoring/MonitoringAppPage'
+import TransactionsAppPage from './apps/transactions/TransactionsAppPage'
 import WorkPlanningAppPage from './apps/work-planning/WorkPlanningAppPage'
 import AssetManagementAppPage from './apps/asset-management/AssetManagementAppPage'
 import TreeStructureAppPage from './apps/tree-structure/TreeStructureAppPage'
@@ -21,6 +24,7 @@ import UserGroupsAppPage from './apps/user-groups/UserGroupsAppPage'
 import TemplateAppPage from './apps/template-app/TemplateAppPage'
 import HotkeysAppPage from './apps/hotkeys/HotkeysAppPage'
 import TranslationsAppPage from './apps/translations/TranslationsAppPage'
+import AppParametersAppPage from './apps/app-parameters/AppParametersAppPage'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   if (!getToken()) {
@@ -29,9 +33,18 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
   return children
 }
 
+function AuthUserBootstrap() {
+  useEffect(() => {
+    void refreshStoredAuthUser()
+  }, [])
+  return null
+}
+
 export default function App() {
   return (
-    <Routes>
+    <>
+      <AuthUserBootstrap />
+      <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route
         path="/"
@@ -146,6 +159,14 @@ export default function App() {
         }
       />
       <Route
+        path="/transactions"
+        element={
+          <ProtectedRoute>
+            <TransactionsAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/work-planning"
         element={
           <ProtectedRoute>
@@ -185,7 +206,16 @@ export default function App() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/app-parameters"
+        element={
+          <ProtectedRoute>
+            <AppParametersAppPage />
+          </ProtectedRoute>
+        }
+      />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   )
 }

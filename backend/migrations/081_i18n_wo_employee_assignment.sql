@@ -1,0 +1,20 @@
+INSERT INTO ui_translations (locale, msg_key, value) VALUES
+('en', 'wo.employee_assignment_action', 'Employee Assignment'),
+('en', 'wo.employee_assignment_title', 'Employee Assignment'),
+('en', 'wo.employee_assignment_hint', 'Left: available employees. Right: assigned employees. Move employees between lists and save.'),
+('en', 'wo.employee_assignment_revert', 'Revert'),
+('en', 'wo.pool_available', 'Available'),
+('en', 'wo.pool_assigned', 'Assigned'),
+('en', 'wo.assignment_saved', 'Employee assignment updated.'),
+('en', 'wo.assignment_load_fail', 'Failed to load employee assignment.'),
+('en', 'wo.assignment_save_fail', 'Failed to save employee assignment.'),
+('de', 'wo.employee_assignment_action', 'Mitarbeiterzuordnung'),
+('de', 'wo.employee_assignment_title', 'Mitarbeiterzuordnung'),
+('de', 'wo.employee_assignment_hint', 'Links: verfugbare Mitarbeiter. Rechts: zugeordnete Mitarbeiter. Mitarbeiter zwischen den Listen verschieben und speichern.'),
+('de', 'wo.employee_assignment_revert', 'Zurucksetzen'),
+('de', 'wo.pool_available', 'Verfugbar'),
+('de', 'wo.pool_assigned', 'Zugewiesen'),
+('de', 'wo.assignment_saved', 'Mitarbeiterzuordnung aktualisiert.'),
+('de', 'wo.assignment_load_fail', 'Mitarbeiterzuordnung konnte nicht geladen werden.'),
+('de', 'wo.assignment_save_fail', 'Mitarbeiterzuordnung konnte nicht gespeichert werden.')
+ON CONFLICT (locale, msg_key) DO UPDATE SET value = EXCLUDED.value;
