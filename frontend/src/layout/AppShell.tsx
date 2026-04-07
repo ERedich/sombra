@@ -8,6 +8,7 @@ import { Button } from 'primereact/button'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { Dialog } from 'primereact/dialog'
 import { OverlayPanel } from 'primereact/overlaypanel'
+import { postAuthLogout } from '../api'
 import { clearAuth, getStoredUser } from '../auth'
 import { useWorkOrderNotifications } from '../notifications/WorkOrderNotificationsContext'
 import { renderNotificationMessage } from '../notifications/renderNotificationMessage'
@@ -18,6 +19,7 @@ import {
   type NavSection,
 } from '../navigation/registeredApps'
 import '../App.css'
+import { IdleSessionLogoutController } from './IdleSessionLogoutController'
 
 const THEME_LINK_ID = 'theme-link'
 const THEME_LIGHT = 'lara-light-amber'
@@ -268,6 +270,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       defaultFocus: 'reject',
       dismissableMask: true,
       accept: () => {
+        void postAuthLogout()
         clearAuth()
         navigate('/login', { replace: true })
       },
@@ -308,6 +311,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className={shellClass}>
+      <IdleSessionLogoutController />
       <Dialog
         header={t('notifications.window_title')}
         visible={notificationsOpen}

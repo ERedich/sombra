@@ -21,6 +21,8 @@ type JwtUserClaims = {
   role: string
   working_site_id?: string | null
   locale?: string
+  /** Session id for server-side session row (optional on legacy tokens). */
+  jti?: string
 }
 
 export const requireAuth: RequestHandler = (req, res, next) => {

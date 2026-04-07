@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
@@ -9,6 +10,7 @@ import {
 } from '../auth/siteScope.js'
 import { pool } from '../db.js'
 import { env } from '../env.js'
+import { isPgUndefinedRelationError } from '../services/appSettings.js'
 
 const router = Router()
 
@@ -43,6 +45,7 @@ type JwtUserClaims = {
   role: string
   working_site_id: string | null
   locale: string
+  jti?: string
 }
 
 async function getAccessibleSiteIdsForResponse(
@@ -190,6 +193,7 @@ router.post('/login', async (req, res) => {
   )
 
   const scope = await loadUserSiteScope(pool, user.id, user.role)
+  const jti = randomUUID()
   const claims: JwtUserClaims = {
     sub: user.id,
     login_name: user.login_name,
@@ -197,6 +201,7 @@ router.post('/login', async (req, res) => {
     role: user.role,
     working_site_id: scope.workingSiteId,
     locale,
+    jti,
   }
 
   const loginPath = `${req.baseUrl}${req.path}`
@@ -214,6 +219,27 @@ router.post('/login', async (req, res) => {
     path: loginPath,
   })
 
+  let parallel_session_warning = false
+  try {
+    await pool.query(
+      `DELETE FROM user_auth_sessions WHERE user_id = $1 AND expires_at <= now()`,
+      [user.id],
+    )
+    const existingSessions = await pool.query(
+      `SELECT 1 FROM user_auth_sessions WHERE user_id = $1 AND expires_at > now() LIMIT 1`,
+      [user.id],
+    )
+    parallel_session_warning = (existingSessions.rowCount ?? 0) > 0
+
+    await pool.query(
+      `INSERT INTO user_auth_sessions (user_id, jti, issued_at, expires_at)
+       VALUES ($1, $2, now(), now() + interval '7 days')`,
+      [user.id, jti],
+    )
+  } catch (e) {
+    if (!isPgUndefinedRelationError(e)) throw e
+  }
+
   const token = signToken(claims)
   const publicUser = await buildPublicAuthUser(
     user.id,
@@ -222,7 +248,7 @@ router.post('/login', async (req, res) => {
     user.role,
   )
 
-  res.json({ token, user: publicUser })
+  res.json({ token, user: publicUser, parallel_session_warning })
 })
 
 router.get('/me', async (_req, res) => {
@@ -335,6 +361,11 @@ router.post('/working-site', async (req, res) => {
 
   const locale = await loadPreferredLocale(userId)
 
+  const jti =
+    typeof payload.jti === 'string' && payload.jti.length > 0
+      ? payload.jti
+      : randomUUID()
+
   const newClaims: JwtUserClaims = {
     sub: userId,
     login_name: loginName,
@@ -342,6 +373,7 @@ router.post('/working-site', async (req, res) => {
     role,
     working_site_id: siteId,
     locale,
+    jti,
   }
   const token = signToken(newClaims)
   const publicUser = await buildPublicAuthUser(
@@ -352,6 +384,31 @@ router.post('/working-site', async (req, res) => {
   )
 
   res.json({ token, user: publicUser })
+})
+
+router.post('/logout', async (req, res) => {
+  const header = req.headers.authorization
+  const match = header?.match(/^Bearer\s+(.+)$/i)
+  if (!match) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return
+  }
+  try {
+    const payload = jwt.verify(match[1], env.JWT_SECRET) as JwtUserClaims
+    const jti = typeof payload.jti === 'string' ? payload.jti.trim() : ''
+    if (jti.length > 0) {
+      try {
+        await pool.query(`DELETE FROM user_auth_sessions WHERE jti = $1`, [
+          jti,
+        ])
+      } catch (e) {
+        if (!isPgUndefinedRelationError(e)) throw e
+      }
+    }
+    res.status(204).end()
+  } catch {
+    res.status(401).json({ error: 'Unauthorized' })
+  }
 })
 
 export default router

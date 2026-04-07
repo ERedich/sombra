@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { Card } from 'primereact/card'
@@ -79,6 +79,7 @@ function needsWorkingSitePicker(user: AuthUser): boolean {
 export default function LoginPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const location = useLocation()
   const [loginName, setLoginName] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -91,10 +92,25 @@ export default function LoginPage() {
   const [localeOptions, setLocaleOptions] = useState<AppLocaleOption[]>([])
   const [selectedLocale, setSelectedLocale] = useState('en')
   const [i18nReady, setI18nReady] = useState(false)
+  const [parallelDialogOpen, setParallelDialogOpen] = useState(false)
+  const [stagedLogin, setStagedLogin] = useState<{
+    token: string
+    user: AuthUser
+  } | null>(null)
+  const [pendingParallelWarning, setPendingParallelWarning] = useState(false)
+  const [idleSignedOutNotice, setIdleSignedOutNotice] = useState(false)
 
   useEffect(() => {
     if (getToken()) navigate('/', { replace: true })
   }, [navigate])
+
+  useEffect(() => {
+    const s = location.state as { reason?: string } | null
+    if (s?.reason === 'idle') {
+      setIdleSignedOutNotice(true)
+      navigate('/login', { replace: true, state: {} })
+    }
+  }, [location.state, navigate])
 
   useEffect(() => {
     let cancelled = false
@@ -142,6 +158,14 @@ export default function LoginPage() {
     navigate('/', { replace: true })
   }
 
+  function acknowledgeParallelAndContinue() {
+    if (!stagedLogin) return
+    const { token, user } = stagedLogin
+    setStagedLogin(null)
+    setParallelDialogOpen(false)
+    void finishLogin(token, user)
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
@@ -160,6 +184,7 @@ export default function LoginPage() {
         error?: string
         token?: string
         user?: AuthUser
+        parallel_session_warning?: boolean
       }
       if (!res.ok) {
         setError(data.error ?? t('login.error_login_failed'))
@@ -170,11 +195,18 @@ export default function LoginPage() {
         return
       }
       const user = normalizeAuthUserFromApi(data.user)
+      const warn = data.parallel_session_warning === true
       if (needsWorkingSitePicker(user)) {
+        setPendingParallelWarning(warn)
         setPendingToken(data.token)
         setPendingUser(user)
         setPickedSiteId(user.working_site_id)
         setSiteDialogOpen(true)
+        return
+      }
+      if (warn) {
+        setStagedLogin({ token: data.token, user })
+        setParallelDialogOpen(true)
         return
       }
       await finishLogin(data.token, user)
@@ -211,10 +243,18 @@ export default function LoginPage() {
         setError(t('login.error_invalid_response'))
         return
       }
+      const warn = pendingParallelWarning
+      setPendingParallelWarning(false)
       setSiteDialogOpen(false)
       setPendingToken(null)
       setPendingUser(null)
-      await finishLogin(data.token, normalizeAuthUserFromApi(data.user))
+      const nextUser = normalizeAuthUserFromApi(data.user)
+      if (warn) {
+        setStagedLogin({ token: data.token, user: nextUser })
+        setParallelDialogOpen(true)
+        return
+      }
+      await finishLogin(data.token, nextUser)
     } catch {
       setError(t('login.error_network'))
     } finally {
@@ -227,8 +267,15 @@ export default function LoginPage() {
     setSiteDialogOpen(false)
     const tkn = pendingToken
     const u = pendingUser
+    const warn = pendingParallelWarning
+    setPendingParallelWarning(false)
     setPendingToken(null)
     setPendingUser(null)
+    if (warn) {
+      setStagedLogin({ token: tkn, user: u })
+      setParallelDialogOpen(true)
+      return
+    }
     void finishLogin(tkn, u)
   }
 
@@ -321,6 +368,13 @@ export default function LoginPage() {
                     disabled={loading}
                   />
                 </div>
+                {idleSignedOutNotice ? (
+                  <Message
+                    severity="info"
+                    text={`${t('shell.session_idle_summary')}: ${t('shell.session_idle_detail')}`}
+                    className="w-full"
+                  />
+                ) : null}
                 {error ? (
                   <Message severity="error" text={error} className="w-full" />
                 ) : null}
@@ -336,6 +390,29 @@ export default function LoginPage() {
           </div>
         </aside>
       </div>
+
+      <Dialog
+        header={t('login.parallel_session_title')}
+        visible={parallelDialogOpen}
+        onHide={() => {
+          setParallelDialogOpen(false)
+          setStagedLogin(null)
+        }}
+        dismissableMask
+        style={{ width: 'min(26rem, 95vw)' }}
+        footer={
+          <Button
+            type="button"
+            label={t('login.parallel_session_ack')}
+            icon="pi pi-check"
+            onClick={acknowledgeParallelAndContinue}
+          />
+        }
+      >
+        <p className="text-sm text-color-secondary m-0 line-height-3">
+          {t('login.parallel_session_message')}
+        </p>
+      </Dialog>
 
       <Dialog
         header={t('login.working_site_title')}

@@ -155,3 +155,17 @@ export async function refreshStoredAuthUser(): Promise<void> {
     /* 401 → fetchWithAuth clears session; other errors leave stored user as-is */
   }
 }
+
+/** Removes server-side session row; does not clear local storage. Use before clearAuth on logout/idle. */
+export async function postAuthLogout(): Promise<void> {
+  const token = getToken()
+  if (!token) return
+  try {
+    await fetch(`${apiBase}/api/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  } catch {
+    /* ignore network errors */
+  }
+}

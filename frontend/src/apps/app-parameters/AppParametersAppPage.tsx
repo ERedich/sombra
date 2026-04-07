@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { Card } from 'primereact/card'
+import { InputNumber } from 'primereact/inputnumber'
 import { RadioButton } from 'primereact/radiobutton'
 import { TabPanel, TabView } from 'primereact/tabview'
 import { Toast } from 'primereact/toast'
@@ -9,10 +10,16 @@ import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { AppShell } from '../../layout/AppShell'
 
+const IDLE_SESSION_MAX_MINUTES = 10080
+
 type AppParametersResponse = {
   wo: {
     start_requires_assignment: boolean
     user_auto_assign_on_start: boolean
+    allow_multiple_started_work_orders: boolean
+  }
+  general: {
+    idle_session_timeout_minutes: number
   }
 }
 
@@ -24,15 +31,26 @@ export default function AppParametersAppPage() {
   const [saving, setSaving] = useState(false)
   const [startRequiresAssignment, setStartRequiresAssignment] = useState(true)
   const [userAutoAssignOnStart, setUserAutoAssignOnStart] = useState(true)
+  const [allowMultipleStarted, setAllowMultipleStarted] = useState(false)
   const [baselineStartRequires, setBaselineStartRequires] = useState(true)
   const [baselineUserAutoAssign, setBaselineUserAutoAssign] = useState(true)
+  const [baselineAllowMultipleStarted, setBaselineAllowMultipleStarted] =
+    useState(false)
+  const [idleSessionTimeoutMinutes, setIdleSessionTimeoutMinutes] = useState(0)
+  const [baselineIdleSessionTimeoutMinutes, setBaselineIdleSessionTimeoutMinutes] =
+    useState(0)
 
-  const dirty =
+  const woDirty =
     startRequiresAssignment !== baselineStartRequires ||
-    userAutoAssignOnStart !== baselineUserAutoAssign
+    userAutoAssignOnStart !== baselineUserAutoAssign ||
+    allowMultipleStarted !== baselineAllowMultipleStarted
+  const generalDirty =
+    idleSessionTimeoutMinutes !== baselineIdleSessionTimeoutMinutes
+  const dirty = woDirty || generalDirty
   const swbRadiosDisabled = loading || !isAdmin
   const uaaRadiosDisabled =
     swbRadiosDisabled || startRequiresAssignment === true
+  const mswoRadiosDisabled = swbRadiosDisabled
 
   const showError = useCallback(
     (detail: string) => {
@@ -64,10 +82,22 @@ export default function AppParametersAppPage() {
       const data = await apiJson<AppParametersResponse>('/api/app-parameters')
       const swb = data.wo?.start_requires_assignment !== false
       const uaa = data.wo?.user_auto_assign_on_start !== false
+      const mswo = data.wo?.allow_multiple_started_work_orders === true
       setStartRequiresAssignment(swb)
       setUserAutoAssignOnStart(uaa)
+      setAllowMultipleStarted(mswo)
       setBaselineStartRequires(swb)
       setBaselineUserAutoAssign(uaa)
+      setBaselineAllowMultipleStarted(mswo)
+      const idleRaw = data.general?.idle_session_timeout_minutes
+      const idle =
+        typeof idleRaw === 'number' && Number.isInteger(idleRaw) ? idleRaw : 0
+      const idleClamped = Math.min(
+        Math.max(0, idle),
+        IDLE_SESSION_MAX_MINUTES,
+      )
+      setIdleSessionTimeoutMinutes(idleClamped)
+      setBaselineIdleSessionTimeoutMinutes(idleClamped)
     } catch (e) {
       if (e instanceof ApiError) {
         showError(e.message)
@@ -87,17 +117,27 @@ export default function AppParametersAppPage() {
     if (!isAdmin || !dirty) return
     setSaving(true)
     try {
+      const body: Record<string, unknown> = {}
+      if (woDirty) {
+        body.wo = {
+          start_requires_assignment: startRequiresAssignment,
+          user_auto_assign_on_start: userAutoAssignOnStart,
+          allow_multiple_started_work_orders: allowMultipleStarted,
+        }
+      }
+      if (generalDirty) {
+        body.general = {
+          idle_session_timeout_minutes: idleSessionTimeoutMinutes,
+        }
+      }
       await apiJson<AppParametersResponse>('/api/app-parameters', {
         method: 'PATCH',
-        body: JSON.stringify({
-          wo: {
-            start_requires_assignment: startRequiresAssignment,
-            user_auto_assign_on_start: userAutoAssignOnStart,
-          },
-        }),
+        body: JSON.stringify(body),
       })
       setBaselineStartRequires(startRequiresAssignment)
       setBaselineUserAutoAssign(userAutoAssignOnStart)
+      setBaselineAllowMultipleStarted(allowMultipleStarted)
+      setBaselineIdleSessionTimeoutMinutes(idleSessionTimeoutMinutes)
       showSuccess(t('app_params.saved'))
     } catch (e) {
       if (e instanceof ApiError) {
@@ -115,6 +155,10 @@ export default function AppParametersAppPage() {
     showSuccess,
     startRequiresAssignment,
     userAutoAssignOnStart,
+    allowMultipleStarted,
+    generalDirty,
+    idleSessionTimeoutMinutes,
+    woDirty,
     t,
   ])
 
@@ -144,7 +188,7 @@ export default function AppParametersAppPage() {
           <div className="px-1 md:px-2">
             <TabView className="app-modal-tabview">
               <TabPanel header={t('app_params.tab_work_orders')}>
-                <div className="flex flex-column gap-4 pt-2 min-h-[18rem]">
+                <div className="flex flex-column gap-4 pt-2 min-h-[28rem]">
                   <p className="text-xs text-color-secondary m-0 line-height-3">
                     {t('app_params.wo_abbr_legend')}
                   </p>
@@ -265,6 +309,115 @@ export default function AppParametersAppPage() {
                           </label>
                         </div>
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-column gap-2">
+                    <h2 className="text-base font-semibold m-0">
+                      {t('app_params.wo_mswo_heading')}
+                    </h2>
+                    <div className="flex flex-column lg:flex-row lg:align-items-start lg:justify-content-between gap-3">
+                      <p className="text-sm text-color-secondary m-0 flex-1 min-w-0 lg:pr-4 line-height-3">
+                        {t('app_params.wo_mswo_explain')}
+                      </p>
+                      <div
+                        className="flex align-items-center gap-4 flex-shrink-0"
+                        role="radiogroup"
+                        aria-label={t('app_params.wo_mswo_heading')}
+                      >
+                        <div className="flex align-items-center gap-2">
+                          <RadioButton
+                            inputId="app_params_wo_mswo_y"
+                            name="wo_allow_multiple_started"
+                            value={true}
+                            checked={allowMultipleStarted === true}
+                            onChange={() => setAllowMultipleStarted(true)}
+                            disabled={mswoRadiosDisabled}
+                          />
+                          <label
+                            htmlFor="app_params_wo_mswo_y"
+                            className={
+                              mswoRadiosDisabled
+                                ? 'text-sm text-color-secondary cursor-default'
+                                : 'text-sm cursor-pointer'
+                            }
+                          >
+                            {t('app_params.option_yes')}
+                          </label>
+                        </div>
+                        <div className="flex align-items-center gap-2">
+                          <RadioButton
+                            inputId="app_params_wo_mswo_n"
+                            name="wo_allow_multiple_started"
+                            value={false}
+                            checked={allowMultipleStarted === false}
+                            onChange={() => setAllowMultipleStarted(false)}
+                            disabled={mswoRadiosDisabled}
+                          />
+                          <label
+                            htmlFor="app_params_wo_mswo_n"
+                            className={
+                              mswoRadiosDisabled
+                                ? 'text-sm text-color-secondary cursor-default'
+                                : 'text-sm cursor-pointer'
+                            }
+                          >
+                            {t('app_params.option_no')}
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {isAdmin ? (
+                    <div>
+                      <Button
+                        type="button"
+                        label={t('app_params.save')}
+                        icon="pi pi-check"
+                        onClick={() => void save()}
+                        disabled={!dirty || saving || loading}
+                        loading={saving}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              </TabPanel>
+
+              <TabPanel header={t('app_params.tab_general')}>
+                <div className="flex flex-column gap-4 pt-2 min-h-[28rem]">
+                  <div className="flex flex-column gap-2">
+                    <h2 className="text-base font-semibold m-0">
+                      {t('app_params.general_idle_heading')}
+                    </h2>
+                    <p className="text-sm text-color-secondary m-0 line-height-3">
+                      {t('app_params.general_idle_help')}
+                    </p>
+                    <p className="text-xs text-color-secondary m-0">
+                      {t('app_params.general_idle_max_hint')}
+                    </p>
+                    <div className="flex flex-column gap-2 align-items-start max-w-full">
+                      <label
+                        htmlFor="app_params_idle_timeout"
+                        className="text-sm font-medium">
+                        {t('app_params.general_idle_label')}
+                      </label>
+                      <InputNumber
+                        inputId="app_params_idle_timeout"
+                        value={idleSessionTimeoutMinutes}
+                        onValueChange={(e) =>
+                          setIdleSessionTimeoutMinutes(
+                            typeof e.value === 'number' ? e.value : 0,
+                          )
+                        }
+                        min={0}
+                        max={IDLE_SESSION_MAX_MINUTES}
+                        step={1}
+                        showButtons
+                        disabled={loading || !isAdmin}
+                        className="w-full"
+                        inputClassName="w-full"
+                      />
                     </div>
                   </div>
 
