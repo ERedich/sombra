@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Router } from 'express'
 import bcrypt from 'bcrypt'
+import rateLimit from 'express-rate-limit'
 import jwt from 'jsonwebtoken'
 import { appendAuditLog } from '../audit/auditLog.js'
 import {
@@ -13,6 +14,14 @@ import { env } from '../env.js'
 import { isPgUndefinedRelationError } from '../services/appSettings.js'
 
 const router = Router()
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Try again later.' },
+})
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -152,7 +161,7 @@ function signToken(claims: JwtUserClaims): string {
   return jwt.sign(claims, env.JWT_SECRET, { expiresIn: '7d' })
 }
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   const loginNameRaw =
     typeof req.body?.login_name === 'string'
       ? req.body.login_name.trim()
