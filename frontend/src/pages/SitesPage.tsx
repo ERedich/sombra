@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Card } from 'primereact/card'
+import { Checkbox } from 'primereact/checkbox'
 import { ColorPicker } from 'primereact/colorpicker'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
@@ -34,6 +35,7 @@ export type Site = {
   key: string
   name: string
   colour: string
+  is_plant: boolean
   created_at: string
   updated_at: string
   created_by: string | null
@@ -74,6 +76,7 @@ export default function SitesPage() {
   const [formKey, setFormKey] = useState('')
   const [formName, setFormName] = useState('')
   const [formColourHex, setFormColourHex] = useState(DEFAULT_COLOUR)
+  const [formIsPlant, setFormIsPlant] = useState(false)
   const [selectedSite, setSelectedSite] = useState<Site | null>(null)
   const [search, setSearch] = useState('')
 
@@ -91,6 +94,9 @@ export default function SitesPage() {
         s.key.toLowerCase().includes(q) ||
         s.name.toLowerCase().includes(q) ||
         s.colour.toLowerCase().includes(q) ||
+        (s.is_plant ? t('sites.plant_yes') : t('sites.plant_no'))
+          .toLowerCase()
+          .includes(q) ||
         (s.created_by_login_name?.toLowerCase().includes(q) ?? false) ||
         (s.updated_by_login_name?.toLowerCase().includes(q) ?? false) ||
         s.created_at.toLowerCase().includes(q) ||
@@ -98,7 +104,7 @@ export default function SitesPage() {
         formatDateTime(s.created_at).toLowerCase().includes(q) ||
         formatDateTime(s.updated_at).toLowerCase().includes(q),
     )
-  }, [sites, search, siteIdParam])
+  }, [sites, search, siteIdParam, t])
 
   useEffect(() => {
     if (siteIdParam && sites.length > 0) {
@@ -163,6 +169,7 @@ export default function SitesPage() {
     setFormKey('')
     setFormName('')
     setFormColourHex(DEFAULT_COLOUR)
+    setFormIsPlant(false)
     setDialogOpen(true)
   }
 
@@ -173,6 +180,7 @@ export default function SitesPage() {
     setFormKey(row.key)
     setFormName(row.name)
     setFormColourHex(normalizeHexForPicker(row.colour))
+    setFormIsPlant(row.is_plant === true)
     setDialogOpen(true)
   }
 
@@ -187,10 +195,16 @@ export default function SitesPage() {
     setSaving(true)
     try {
       if (editingId) {
-        const body: { key: string; name: string; colour: string } = {
+        const body: {
+          key: string
+          name: string
+          colour: string
+          is_plant: boolean
+        } = {
           key,
           name,
           colour,
+          is_plant: formIsPlant,
         }
         const data = await apiJson<SiteResponse>(`/api/sites/${editingId}`, {
           method: 'PATCH',
@@ -206,7 +220,7 @@ export default function SitesPage() {
       } else {
         const data = await apiJson<SiteResponse>('/api/sites', {
           method: 'POST',
-          body: JSON.stringify({ key, name, colour }),
+          body: JSON.stringify({ key, name, colour, is_plant: formIsPlant }),
         })
         setSites((prev) => [...prev, data.site].sort((a, b) =>
           a.name.localeCompare(b.name),
@@ -298,6 +312,13 @@ export default function SitesPage() {
     return [
       { field: 'key', headerKey: 'common.col_key', sortable: true },
       { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'is_plant',
+        headerKey: 'sites.col_plant',
+        sortable: true,
+        body: (row) =>
+          row.is_plant ? t('sites.plant_yes') : t('sites.plant_no'),
+      },
       {
         field: 'colour',
         headerKey: 'common.col_colour',
@@ -551,6 +572,17 @@ export default function SitesPage() {
                 {withHash(formColourHex)}
               </span>
             </div>
+          </div>
+          <div className="flex align-items-center gap-2">
+            <Checkbox
+              inputId="site-is-plant"
+              checked={formIsPlant}
+              onChange={(e) => setFormIsPlant(Boolean(e.checked))}
+              disabled={saving}
+            />
+            <label htmlFor="site-is-plant" className="text-sm cursor-pointer">
+              {t('sites.plant_checkbox')}
+            </label>
           </div>
         </div>
       </Dialog>

@@ -8,6 +8,6 @@ CREATE TABLE IF NOT EXISTS app_settings (
 INSERT INTO app_settings (key, value_json)
 VALUES (
     'wo',
-    '{"start_requires_assignment": true, "user_auto_assign_on_start": true}'::jsonb
+    '{"start_requires_assignment": true, "user_auto_assign_on_start": true, "allow_multiple_started_work_orders": false}'::jsonb
   )
 ON CONFLICT (key) DO NOTHING;

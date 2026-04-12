@@ -6,6 +6,8 @@ export type RegisteredApp = {
   labelKey: string
   icon: string
   adminOnly?: boolean
+  /** Opens in-app assistant modal instead of routing to `path` */
+  shellAction?: 'kira'
 }
 
 /** Top-level home route (not nested under a section). */
@@ -49,6 +51,12 @@ export const NAV_SECTIONS: NavSection[] = [
         adminOnly: true,
       },
       { path: '/translations', labelKey: 'nav.translations', icon: 'pi pi-language' },
+      {
+        path: '/ai',
+        labelKey: 'nav.ai',
+        icon: 'pi pi-sparkles',
+        shellAction: 'kira',
+      },
       { path: '/template-app', labelKey: 'nav.template_app', icon: 'pi pi-book' },
     ],
   },
@@ -64,6 +72,7 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: 'pi pi-history',
         adminOnly: true,
       },
+      { path: '/shifts', labelKey: 'nav.shifts', icon: 'pi pi-clock' },
     ],
   },
   {
@@ -102,18 +111,22 @@ export const NAV_SECTIONS: NavSection[] = [
         labelKey: 'nav.work_planning',
         icon: 'pi pi-calendar-plus',
       },
+      {
+        path: '/shift-planner',
+        labelKey: 'nav.shift_planner',
+        icon: 'pi pi-table',
+      },
+      {
+        path: '/capacity-planner',
+        labelKey: 'nav.capacity_planner',
+        icon: 'pi pi-chart-bar',
+      },
     ],
   },
   {
     id: 'purchase',
     labelKey: 'nav.section_purchase',
     icon: 'pi pi-shopping-cart',
-    children: [],
-  },
-  {
-    id: 'material',
-    labelKey: 'nav.section_material',
-    icon: 'pi pi-inbox',
     children: [],
   },
 ]

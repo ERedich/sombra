@@ -4,7 +4,6 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from 'primereact/button'
 import { ButtonGroup } from 'primereact/buttongroup'
 import { Card } from 'primereact/card'
-import { Checkbox } from 'primereact/checkbox'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
@@ -60,7 +59,6 @@ export type AppUser = {
   created_by_login_name: string | null
   updated_by_login_name: string | null
   working_site_id: string | null
-  allow_site_change_on_login: boolean
   additional_sites: AdditionalSiteRef[]
   working_site_key: string | null
   working_site_name: string | null
@@ -139,8 +137,6 @@ export default function UsersPage() {
   const [formAdditionalSiteIds, setFormAdditionalSiteIds] = useState<string[]>(
     [],
   )
-  const [formAllowSiteChangeOnLogin, setFormAllowSiteChangeOnLogin] =
-    useState(false)
   const [siteOptions, setSiteOptions] = useState<Site[]>([])
   const [allUserGroups, setAllUserGroups] = useState<UserGroup[]>([])
   const [allEmployees, setAllEmployees] = useState<EmployeeRef[]>([])
@@ -263,12 +259,6 @@ export default function UsersPage() {
   }, [dialogOpen])
 
   useEffect(() => {
-    if (formAdditionalSiteIds.length === 0) {
-      setFormAllowSiteChangeOnLogin(false)
-    }
-  }, [formAdditionalSiteIds.length])
-
-  useEffect(() => {
     if (!formEmployeeId) return
     if (employeeOptionsFiltered.some((x) => x.id === formEmployeeId)) return
     setFormEmployeeId(null)
@@ -331,7 +321,6 @@ export default function UsersPage() {
     setFormAdditionalSiteIds([])
     setFormGroupIds([])
     setFormEmployeeId(null)
-    setFormAllowSiteChangeOnLogin(false)
     setFieldErrors({})
     setActiveTab(0)
     setDialogOpen(true)
@@ -350,7 +339,6 @@ export default function UsersPage() {
     setFormAdditionalSiteIds(row.additional_sites.map((s) => s.id))
     setFormGroupIds(row.groups?.map((g) => g.id) ?? [])
     setFormEmployeeId(row.employee_id)
-    setFormAllowSiteChangeOnLogin(row.allow_site_change_on_login)
     setFieldErrors({})
     setActiveTab(0)
     setDialogOpen(true)
@@ -399,8 +387,6 @@ export default function UsersPage() {
     const sitePayload = {
       working_site_id: formWorkingSiteId,
       additional_site_ids: formAdditionalSiteIds,
-      allow_site_change_on_login:
-        formAdditionalSiteIds.length > 0 && formAllowSiteChangeOnLogin,
       user_group_ids: formGroupIds,
       employee_id: formEmployeeId,
     }
@@ -999,21 +985,6 @@ export default function UsersPage() {
                   placeholder={t('users.placeholder_additional_sites')}
                   filter
                 />
-              </div>
-              <div className="flex align-items-center gap-2">
-                <Checkbox
-                  inputId="allow-site-change"
-                  checked={formAllowSiteChangeOnLogin}
-                  onChange={(e) =>
-                    setFormAllowSiteChangeOnLogin(Boolean(e.checked))
-                  }
-                  disabled={
-                    saving || formAdditionalSiteIds.length === 0
-                  }
-                />
-                <label htmlFor="allow-site-change" className="text-sm">
-                  Allow site change on login
-                </label>
               </div>
               <p className="text-xs text-color-secondary m-0">
                 {t('users.site_tab_note')}

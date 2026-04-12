@@ -14,7 +14,8 @@
     "seed:assets-4000": "tsx scripts/seed-4000-assets.ts",
     "seed:dummy-org": "tsx scripts/seed-dummy-org-data.ts",
     "db:copy": "node scripts/pg-copy.mjs",
-    "parity:interval": "tsx scripts/compare-interval-sql-vs-ts.ts"
+    "parity:interval": "tsx scripts/compare-interval-sql-vs-ts.ts",
+    "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

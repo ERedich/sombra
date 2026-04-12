@@ -31,6 +31,7 @@ The backend maintains an **append-only** `audit_log` table in PostgreSQL for eve
 - **QS:** Quick Search or Global Search
 - **PS:** Preset (done in searchpanel)
 - **WP:** Work Plan
+- **DTF:** Date/time display format (general app parameter `general.dtf`)
 
 ## WO Process (work orders)
 
@@ -62,6 +63,12 @@ Product rules for **starting** and **stopping** work on a work order (WO). The *
 - **Data:** Strings are stored in PostgreSQL (`app_locales`, `ui_translations`); the SPA loads them via [`GET /api/translations`](backend/src/routes/translations.ts). Enabled languages are listed with [`GET /api/locales`](backend/src/routes/locales.ts). Users choose language **at login**; `users.preferred_locale` and the JWT include the active locale code.
 - **New apps and labels:** When adding a route, sidebar entry, or quick access item, add a **`labelKey`** to [`registeredApps.ts`](frontend/src/navigation/registeredApps.ts), add matching rows for **each** enabled locale in `ui_translations` (migration seed and/or **Translations** app), and use `t(labelKey)` where the label is shown. Follow the same pattern for any new fixed strings (prefer dotted keys, e.g. `myfeature.save`).
 - **New languages:** Insert a row into `app_locales`, provide `ui_translations` for that `code`, and extend the PrimeReact locale map in [`frontend/src/i18n/registerPrimeLocales.ts`](frontend/src/i18n/registerPrimeLocales.ts) when component date/number formatting should match that language.
+
+## Date and time display (DTF)
+
+- **Single setting:** **Date format always follows the general app parameter `dtf`** (Date/time display format — **App parameters → General**). That choice is the source of truth for how **calendar dates** are shown and entered, not a hard-coded pattern per screen.
+- **PrimeReact `Calendar`:** Either rely on [`PrimeLocaleSync`](frontend/src/i18n/PrimeLocaleSync.tsx) (it applies `dtf` to the active Prime locale’s `dateFormat`), or set `dateFormat={primeDateFormatForDtf(dtf)}` using [`useAppParameters()`](frontend/src/layout/AppParametersProvider.tsx) and [`primeDateFormatForDtf`](frontend/src/utils/dateTimeFormatPreference.ts). **Do not** pin a fixed `dateFormat` such as `yy-mm-dd` on pickers unless there is a documented exception.
+- **Read-only labels:** Use [`formatDate`](frontend/src/utils/dateTime.ts) / [`formatDateTime`](frontend/src/utils/dateTime.ts) for table cells and headings so list and timetable views match the same `dtf` preference.
 
 ## Modal Window Handling
 

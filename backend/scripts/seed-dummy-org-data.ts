@@ -88,19 +88,17 @@ async function main() {
              password_hash,
              role,
              working_site_id,
-             allow_site_change_on_login,
              employee_id,
              created_by,
              updated_by
            )
-           VALUES ($1, $2, $3, $4, 'user', $5, false, NULL, $6, $6)
+           VALUES ($1, $2, $3, $4, 'user', $5, NULL, $6, $6)
            ON CONFLICT (login_name) DO UPDATE SET
              name = EXCLUDED.name,
              email = EXCLUDED.email,
              password_hash = EXCLUDED.password_hash,
              role = EXCLUDED.role,
              working_site_id = EXCLUDED.working_site_id,
-             allow_site_change_on_login = EXCLUDED.allow_site_change_on_login,
              updated_at = now(),
              updated_by = EXCLUDED.updated_by
            RETURNING id`,

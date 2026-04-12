@@ -27,6 +27,10 @@ import { Tag } from 'primereact/tag'
 import { Toast } from 'primereact/toast'
 import { TabView, TabPanel } from 'primereact/tabview'
 import { ApiError, apiBase, apiJson } from '../../api'
+import {
+  mergeDisplayStatusColours,
+  type WorkOrderStatusColourKey,
+} from '../../constants/woStatusColours'
 import { getStoredUser, getToken } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
 import {
@@ -36,6 +40,10 @@ import {
 } from '../../layout/crudContextMenuItems'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
+import {
+  VoiceAssistPanel,
+  type AiSuggestWoValidated,
+} from '../../components/ai/VoiceAssistPanel'
 import { AssetPickerSidebarContent } from '../../components/sel-item/AssetPickerSidebarContent'
 import { SelItemField } from '../../components/sel-item/SelItemField'
 import { formatDateTime } from '../../utils/dateTime'
@@ -160,6 +168,7 @@ type WoTransactionRow = {
   created_by_login_name: string | null
 }
 type WoTransactionsResponse = { transactions: WoTransactionRow[] }
+
 type WorkOrderWsEventType =
   | 'work_order_created'
   | 'work_order_updated'
@@ -211,34 +220,53 @@ function buildWorkOrderWsUrl(): string | null {
   return `${wsProto}//${u.host}/api/ws?token=${encodeURIComponent(token)}`
 }
 
-function statusSeverity(
-  s: string,
-): 'success' | 'info' | 'warning' | 'danger' | 'secondary' | 'contrast' | null {
-  switch (s) {
-    case 'open':
-      return 'info'
-    case 'assigned':
-      return 'secondary'
-    case 'started':
-      return 'warning'
-    case 'continued':
-      return 'warning'
-    case 'on_hold':
-      return 'warning'
-    case 'done':
-      return 'success'
-    case 'closed':
-      return 'contrast'
-    default:
-      return null
-  }
-}
+const WO_FEEDBACK_DONE_REQUIRES_TIME_CODE = 'WO_FEEDBACK_DONE_REQUIRES_TIME'
 
-function statusBody(row: WorkOrder, t: TFunction) {
+function statusBody(
+  row: WorkOrder,
+  t: TFunction,
+  mergedColours: Record<WorkOrderStatusColourKey, string>,
+) {
   const k = WO_STATUS_I18N_KEYS[row.status]
   const label = k ? t(k) : row.status
+  const sk = row.status as WorkOrderStatusColourKey
+  const colour = mergedColours[sk] ?? mergedColours.open
+  const fg = contrastTextOnHex(colour)
   return (
-    <Tag value={label} severity={statusSeverity(row.status) ?? undefined} />
+    <Tag
+      value={label}
+      rounded
+      className="text-sm font-medium white-space-nowrap"
+      style={{
+        backgroundColor: colour,
+        color: fg,
+        border: `1px solid ${colour}`,
+      }}
+    />
+  )
+}
+
+function formStatusTag(
+  formStatus: string,
+  t: TFunction,
+  mergedColours: Record<WorkOrderStatusColourKey, string>,
+) {
+  const k = WO_STATUS_I18N_KEYS[formStatus]
+  const label = k ? t(k) : formStatus
+  const sk = formStatus as WorkOrderStatusColourKey
+  const colour = mergedColours[sk] ?? mergedColours.open
+  const fg = contrastTextOnHex(colour)
+  return (
+    <Tag
+      value={label}
+      rounded
+      className="text-sm font-medium white-space-nowrap"
+      style={{
+        backgroundColor: colour,
+        color: fg,
+        border: `1px solid ${colour}`,
+      }}
+    />
   )
 }
 
@@ -274,6 +302,8 @@ function WorkOrderStartCell(props: {
   currentEmployeeId: string | null
   employeeWorkgroupIds: string[]
   startRequiresAssignment: boolean
+  /** When true, another assigned WO is already started/continued and policy disallows another start. */
+  mswoBlocksStart: boolean
   onStart: (row: WorkOrder) => void
   onStop: (row: WorkOrder) => void
   t: TFunction
@@ -284,6 +314,7 @@ function WorkOrderStartCell(props: {
     currentEmployeeId,
     employeeWorkgroupIds,
     startRequiresAssignment,
+    mswoBlocksStart,
     onStart,
     onStop,
     t,
@@ -301,7 +332,8 @@ function WorkOrderStartCell(props: {
   const canStart =
     !!currentEmployeeId &&
     inWorkgroup &&
-    (startRequiresAssignment ? assignedToWo : true)
+    (startRequiresAssignment ? assignedToWo : true) &&
+    !mswoBlocksStart
 
   const playStatuses = new Set(['open', 'assigned', 'on_hold'])
   const stopStatuses = new Set(['started', 'continued'])
@@ -317,6 +349,7 @@ function WorkOrderStartCell(props: {
     if (startRequiresAssignment && !assignedToWo) {
       return t('wo.start_disabled_must_assign')
     }
+    if (mswoBlocksStart) return t('wo.start_disabled_mswo')
     return t('wo.start_tooltip')
   }
 
@@ -520,6 +553,7 @@ export function WorkOrdersPage({
   const [formAssetId, setFormAssetId] = useState<string | null>(null)
   const [formInstruction, setFormInstruction] = useState('')
   const [formPlanStart, setFormPlanStart] = useState<Date | null>(null)
+  const [formPlanEnd, setFormPlanEnd] = useState<Date | null>(null)
   const [formDurationHours, setFormDurationHours] = useState<number | null>(0)
   const [formWorktime, setFormWorktime] = useState<number | null>(null)
   const [formWorkTypeId, setFormWorkTypeId] = useState<string | null>(null)
@@ -574,6 +608,7 @@ export function WorkOrdersPage({
   const [formWorkInstructions, setFormWorkInstructions] = useState<
     FormWorkInstruction[]
   >([])
+  const [woAiAssets, setWoAiAssets] = useState<Asset[]>([])
   const [instructionViewOpen, setInstructionViewOpen] = useState(false)
   const [instructionViewWoId, setInstructionViewWoId] = useState<string | null>(
     null,
@@ -617,6 +652,15 @@ export function WorkOrdersPage({
   const [woStartRequiresAssignment, setWoStartRequiresAssignment] =
     useState(true)
   const [woUserAutoAssignOnStart, setWoUserAutoAssignOnStart] = useState(true)
+  const [woAllowMultipleStarted, setWoAllowMultipleStarted] = useState(false)
+  const [woLockEndDateByDuration, setWoLockEndDateByDuration] = useState(false)
+  const [woAllowPlanStartInHistory, setWoAllowPlanStartInHistory] =
+    useState(false)
+  const [woRequireTimeRegistrationForDone, setWoRequireTimeRegistrationForDone] =
+    useState(true)
+  const [woStatusColourOverrides, setWoStatusColourOverrides] = useState<
+    Partial<Record<WorkOrderStatusColourKey, string>>
+  >({})
   const [feedbackPoolAvailable, setFeedbackPoolAvailable] = useState<
     WorkOrderEmployeePoolItemDto[]
   >([])
@@ -629,6 +673,13 @@ export function WorkOrdersPage({
           wo: {
             start_requires_assignment: boolean
             user_auto_assign_on_start?: boolean
+            allow_multiple_started_work_orders?: boolean
+            lock_end_date_by_duration?: boolean
+            allow_plan_start_in_history?: boolean
+            require_time_registration_for_done?: boolean
+            work_order_status_colours?: Partial<
+              Record<WorkOrderStatusColourKey, string>
+            >
           }
         }>('/api/app-parameters')
         if (!cancelled) {
@@ -638,11 +689,34 @@ export function WorkOrdersPage({
           setWoUserAutoAssignOnStart(
             data.wo?.user_auto_assign_on_start !== false,
           )
+          setWoAllowMultipleStarted(
+            data.wo?.allow_multiple_started_work_orders === true,
+          )
+          setWoLockEndDateByDuration(
+            data.wo?.lock_end_date_by_duration === true,
+          )
+          setWoAllowPlanStartInHistory(
+            data.wo?.allow_plan_start_in_history === true,
+          )
+          setWoRequireTimeRegistrationForDone(
+            data.wo?.require_time_registration_for_done !== false,
+          )
+          const raw = data.wo?.work_order_status_colours
+          setWoStatusColourOverrides(
+            raw && typeof raw === 'object' && !Array.isArray(raw)
+              ? (raw as Partial<Record<WorkOrderStatusColourKey, string>>)
+              : {},
+          )
         }
       } catch {
         if (!cancelled) {
           setWoStartRequiresAssignment(true)
           setWoUserAutoAssignOnStart(true)
+          setWoAllowMultipleStarted(false)
+          setWoLockEndDateByDuration(false)
+          setWoAllowPlanStartInHistory(false)
+          setWoRequireTimeRegistrationForDone(true)
+          setWoStatusColourOverrides({})
         }
       }
     })()
@@ -650,6 +724,20 @@ export function WorkOrdersPage({
       cancelled = true
     }
   }, [])
+
+  const woStatusMergedColours = useMemo(
+    () => mergeDisplayStatusColours(woStatusColourOverrides),
+    [woStatusColourOverrides],
+  )
+
+  /** Matches backend PSH check: disallow calendar days before UTC today when PSH is off. */
+  const planStartCalendarMinDate = useMemo((): Date | undefined => {
+    if (woAllowPlanStartInHistory) return undefined
+    const n = new Date()
+    return new Date(
+      Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate(), 0, 0, 0, 0),
+    )
+  }, [woAllowPlanStartInHistory])
 
   const loadFeedbackEmployeePool = useCallback(async (woId: string) => {
     try {
@@ -851,18 +939,30 @@ export function WorkOrdersPage({
         field: 'wo_start',
         headerKey: 'wo.col_start',
         sortable: false,
-        body: (row) => (
-          <WorkOrderStartCell
-            row={row}
-            currentEmployeeId={currentEmployeeId}
-            employeeWorkgroupIds={employeeWorkgroupIds}
-            startRequiresAssignment={woStartRequiresAssignment}
-            onStart={(r) => postStartWorkOrderRef.current(r)}
-            onStop={(r) => openFeedbackTabRef.current(r)}
-            t={t}
-            emDash={emDash}
-          />
-        ),
+        body: (row) => {
+          const mswoBlocks =
+            !woAllowMultipleStarted &&
+            !!currentEmployeeId &&
+            rows.some(
+              (w) =>
+                w.id !== row.id &&
+                (w.status === 'started' || w.status === 'continued') &&
+                (w.assigned_employee_ids ?? []).includes(currentEmployeeId),
+            )
+          return (
+            <WorkOrderStartCell
+              row={row}
+              currentEmployeeId={currentEmployeeId}
+              employeeWorkgroupIds={employeeWorkgroupIds}
+              startRequiresAssignment={woStartRequiresAssignment}
+              mswoBlocksStart={mswoBlocks}
+              onStart={(r) => postStartWorkOrderRef.current(r)}
+              onStop={(r) => openFeedbackTabRef.current(r)}
+              t={t}
+              emDash={emDash}
+            />
+          )
+        },
       },
       {
         field: 'short_text',
@@ -1045,7 +1145,7 @@ export function WorkOrdersPage({
         field: 'status',
         headerKey: 'wo.col_status',
         sortable: true,
-        body: (row) => statusBody(row, t),
+        body: (row) => statusBody(row, t, woStatusMergedColours),
         search: {
           inputType: 'multiselect',
           options: statusOptions,
@@ -1120,6 +1220,8 @@ export function WorkOrdersPage({
     currentEmployeeId,
     employeeWorkgroupIds,
     woStartRequiresAssignment,
+    woAllowMultipleStarted,
+    woStatusMergedColours,
   ])
 
   const searchableColumns = useMemo(
@@ -1559,6 +1661,56 @@ export function WorkOrdersPage({
     [workgroupsForSite],
   )
 
+  const assetsForWoVoice = useMemo(() => {
+    const sid = targetSiteIdForPicker
+    if (!sid) return []
+    return woAiAssets.filter((a) => a.site_id === sid)
+  }, [woAiAssets, targetSiteIdForPicker])
+
+  useEffect(() => {
+    if (!dialogOpen || editingId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const data = await apiJson<AssetsListResponse>('/api/assets')
+        if (!cancelled) setWoAiAssets(data.assets ?? [])
+      } catch {
+        if (!cancelled) setWoAiAssets([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [dialogOpen, editingId])
+
+  const applyAiWoDraft = useCallback(
+    (v: AiSuggestWoValidated) => {
+      if (v.short_text?.trim()) setFormShortText(v.short_text.trim())
+      if (v.instruction_text?.trim()) {
+        setFormInstruction(v.instruction_text.trim())
+      }
+      if (v.asset_id) {
+        setFormAssetId(v.asset_id)
+        const a = assetsForWoVoice.find((x) => x.id === v.asset_id)
+        setPickedAsset(a ?? null)
+      }
+      if (v.work_type_id) setFormWorkTypeId(v.work_type_id)
+      if (v.workgroup_id) setFormWorkgroupId(v.workgroup_id)
+      setFormCategoryId(v.category_id ?? null)
+      if (v.worktime != null && Number.isFinite(v.worktime)) {
+        setFormWorktime(v.worktime)
+      }
+      if (v.duration != null && Number.isFinite(v.duration)) {
+        setFormDurationHours(v.duration)
+      }
+      if (v.plan_start) {
+        const d = new Date(v.plan_start)
+        if (!Number.isNaN(d.getTime())) setFormPlanStart(d)
+      }
+    },
+    [assetsForWoVoice],
+  )
+
   const pmWorkTypeIdForSite = useMemo(
     () => workTypesForSite.find((w) => w.key === 'PM')?.id ?? null,
     [workTypesForSite],
@@ -1603,7 +1755,7 @@ export function WorkOrdersPage({
     )
   }, [formPlanStart, formDurationHours])
 
-  const planEndDisplay = planEndPreview
+  const planEndDisplayLocked = planEndPreview
     ? formatDateTime(planEndPreview.toISOString())
     : emDash
 
@@ -1639,6 +1791,7 @@ export function WorkOrdersPage({
     setPickedAsset(null)
     setFormInstruction('')
     setFormPlanStart(null)
+    setFormPlanEnd(null)
     setFormDurationHours(0)
     setFormWorktime(null)
     const ws = getStoredUser()?.working_site_id
@@ -1687,6 +1840,7 @@ export function WorkOrdersPage({
       setPickedAsset(null)
       setFormInstruction(r.instruction_text)
       setFormPlanStart(r.plan_start ? new Date(r.plan_start) : null)
+      setFormPlanEnd(r.plan_end ? new Date(r.plan_end) : null)
       setFormDurationHours(Number(r.duration ?? '0'))
       setFormWorktime(parseWorktimeNum(r.worktime))
       setFormWorkTypeId(r.work_type_id)
@@ -1866,11 +2020,57 @@ export function WorkOrdersPage({
     feedbackPoolAvailable,
   ])
 
+  const feedbackShowSelfSection = useMemo(() => {
+    const row = editingRowForFeedback
+    const selfId = currentEmployeeId
+    if (!row || !selfId) return false
+    const selfAssigned = (row.assigned_employee_ids ?? []).includes(selfId)
+    return selfAssigned || !woStartRequiresAssignment
+  }, [editingRowForFeedback, currentEmployeeId, woStartRequiresAssignment])
+
+  const feedbackSubmitHoursTotal = useMemo(() => {
+    let s = 0
+    if (feedbackShowSelfSection) {
+      s += Number(fbSelfHours ?? 0)
+    }
+    for (const eid of fbExtraEmployeeIds) {
+      s += Number(fbExtraHours[eid] ?? 0)
+    }
+    return s
+  }, [
+    feedbackShowSelfSection,
+    fbSelfHours,
+    fbExtraEmployeeIds,
+    fbExtraHours,
+  ])
+
+  const registeredTxHoursOnWo = useMemo(
+    () => woTxList.reduce((acc, r) => acc + Number(r.hours ?? 0), 0),
+    [woTxList],
+  )
+
+  const feedbackDoneBlockedByTrr = useMemo(
+    () =>
+      woRequireTimeRegistrationForDone &&
+      registeredTxHoursOnWo + feedbackSubmitHoursTotal <= 0,
+    [
+      woRequireTimeRegistrationForDone,
+      registeredTxHoursOnWo,
+      feedbackSubmitHoursTotal,
+    ],
+  )
+
   useEffect(() => {
     if (!dialogOpen || !editingId || feedbackTabIdx < 0) return
     if (dialogTab !== feedbackTabIdx) return
     void loadWoTransactions(editingId)
   }, [dialogOpen, dialogTab, editingId, feedbackTabIdx, loadWoTransactions])
+
+  useEffect(() => {
+    if (fbTargetStatus === 'done' && feedbackDoneBlockedByTrr) {
+      setFbTargetStatus('')
+    }
+  }, [fbTargetStatus, feedbackDoneBlockedByTrr])
 
   function openHoldDialog(row: WorkOrder) {
     setHoldDialogRow(row)
@@ -1954,6 +2154,10 @@ export function WorkOrdersPage({
       showError(t('wo.hold_reason_required'))
       return
     }
+    if (fbTargetStatus === 'done' && feedbackDoneBlockedByTrr) {
+      showError(t('wo.feedback_done_requires_time'))
+      return
+    }
     setFbSaving(true)
     try {
       const body: Record<string, unknown> = { entries }
@@ -1980,7 +2184,17 @@ export function WorkOrdersPage({
       await loadWoTransactions(editingId)
     } catch (e) {
       if (e instanceof ApiError) {
-        showError(e.message)
+        const code =
+          typeof e.body === 'object' &&
+          e.body !== null &&
+          'code' in e.body
+            ? (e.body as { code?: string }).code
+            : undefined
+        if (code === WO_FEEDBACK_DONE_REQUIRES_TIME_CODE) {
+          showError(t('wo.feedback_done_requires_time'))
+        } else {
+          showError(e.message)
+        }
       } else {
         showError(t('wo.save_fail'))
       }
@@ -2040,6 +2254,16 @@ export function WorkOrdersPage({
       return { ok: false }
     }
 
+    if (
+      !woLockEndDateByDuration &&
+      formPlanStart &&
+      formPlanEnd &&
+      formPlanEnd.getTime() < formPlanStart.getTime()
+    ) {
+      showError(t('wo.err_plan_end_before_start'))
+      return { ok: false }
+    }
+
     const body: Record<string, unknown> = {
       short_text: shortText.slice(0, 200),
       asset_id: formAssetId,
@@ -2050,6 +2274,13 @@ export function WorkOrdersPage({
       duration: formDurationHours,
       category_id: formCategoryId,
       workgroup_id: formWorkgroupId,
+    }
+    if (!woLockEndDateByDuration) {
+      if (editingId) {
+        body.plan_end = formPlanEnd ? formPlanEnd.toISOString() : null
+      } else if (formPlanEnd != null) {
+        body.plan_end = formPlanEnd.toISOString()
+      }
     }
     if (!editingId) {
       const wi = workInstructionsForCreateBody(formWorkInstructions)
@@ -3022,6 +3253,38 @@ export function WorkOrdersPage({
         >
           <TabPanel header={t('wo.tab_general')}>
             <div className="app-modal-tab-content grid pt-2 gap-3">
+              {!editingId ? (
+                <div className="col-12">
+                  <VoiceAssistPanel
+                    kind="work_order"
+                    disabled={saving}
+                    context={{
+                      assets: assetsForWoVoice.map((a) => ({
+                        id: a.id,
+                        key: a.key,
+                        name: a.name,
+                      })),
+                      work_types: workTypesForSite.map((wt) => ({
+                        id: wt.id,
+                        key: wt.key,
+                        name: wt.name,
+                      })),
+                      workgroups: workgroupsForSite.map((wg) => ({
+                        id: wg.id,
+                        key: wg.key,
+                        name: wg.name,
+                      })),
+                      categories: categoriesForSite.map((c) => ({
+                        id: c.id,
+                        key: c.key,
+                        name: c.name,
+                      })),
+                    }}
+                    onApplyValidated={applyAiWoDraft}
+                    onError={showError}
+                  />
+                </div>
+              ) : null}
               {editingId ? (
                 <div className="col-12 sm:col-4 lg:col-2 flex flex-column gap-2">
                   <span className="text-sm font-medium">{t('wo.col_key')}</span>
@@ -3172,14 +3435,7 @@ export function WorkOrdersPage({
               </div>
               <div className="col-12 md:col-12 xl:col-4 flex flex-column gap-2">
                 <span className="text-sm font-medium">{t('wo.col_status')}</span>
-                <Tag
-                  value={
-                    WO_STATUS_I18N_KEYS[formStatus]
-                      ? t(WO_STATUS_I18N_KEYS[formStatus])
-                      : formStatus
-                  }
-                  severity={statusSeverity(formStatus) ?? undefined}
-                />
+                {formStatusTag(formStatus, t, woStatusMergedColours)}
                 <span className="text-xs text-color-secondary">
                   {t('wo.status_not_editable')}
                 </span>
@@ -3294,9 +3550,11 @@ export function WorkOrdersPage({
                   <Calendar
                     id="wo-plan-start"
                     value={formPlanStart}
-                    onChange={(e) =>
-                      setFormPlanStart(e.value as Date | null)
-                    }
+                    onChange={(e) => {
+                      const v = e.value as Date | null
+                      setFormPlanStart(v)
+                      if (!v) setFormPlanEnd(null)
+                    }}
                     showTime
                     hourFormat="24"
                     showIcon
@@ -3304,6 +3562,7 @@ export function WorkOrdersPage({
                     className="w-full"
                     inputClassName="w-full min-w-0"
                     disabled={saving}
+                    minDate={planStartCalendarMinDate}
                   />
                 </div>
                 <div className="col-12 md:col-6 flex flex-column gap-2">
@@ -3328,17 +3587,47 @@ export function WorkOrdersPage({
                   />
                 </div>
                 <div className="col-12 md:col-6 flex flex-column gap-2">
-                  <span className="text-sm font-medium">
+                  <label
+                    htmlFor="wo-plan-end"
+                    className="text-sm font-medium"
+                  >
                     {t('wo.field_plan_end')}
-                  </span>
-                  <InputText
-                    value={planEndDisplay}
-                    className="w-full"
-                    disabled
-                  />
-                  <span className="text-xs text-color-secondary">
-                    {t('wo.col_plan_start')} + {t('wo.field_duration_hours')}
-                  </span>
+                  </label>
+                  {woLockEndDateByDuration ? (
+                    <>
+                      <InputText
+                        id="wo-plan-end"
+                        value={planEndDisplayLocked}
+                        className="w-full"
+                        disabled
+                      />
+                      <span className="text-xs text-color-secondary">
+                        {t('wo.col_plan_start')} +{' '}
+                        {t('wo.field_duration_hours')}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Calendar
+                        id="wo-plan-end"
+                        value={formPlanEnd}
+                        onChange={(e) =>
+                          setFormPlanEnd(e.value as Date | null)
+                        }
+                        showTime
+                        hourFormat="24"
+                        showIcon
+                        showButtonBar
+                        className="w-full"
+                        inputClassName="w-full min-w-0"
+                        disabled={saving}
+                        minDate={formPlanStart ?? undefined}
+                      />
+                      <span className="text-xs text-color-secondary">
+                        {t('wo.plan_end_free_hint')}
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -3471,6 +3760,7 @@ export function WorkOrdersPage({
                             {
                               value: 'done',
                               label: t(WO_STATUS_I18N_KEYS.done),
+                              disabled: feedbackDoneBlockedByTrr,
                             },
                           ]}
                           onChange={(e) =>

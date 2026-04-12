@@ -18,6 +18,7 @@ type SiteTableRow = {
   key: string
   name: string
   colour: string
+  is_plant: boolean
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -34,7 +35,7 @@ async function fetchSiteWithJoins(
   id: string,
 ): Promise<SiteRow | undefined> {
   const r = await client.query<SiteRow>(
-    `SELECT s.id, s.key, s.name, s.colour, s.created_at, s.updated_at,
+    `SELECT s.id, s.key, s.name, s.colour, s.is_plant, s.created_at, s.updated_at,
             s.created_by, s.updated_by,
             cb.login_name AS created_by_login_name,
             ub.login_name AS updated_by_login_name
@@ -64,7 +65,7 @@ const router = Router()
 router.use(requireAuth)
 
 const SITES_LIST_SQL = `
-SELECT s.id, s.key, s.name, s.colour, s.created_at, s.updated_at,
+SELECT s.id, s.key, s.name, s.colour, s.is_plant, s.created_at, s.updated_at,
        s.created_by, s.updated_by,
        cb.login_name AS created_by_login_name,
        ub.login_name AS updated_by_login_name
@@ -129,6 +130,7 @@ router.post('/', async (req, res) => {
     typeof colourRaw === 'string' && colourRaw.trim() !== ''
       ? colourRaw.trim()
       : '#94a3b8'
+  const is_plant = req.body?.is_plant === true
 
   if (!key || !name) {
     res.status(400).json({ error: 'Key and name are required.' })
@@ -142,10 +144,10 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN')
     const r = await client.query<{ id: string }>(
-      `INSERT INTO sites (key, name, colour, created_by)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO sites (key, name, colour, is_plant, created_by)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
-      [key, name, colour, auth.id],
+      [key, name, colour, is_plant, auth.id],
     )
     const insertedId = r.rows[0]?.id
     if (!insertedId) {
@@ -154,7 +156,7 @@ router.post('/', async (req, res) => {
       return
     }
     const tableRow = await client.query<SiteTableRow>(
-      `SELECT id, key, name, colour, created_at, updated_at, created_by, updated_by
+      `SELECT id, key, name, colour, is_plant, created_at, updated_at, created_by, updated_by
        FROM sites WHERE id = $1`,
       [insertedId],
     )
@@ -230,6 +232,14 @@ router.patch('/:id', async (req, res) => {
     updates.push(`colour = $${n++}`)
     values.push(colour)
   }
+  if (req.body?.is_plant !== undefined) {
+    if (typeof req.body.is_plant !== 'boolean') {
+      res.status(400).json({ error: 'is_plant must be a boolean.' })
+      return
+    }
+    updates.push(`is_plant = $${n++}`)
+    values.push(req.body.is_plant)
+  }
 
   if (updates.length === 0) {
     res.status(400).json({ error: 'No fields to update.' })
@@ -243,7 +253,7 @@ router.patch('/:id', async (req, res) => {
 
   const sql = `UPDATE sites SET ${updates.join(', ')}
                WHERE id = $${n}
-               RETURNING id, key, name, colour, created_at, updated_at, created_by, updated_by`
+               RETURNING id, key, name, colour, is_plant, created_at, updated_at, created_by, updated_by`
 
   const auditPath = `${req.baseUrl}${req.path}`
 
@@ -251,7 +261,7 @@ router.patch('/:id', async (req, res) => {
   try {
     await client.query('BEGIN')
     const prev = await client.query<SiteTableRow>(
-      `SELECT id, key, name, colour, created_at, updated_at, created_by, updated_by
+      `SELECT id, key, name, colour, is_plant, created_at, updated_at, created_by, updated_by
        FROM sites
        WHERE id = $1
        FOR UPDATE`,
@@ -319,7 +329,7 @@ router.delete('/:id', async (req, res) => {
   try {
     await client.query('BEGIN')
     const prev = await client.query<SiteTableRow>(
-      `SELECT id, key, name, colour, created_at, updated_at, created_by, updated_by
+      `SELECT id, key, name, colour, is_plant, created_at, updated_at, created_by, updated_by
        FROM sites
        WHERE id = $1
        FOR UPDATE`,

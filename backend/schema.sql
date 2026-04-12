@@ -22,6 +22,7 @@ CREATE TABLE sites (
   key TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   colour TEXT NOT NULL DEFAULT '#94a3b8',
+  is_plant BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   created_by UUID REFERENCES users (id) ON DELETE SET NULL,
@@ -31,8 +32,7 @@ CREATE TABLE sites (
 ALTER TABLE users
   ADD COLUMN created_by UUID REFERENCES users (id) ON DELETE SET NULL,
   ADD COLUMN updated_by UUID REFERENCES users (id) ON DELETE SET NULL,
-  ADD COLUMN working_site_id UUID REFERENCES sites (id) ON DELETE SET NULL,
-  ADD COLUMN allow_site_change_on_login BOOLEAN NOT NULL DEFAULT false;
+  ADD COLUMN working_site_id UUID REFERENCES sites (id) ON DELETE SET NULL;
 
 INSERT INTO sites (key, name, colour)
 VALUES ('DEF', 'Default', '#94a3b8')

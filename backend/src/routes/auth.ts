@@ -10,14 +10,26 @@ import {
 } from '../auth/siteScope.js'
 import { pool } from '../db.js'
 import { env } from '../env.js'
-import { isPgUndefinedRelationError } from '../services/appSettings.js'
+import {
+  getGeneralAppSettings,
+  isPgUndefinedRelationError,
+} from '../services/appSettings.js'
+import {
+  applyShiftLoginOnLogin,
+  applyShiftLogoutPresenceClear,
+} from '../services/shiftLoginRecognition.js'
 
 const router = Router()
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
-export type SiteOption = { id: string; key: string; name: string }
+export type SiteOption = {
+  id: string
+  key: string
+  name: string
+  is_plant: boolean
+}
 
 export type PublicAuthUser = {
   id: string
@@ -115,6 +127,7 @@ async function buildPublicAuthUser(
       ? await loadEmployeeWorkgroupIds(employee_id)
       : []
   const scope = await loadUserSiteScope(pool, id, role)
+  const general = await getGeneralAppSettings(pool)
   const accessible_site_ids = await getAccessibleSiteIdsForResponse(scope)
   const choiceIds = [
     ...new Set(
@@ -126,12 +139,19 @@ async function buildPublicAuthUser(
   let selectable_working_sites: SiteOption[] = []
   if (choiceIds.length > 0) {
     const opt = await pool.query<SiteOption>(
-      `SELECT id, key, name FROM sites WHERE id = ANY($1::uuid[])
+      `SELECT id, key, name, COALESCE(is_plant, false) AS is_plant
+       FROM sites WHERE id = ANY($1::uuid[])
        ORDER BY name ASC, key ASC`,
       [choiceIds],
     )
     selectable_working_sites = opt.rows
   }
+  const plantAssignedCount = selectable_working_sites.filter((s) => s.is_plant)
+    .length
+  const allow_site_change_on_login =
+    login_name !== 'admin' &&
+    general.ask_for_site_change_on_login === true &&
+    plantAssignedCount >= 2
   return {
     id,
     login_name,
@@ -141,7 +161,7 @@ async function buildPublicAuthUser(
     employee_workgroup_ids,
     working_site_id: scope.workingSiteId,
     locale,
-    allow_site_change_on_login: scope.allowSiteChangeOnLogin,
+    allow_site_change_on_login,
     additional_site_ids: scope.additionalSiteIds,
     accessible_site_ids,
     selectable_working_sites,
@@ -239,6 +259,13 @@ router.post('/login', async (req, res) => {
   } catch (e) {
     if (!isPgUndefinedRelationError(e)) throw e
   }
+
+  const linkedEmployeeId = await loadLinkedEmployeeId(user.id)
+  await applyShiftLoginOnLogin(pool, {
+    userId: user.id,
+    siteId: scope.workingSiteId,
+    employeeId: linkedEmployeeId,
+  })
 
   const token = signToken(claims)
   const publicUser = await buildPublicAuthUser(
@@ -338,6 +365,13 @@ router.post('/working-site', async (req, res) => {
     [siteId, userId],
   )
 
+  const linkedEmployeeId = await loadLinkedEmployeeId(userId)
+  await applyShiftLoginOnLogin(pool, {
+    userId,
+    siteId,
+    employeeId: linkedEmployeeId,
+  })
+
   const loginName =
     typeof payload.login_name === 'string'
       ? payload.login_name
@@ -395,6 +429,19 @@ router.post('/logout', async (req, res) => {
   }
   try {
     const payload = jwt.verify(match[1], env.JWT_SECRET) as JwtUserClaims
+    const clearShift =
+      typeof req.body === 'object' &&
+      req.body !== null &&
+      (req.body as { clear_shift_presence?: unknown }).clear_shift_presence ===
+        true
+    if (clearShift) {
+      const empId = await loadLinkedEmployeeId(payload.sub)
+      await applyShiftLogoutPresenceClear(pool, {
+        userId: payload.sub,
+        siteId: payload.working_site_id,
+        employeeId: empId,
+      })
+    }
     const jti = typeof payload.jti === 'string' ? payload.jti.trim() : ''
     if (jti.length > 0) {
       try {

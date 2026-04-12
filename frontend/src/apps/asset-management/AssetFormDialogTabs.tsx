@@ -21,7 +21,6 @@ import {
   applyPendingThumbnailFile,
   THUMBNAIL_ACCEPT,
 } from './assetThumbnailUpload'
-
 export type AssetFormDialogTabsProps = AssetFormDialogBodyProps & {
   dialogOpen: boolean
 }

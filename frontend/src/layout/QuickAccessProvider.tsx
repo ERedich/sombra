@@ -17,6 +17,7 @@ import {
   getAppsForUser,
   type RegisteredApp,
 } from '../navigation/registeredApps'
+import { useKiraAssistant } from './KiraAssistantProvider'
 
 function appMatchesQuery(
   app: RegisteredApp,
@@ -64,6 +65,7 @@ export function QuickAccessProvider({ children }: { children: ReactNode }) {
   const selectedIndexRef = useRef(0)
   const navigate = useNavigate()
   const location = useLocation()
+  const { openKira } = useKiraAssistant()
   const { quickAccess } = useHotkeySettings()
 
   useEffect(() => {
@@ -113,11 +115,16 @@ export function QuickAccessProvider({ children }: { children: ReactNode }) {
   }, [filteredApps])
 
   const choose = useCallback(
-    (path: string) => {
-      navigate(path)
+    (app: RegisteredApp) => {
+      if (app.shellAction === 'kira') {
+        openKira()
+        setOpen(false)
+        return
+      }
+      navigate(app.path)
       setOpen(false)
     },
-    [navigate],
+    [navigate, openKira],
   )
 
   useEffect(() => {
@@ -154,7 +161,7 @@ export function QuickAccessProvider({ children }: { children: ReactNode }) {
           ) {
             e.preventDefault()
             e.stopPropagation()
-            choose(apps[parsed].path)
+            choose(apps[parsed])
             return
           }
         }
@@ -162,7 +169,7 @@ export function QuickAccessProvider({ children }: { children: ReactNode }) {
         e.stopPropagation()
         const idx =
           n === 1 ? 0 : Math.min(selectedIndexRef.current, n - 1)
-        choose(apps[idx].path)
+        choose(apps[idx])
         return
       }
 
@@ -208,7 +215,7 @@ export function QuickAccessProvider({ children }: { children: ReactNode }) {
         : 'border-transparent surface-hover bg-transparent',
       ].join(' ')}
       aria-selected={isSelected}
-      onClick={() => choose(app.path)}
+      onClick={() => choose(app)}
       onMouseEnter={() => setSelectedIndex(index)}
     >
       <span

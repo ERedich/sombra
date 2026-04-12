@@ -713,6 +713,21 @@ html.theme-transition-fallback #root {
   border-bottom: 1px solid color-mix(in srgb, var(--surface-border) 70%, transparent);
 }
 
+/*
+ * SearchPanel: Calendar (input + datepicker icon) + clear button in one input group.
+ * PrimeReact only removes the icon button’s left radius; the icon still has default right
+ * radius while the clear button is the true right edge — square the icon and round only the clear.
+ */
+.search-panel-sidebar .p-inputgroup > .p-calendar.p-inputwrapper.p-calendar-w-btn-right .p-datepicker-trigger.p-button {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.search-panel-sidebar .p-inputgroup > .p-calendar.p-inputwrapper + .p-button {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
 /* Monitoring quick-search inputgroup with inline Searchpanel trigger button. */
 .app-monitoring-searchgroup .app-monitoring-searchpanel-trigger.p-button {
   border-top-left-radius: 0;
@@ -822,4 +837,144 @@ html.theme-transition-fallback #root {
 /* Table Wizard: collapsible row groups — hover accent only (no expand/collapse animation). */
 .app-datatable-expandable-groups .p-datatable-tbody > tr.p-rowgroup-header:hover > td {
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--primary-color) 28%, transparent);
+}
+
+/* Shift planner: empty cell placeholder (inline SVG) */
+.shift-planner-empty-slot-svg {
+  flex-shrink: 0;
+}
+
+/* Shift planner: detailed day timeline */
+.shift-planner-timeline-hour-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.shift-planner-timeline-gutter {
+  width: 12rem;
+  flex-shrink: 0;
+}
+
+.shift-planner-timeline-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.shift-planner-timeline-track--axis {
+  height: 1.25rem;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.shift-planner-timeline-tick {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  color: var(--text-color-secondary);
+  white-space: nowrap;
+}
+
+.shift-planner-timeline-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  padding-top: 0.35rem;
+}
+
+.shift-planner-timeline-label {
+  width: 12rem;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.shift-planner-timeline-track-inner {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 2rem;
+  border-radius: var(--border-radius, 6px);
+  background: var(--surface-ground);
+}
+
+.shift-planner-timeline-bar {
+  position: absolute;
+  top: 0.25rem;
+  bottom: 0.25rem;
+  min-width: 2px;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+/* Shift planner: perforated drag grip (scheduled / DnD) */
+.shift-planner-dnd-grip {
+  width: 7px;
+  min-height: 1rem;
+  align-self: stretch;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background-image: radial-gradient(
+    circle at 50% 50%,
+    var(--text-color-secondary) 1px,
+    transparent 2px
+  );
+  background-size: 4px 4px;
+  opacity: 0.45;
+}
+
+.shift-planner-presence-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  margin-left: auto;
+}
+
+.shift-planner-legend-swatch {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.shift-planner-drop-target--active {
+  outline: 2px dashed var(--primary-color);
+  outline-offset: 2px;
+}
+
+/* WO horizontal move: subtle highlight on timelines while dragging */
+.app-capacity-planner .cp-timeline--wo-move-active {
+  outline: 1px dashed color-mix(in srgb, var(--primary-color) 45%, transparent);
+  outline-offset: -1px;
+  border-radius: var(--border-radius-sm, 0.25rem);
+}
+
+.app-capacity-planner .cp-wo-grip {
+  width: 1rem;
+  min-height: 1.75rem;
+  user-select: none;
+}
+
+.app-capacity-planner .cp-shift-slot-drag-source {
+  user-select: none;
+}
+
+.app-capacity-planner .cp-shift-slot-drag-source:active {
+  cursor: grabbing;
+}
+
+/* Utilization: planned h / capacity h (from shifts × SPC, calculated in UI) */
+.app-capacity-planner .capacity-planner-util {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.app-capacity-planner .capacity-planner-util--low {
+  color: var(--green-500);
+}
+.app-capacity-planner .capacity-planner-util--mid {
+  color: var(--yellow-500);
+}
+.app-capacity-planner .capacity-planner-util--high {
+  color: var(--red-500);
 }

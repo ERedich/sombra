@@ -1,0 +1,16 @@
+{
+  "name": "sombraV4",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend",
+    "mobile",
+    "packages/*"
+  ],
+  "scripts": {
+    "mobile:start": "npm run start -w mobile",
+    "mobile:web": "npm run web -w mobile",
+    "mobile:lint": "npm run lint -w mobile",
+    "mobile:typecheck": "npm run typecheck -w mobile"
+  }
+}

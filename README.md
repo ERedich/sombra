@@ -55,7 +55,7 @@ Default API URL: `http://localhost:3001`
 - **Health:** `GET /api/health` — returns `{ ok, db }` where `db` is whether PostgreSQL responded.
 - **Auth:** `POST /api/auth/login` — body `{ "login_name": "<login name or email>", "password": "..." }` returns `{ token, user }` (JWT, 7-day expiry; legacy body field `key` is still accepted as an alias for `login_name`). The `user` object includes site-assignment fields (`working_site_id`, `additional_site_ids`, `allow_site_change_on_login`, `selectable_working_sites`, …). `GET /api/auth/me` returns the same shape. `POST /api/auth/working-site` (Bearer token) with `{ "working_site_id": "<uuid>" }` updates the user’s working site and returns a new token when login-time site selection is used.
 - **Users (authenticated):** `GET/POST /api/users`, `GET/PATCH/DELETE /api/users/:id` — manage users (`password_hash` never returned; audit logged). **Sites:** unchanged paths under `/api/sites` (rows include `created_by` / `updated_by` and display names from joins).
-- **AI (stub):** `POST /api/ai/suggest` — returns `503` until `OPENAI_API_KEY` is set; then `501` until implemented.
+- **AI (auth required):** `POST /api/ai/suggest` — structured draft from transcript + site reference lists (`503` if `OPENAI_API_KEY` unset). `POST /api/ai/transcribe` — Whisper audio (`multipart` field `audio`). Rate-limited per user.
 
 ### Environment variables (backend)
 
@@ -66,7 +66,7 @@ Default API URL: `http://localhost:3001`
 | `JWT_SECRET` | Yes | Secret for signing JWTs; use a long random string in production. |
 | `PORT` | No | Default `3001`. |
 | `FRONTEND_ORIGIN` | No | CORS origin for the SPA; default `http://localhost:5173`. |
-| `OPENAI_API_KEY` | No | When set, enables future AI routes (currently not implemented). |
+| `OPENAI_API_KEY` | No | Enables `/api/ai/suggest` and `/api/ai/transcribe`. Optional: `OPENAI_SUGGEST_MODEL`, `AI_SUGGEST_MAX_CONTEXT_ITEMS`, `AI_RATE_LIMIT_PER_MINUTE`. |
 | `SOURCE_DATABASE_URL` | No | Used only by `npm run db:copy` (source for `pg_dump`). |
 | `TARGET_DATABASE_URL` | No | Used only by `npm run db:copy` (destination for `pg_restore`). |
 | `PG_DUMP` / `PG_RESTORE` | No | Optional paths to client binaries if not on `PATH`. |

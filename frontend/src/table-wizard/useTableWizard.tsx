@@ -108,6 +108,10 @@ export function useTableWizard<T extends Record<string, unknown>>({
     }
   }, [columnDefs, defaultMultiSortMeta])
 
+  /** Latest defaults for parsing API JSON; ref avoids refetching layouts when only `columnDefs` reference churns. */
+  const factoryDefaultsRef = useRef(factoryDefaults)
+  factoryDefaultsRef.current = factoryDefaults
+
   const [applied, setApplied] = useState<TableSettingsV1>(factoryDefaults)
   const [draft, setDraft] = useState<TableSettingsV1>(factoryDefaults)
   const [presets, setPresets] = useState<TableLayoutPresetDto[]>([])
@@ -150,6 +154,7 @@ export function useTableWizard<T extends Record<string, unknown>>({
   const workingSiteId = getStoredUser()?.working_site_id ?? null
 
   const loadLayouts = useCallback(async () => {
+    const defaults = factoryDefaultsRef.current
     try {
       const data = await fetchTableLayouts(appPath)
       setPresets(data.presets)
@@ -161,23 +166,23 @@ export function useTableWizard<T extends Record<string, unknown>>({
           setActivePresetId(p.id)
           setLayoutKey(p.layout_key)
           setApplied(
-            parseSettingsJson(p.settings_json, factoryDefaults),
+            parseSettingsJson(p.settings_json, defaults),
           )
         }
       } else {
         setActivePresetId(null)
         setLayoutKey('')
-        setApplied(factoryDefaults)
+        setApplied(defaults)
       }
     } catch (e) {
       if (e instanceof ApiError) {
         setToastError(t('table_wizard.load_error'))
       }
-      setApplied(factoryDefaults)
+      setApplied(defaults)
     } finally {
       setLoading(false)
     }
-  }, [appPath, factoryDefaults, t])
+  }, [appPath, t])
 
   useEffect(() => {
     void loadLayouts()
@@ -283,7 +288,10 @@ export function useTableWizard<T extends Record<string, unknown>>({
         if (activePresetId) {
           const p = data.presets.find((x) => x.id === activePresetId)
           if (p) {
-            const next = parseSettingsJson(p.settings_json, factoryDefaults)
+            const next = parseSettingsJson(
+              p.settings_json,
+              factoryDefaultsRef.current,
+            )
             setApplied(next)
             setDraft(next)
           }
@@ -295,7 +303,7 @@ export function useTableWizard<T extends Record<string, unknown>>({
     return () => {
       cancelled = true
     }
-  }, [dialogOpen, appPath, activePresetId, factoryDefaults])
+  }, [dialogOpen, appPath, activePresetId])
 
   useEffect(() => {
     if (!dialogOpen || !manageSharePresetId) return

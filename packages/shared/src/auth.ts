@@ -4,7 +4,13 @@ export const AUTH_STORAGE_KEYS = {
   user: 'cmms_user',
 } as const
 
-export type SiteOption = { id: string; key: string; name: string }
+export type SiteOption = {
+  id: string
+  key: string
+  name: string
+  /** Physical plant site; used for login-time site prompt when app setting is on. */
+  is_plant?: boolean
+}
 
 export type AuthUser = {
   id: string
@@ -28,6 +34,15 @@ export function normalizeAuthUser(u: AuthUser & { key?: string }): AuthUser {
   if (!Array.isArray(u.additional_site_ids)) u.additional_site_ids = []
   if (!Array.isArray(u.accessible_site_ids)) u.accessible_site_ids = []
   if (!Array.isArray(u.selectable_working_sites)) u.selectable_working_sites = []
+  u.selectable_working_sites = u.selectable_working_sites.map((raw) => {
+    const o = raw as SiteOption
+    return {
+      id: typeof o.id === 'string' ? o.id : '',
+      key: typeof o.key === 'string' ? o.key : '',
+      name: typeof o.name === 'string' ? o.name : '',
+      is_plant: o.is_plant === true,
+    }
+  })
   if (typeof u.allow_site_change_on_login !== 'boolean') {
     u.allow_site_change_on_login = false
   }

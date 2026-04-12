@@ -22,10 +22,19 @@ import {
   writeAudit,
 } from '../audit/auditLog.js'
 import { planEndFromStartAndDurationHours } from '../services/intervalUtc.js'
+import { WORK_ORDERS_LIST_SQL as LIST_SQL } from './workOrderListSql.js'
 import {
+  getShiftAppSettings,
+  getWoAllowMultipleStartedWorkOrders,
+  getWoAppSettings,
+  getWoRequireTimeRegistrationForDone,
   getWoStartRequiresAssignment,
   getWoUserAutoAssignOnStart,
 } from '../services/appSettings.js'
+import {
+  roundPlannedHours,
+  shiftHoursOnAssignmentDay,
+} from '../services/capacityPlanning.js'
 import {
   buildWorkOrderEmployeeAssignedNotifications,
   buildWorkOrderEmployeeDeassignedNotifications,
@@ -39,6 +48,21 @@ import {
 } from '../notifications/workOrderNotifications.js'
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+function utcCalendarYmd(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
+/** True when plan_start's UTC calendar date is strictly before UTC today. */
+function planStartIsBeforeUtcToday(planStart: Date): boolean {
+  return utcCalendarYmd(planStart) < utcCalendarYmd(new Date())
+}
+
+function samePlanStartInstant(a: Date | null, b: Date | null): boolean {
+  if (a === null && b === null) return true
+  if (a === null || b === null) return false
+  return a.getTime() === b.getTime()
+}
 
 type WorkOrderTableRow = {
   id: string
@@ -122,7 +146,7 @@ function rowToAuditRecord(row: WorkOrderTableRow): Record<string, unknown> {
 }
 
 async function fetchWorkOrderWithJoins(
-  client: PoolClient,
+  client: Pool | PoolClient,
   id: string,
 ): Promise<WorkOrderRow | undefined> {
   const r = await client.query<WorkOrderRow>(
@@ -131,54 +155,6 @@ async function fetchWorkOrderWithJoins(
   )
   return r.rows[0]
 }
-
-const LIST_SQL = `
-SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
-       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.work_type_id, w.status,
-       w.hold_reason,
-       w.work_plan_id, w.work_plan_key, w.duration, w.workgroup_id,
-       w.created_at, w.updated_at, w.created_by, w.updated_by,
-       st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
-       a.key AS asset_key, a.name AS asset_name,
-       cc.key AS costcenter_key, cc.name AS costcenter_name,
-       cb.login_name AS created_by_login_name,
-       ub.login_name AS updated_by_login_name,
-       wp.interval_count AS work_plan_interval_count,
-       wp.interval_time_type AS work_plan_interval_time_type,
-       wp.next_due_at AS work_plan_next_due_at,
-       wt.key AS work_type_key, wt.name AS work_type_name, wt.colour AS work_type_colour,
-       cat.key AS category_key, cat.name AS category_name,
-       wg.key AS workgroup_key, wg.name AS workgroup_name,
-       false AS has_material_assignment,
-       EXISTS(
-         SELECT 1
-         FROM work_order_employees woe
-         WHERE woe.work_order_id = w.id
-       ) AS has_employee_assignment,
-       COALESCE(
-         (
-           SELECT array_agg(woe.employee_id::text ORDER BY woe.employee_id::text)
-           FROM work_order_employees woe
-           WHERE woe.work_order_id = w.id
-         ),
-         ARRAY[]::text[]
-       ) AS assigned_employee_ids,
-       (SELECT COUNT(*)::int FROM work_instructions wi WHERE wi.work_order_id = w.id)
-         AS work_instruction_count,
-       (SELECT COUNT(*)::int FROM work_instructions wi
-         WHERE wi.work_order_id = w.id AND wi.done = true)
-         AS work_instruction_done_count
-FROM work_orders w
-INNER JOIN sites st ON st.id = w.site_id
-INNER JOIN assets a ON a.id = w.asset_id
-INNER JOIN work_types wt ON wt.id = w.work_type_id
-INNER JOIN workgroups wg ON wg.id = w.workgroup_id
-LEFT JOIN categories cat ON cat.id = w.category_id
-LEFT JOIN costcenters cc ON cc.id = w.costcenter_id
-LEFT JOIN users cb ON cb.id = w.created_by
-LEFT JOIN users ub ON ub.id = w.updated_by
-LEFT JOIN work_plans wp ON wp.id = w.work_plan_id
-`
 
 function parseInstructionText(body: unknown): string | undefined {
   if (typeof body !== 'object' || body === null) return undefined
@@ -437,6 +413,7 @@ function parseFeedbackActionBody(body: unknown):
       return { ok: false, error: 'hold_reason is too long.' }
     }
   }
+
   return { ok: true, entries, target_status, hold_reason }
 }
 
@@ -600,7 +577,7 @@ async function fetchWorkInstructionsForWorkOrder(
 }
 
 async function fetchWorkOrderDetailForResponse(
-  client: PoolClient,
+  client: Pool | PoolClient,
   id: string,
 ): Promise<(WorkOrderRow & { work_instructions: WorkInstructionDto[] }) | undefined> {
   const wo = await fetchWorkOrderWithJoins(client, id)
@@ -1214,6 +1191,385 @@ router.put('/:id/employees', async (req, res) => {
   }
 })
 
+const DATE_YMD_RE = /^\d{4}-\d{2}-\d{2}$/
+
+router.put('/:id/capacity-allocation', async (req, res) => {
+  const id = req.params.id
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid work order id.' })
+    return
+  }
+
+  const employeeId =
+    typeof req.body?.employee_id === 'string' ? req.body.employee_id.trim() : ''
+  const adRaw =
+    typeof req.body?.allocation_date === 'string'
+      ? req.body.allocation_date.trim()
+      : ''
+  const plannedRaw = (req.body as { planned_hours?: unknown })?.planned_hours
+
+  if (!UUID_RE.test(employeeId)) {
+    res.status(400).json({ error: 'Valid employee_id is required.' })
+    return
+  }
+  if (!DATE_YMD_RE.test(adRaw)) {
+    res.status(400).json({ error: 'allocation_date must be YYYY-MM-DD.' })
+    return
+  }
+  const plannedHours =
+    typeof plannedRaw === 'number'
+      ? plannedRaw
+      : typeof plannedRaw === 'string'
+        ? Number(plannedRaw)
+        : NaN
+  if (!Number.isFinite(plannedHours) || plannedHours < 0) {
+    res.status(400).json({
+      error: 'planned_hours must be a non-negative number.',
+    })
+    return
+  }
+
+  const auth = req.authUser!
+  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+  const auditPath = `${req.baseUrl}${req.path}`
+
+  const client = await pool.connect()
+  try {
+    let notificationsToBroadcast: Awaited<
+      ReturnType<typeof createNotificationsForSubscribers>
+    > = []
+    await client.query('BEGIN')
+
+    const woR = await client.query<WorkOrderTableRow>(
+      `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+              plan_start, plan_end, worktime, work_type_id, status,
+              hold_reason,
+              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              created_at, updated_at, created_by, updated_by
+       FROM work_orders
+       WHERE id = $1
+       FOR UPDATE`,
+      [id],
+    )
+    const wo = woR.rows[0]
+    if (!wo || !canAccessSite(scope, wo.site_id)) {
+      await client.query('ROLLBACK')
+      res.status(404).json({ error: 'Work order not found.' })
+      return
+    }
+
+    if (plannedHours === 0) {
+      const beforeAlloc = await client.query<{
+        planned_hours: string
+      }>(
+        `SELECT planned_hours::text FROM work_order_capacity_allocations
+         WHERE work_order_id = $1 AND employee_id = $2 AND allocation_date = $3::date`,
+        [id, employeeId, adRaw],
+      )
+      const beforeRow = beforeAlloc.rows[0]
+      await client.query(
+        `DELETE FROM work_order_capacity_allocations
+         WHERE work_order_id = $1 AND employee_id = $2 AND allocation_date = $3::date`,
+        [id, employeeId, adRaw],
+      )
+      const beforeAudit = beforeRow
+        ? {
+            work_order_id: id,
+            employee_id: employeeId,
+            allocation_date: adRaw,
+            planned_hours: Number(beforeRow.planned_hours),
+          }
+        : null
+      if (beforeAudit) {
+        await writeAudit(client, {
+          actorUserId: auth.id,
+          actorKey: auth.login_name,
+          actorName: auth.name,
+          operation: 'delete',
+          resourceType: 'work_order_capacity_allocation',
+          resourceId: `${id}:${employeeId}:${adRaw}`,
+          beforeState: beforeAudit,
+          afterState: null,
+          fieldChanges: null,
+          httpMethod: req.method,
+          path: auditPath,
+        })
+      }
+      await client.query('COMMIT')
+      const workOrder = await fetchWorkOrderDetailForResponse(pool, id)
+      broadcastWorkOrderUpdated(
+        workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
+      )
+      res.json({
+        work_order: workOrder!,
+        deleted: Boolean(beforeAudit),
+      })
+      return
+    }
+
+    const empR = await client.query<{ site_id: string }>(
+      `SELECT site_id FROM employees WHERE id = $1`,
+      [employeeId],
+    )
+    const empSite = empR.rows[0]?.site_id
+    if (!empSite || empSite !== wo.site_id) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error: 'Employee must belong to the same site as the work order.',
+      })
+      return
+    }
+
+    if (wo.workgroup_id !== null) {
+      const memberR = await client.query(
+        `SELECT 1 FROM workgroup_employees
+         WHERE workgroup_id = $1 AND employee_id = $2`,
+        [wo.workgroup_id, employeeId],
+      )
+      if (memberR.rows.length === 0) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error:
+            'When a workgroup is set, only employees assigned to that workgroup can be allocated.',
+        })
+        return
+      }
+    }
+
+    const shiftsR = await client.query<{
+      time_start: string
+      time_end: string
+    }>(
+      `SELECT COALESCE(sa.override_time_start, sh.time_start)::text AS time_start,
+              COALESCE(sa.override_time_end, sh.time_end)::text AS time_end
+       FROM shift_assignments sa
+       INNER JOIN shifts sh ON sh.id = sa.shift_id
+       WHERE sa.employee_id = $1
+         AND sa.assignment_date = $2::date`,
+      [employeeId, adRaw],
+    )
+    if (shiftsR.rows.length === 0) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error: 'This employee has no shift assignment on the chosen date.',
+      })
+      return
+    }
+
+    const shiftSettings = await getShiftAppSettings(client)
+    const spcFrac = shiftSettings.shift_planning_capacity_pct / 100
+    let capHours = 0
+    for (const row of shiftsR.rows) {
+      capHours +=
+        shiftHoursOnAssignmentDay(row.time_start, row.time_end) * spcFrac
+    }
+
+    const oldR = await client.query<{ planned_hours: string }>(
+      `SELECT planned_hours::text FROM work_order_capacity_allocations
+       WHERE work_order_id = $1 AND employee_id = $2 AND allocation_date = $3::date`,
+      [id, employeeId, adRaw],
+    )
+    const oldHours = oldR.rows[0] ? Number(oldR.rows[0].planned_hours) : 0
+
+    const sumR = await client.query<{ s: string }>(
+      `SELECT COALESCE(SUM(planned_hours), 0)::text AS s
+       FROM work_order_capacity_allocations
+       WHERE employee_id = $1 AND allocation_date = $2::date`,
+      [employeeId, adRaw],
+    )
+    const totalBeforeNew = Number(sumR.rows[0]?.s ?? 0)
+    const totalAfter = totalBeforeNew - oldHours + plannedHours
+
+    const woAppForPhr = await getWoAppSettings(client)
+    if (
+      woAppForPhr.planned_hours_restriction &&
+      roundPlannedHours(totalAfter) > roundPlannedHours(capHours)
+    ) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error: `Planned hours exceed shift planning capacity for this date (${capHours.toFixed(2)} h under SPC).`,
+      })
+      return
+    }
+
+    const woDuration = Number(wo.duration)
+    if (Number.isFinite(woDuration)) {
+      const maxByDuration =
+        woDuration > 0 ? roundPlannedHours(woDuration) : 0
+      if (roundPlannedHours(plannedHours) > maxByDuration) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error: 'Planned hours cannot exceed the work order duration.',
+        })
+        return
+      }
+    }
+
+    const hadEmployeeR = await client.query(
+      `SELECT 1 FROM work_order_employees
+       WHERE work_order_id = $1 AND employee_id = $2`,
+      [id, employeeId],
+    )
+    const hadEmployee = hadEmployeeR.rows.length > 0
+
+    const beforeRowFull = wo
+
+    await client.query(
+      `INSERT INTO work_order_capacity_allocations
+         (work_order_id, employee_id, allocation_date, planned_hours, created_by, updated_by)
+       VALUES ($1, $2, $3::date, $4, $5, $5)
+       ON CONFLICT (work_order_id, employee_id, allocation_date)
+       DO UPDATE SET planned_hours = EXCLUDED.planned_hours,
+                     updated_at = now(),
+                     updated_by = EXCLUDED.updated_by`,
+      [id, employeeId, adRaw, plannedHours, auth.id],
+    )
+
+    await client.query(
+      `INSERT INTO work_order_employees (work_order_id, employee_id)
+       VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [id, employeeId],
+    )
+
+    let afterTable: WorkOrderTableRow = beforeRowFull
+    if (!hadEmployee && wo.status === 'open') {
+      const up = await client.query<WorkOrderTableRow>(
+        `UPDATE work_orders
+         SET status = 'assigned',
+             updated_at = now(),
+             updated_by = $2
+         WHERE id = $1
+         RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                   plan_start, plan_end, worktime, work_type_id, status,
+                   hold_reason,
+                   work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                   created_at, updated_at, created_by, updated_by`,
+        [id, auth.id],
+      )
+      afterTable = up.rows[0] ?? beforeRowFull
+    } else {
+      await client.query(
+        `UPDATE work_orders SET updated_at = now(), updated_by = $2 WHERE id = $1`,
+        [id, auth.id],
+      )
+      const again = await client.query<WorkOrderTableRow>(
+        `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
+                plan_start, plan_end, worktime, work_type_id, status,
+                hold_reason,
+                work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                created_at, updated_at, created_by, updated_by
+         FROM work_orders
+         WHERE id = $1`,
+        [id],
+      )
+      afterTable = again.rows[0] ?? beforeRowFull
+    }
+
+    const beforeStateAlloc = {
+      work_order_id: id,
+      employee_id: employeeId,
+      allocation_date: adRaw,
+      planned_hours: oldHours,
+    }
+    const afterStateAlloc = {
+      work_order_id: id,
+      employee_id: employeeId,
+      allocation_date: adRaw,
+      planned_hours: plannedHours,
+    }
+    await writeAudit(client, {
+      actorUserId: auth.id,
+      actorKey: auth.login_name,
+      actorName: auth.name,
+      operation: oldHours > 0 ? 'update' : 'create',
+      resourceType: 'work_order_capacity_allocation',
+      resourceId: `${id}:${employeeId}:${adRaw}`,
+      beforeState: oldHours > 0 ? beforeStateAlloc : null,
+      afterState: afterStateAlloc,
+      fieldChanges:
+        oldHours > 0
+          ? fieldChanges(
+              beforeStateAlloc as Record<string, unknown>,
+              afterStateAlloc as Record<string, unknown>,
+            )
+          : null,
+      httpMethod: req.method,
+      path: auditPath,
+    })
+
+    if (!hadEmployee) {
+      const woStateBefore = redactForAudit(
+        'work_order',
+        rowToAuditRecord(beforeRowFull),
+      )
+      const woStateAfter = redactForAudit(
+        'work_order',
+        rowToAuditRecord(afterTable),
+      )
+      const woChanges =
+        woStateBefore && woStateAfter
+          ? fieldChanges(woStateBefore, woStateAfter)
+          : null
+      if (woChanges && Object.keys(woChanges).length > 0) {
+        await writeAudit(client, {
+          actorUserId: auth.id,
+          actorKey: auth.login_name,
+          actorName: auth.name,
+          operation: 'update',
+          resourceType: 'work_order',
+          resourceId: afterTable.id,
+          beforeState: woStateBefore,
+          afterState: woStateAfter,
+          fieldChanges: woChanges,
+          httpMethod: req.method,
+          path: auditPath,
+        })
+      }
+      const addedEmployeesR = await client.query<EmployeeSiteRow>(
+        `SELECT id, site_id, key, name
+         FROM employees
+         WHERE id = $1`,
+        [employeeId],
+      )
+      const empRow = addedEmployeesR.rows[0]
+      if (empRow) {
+        notificationsToBroadcast = await createNotificationsForSubscribers(
+          client,
+          {
+            workOrderId: afterTable.id,
+            drafts: buildWorkOrderEmployeeAssignedNotifications({
+              actorUserId: auth.id,
+              actorName: auth.name,
+              workOrderId: afterTable.id,
+              workOrderKey: afterTable.wo_key,
+              employees: [
+                { id: empRow.id, key: empRow.key, name: empRow.name },
+              ],
+            }),
+          },
+        )
+      }
+    }
+
+    await client.query('COMMIT')
+    const workOrder = await fetchWorkOrderDetailForResponse(pool, id)
+    broadcastWorkOrderNotifications(notificationsToBroadcast)
+    broadcastWorkOrderUpdated(
+      workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
+    )
+    res.json({
+      work_order: workOrder!,
+      allocation: afterStateAlloc,
+    })
+  } catch (e) {
+    await client.query('ROLLBACK')
+    throw e
+  } finally {
+    client.release()
+  }
+})
+
 router.get('/:id/transactions', async (req, res) => {
   const id = req.params.id
   if (!UUID_RE.test(id)) {
@@ -1352,6 +1708,30 @@ router.post('/:id/actions/start', async (req, res) => {
             [id, actorEmployeeId],
           )
         }
+      }
+    }
+    const allowMultipleStarted =
+      await getWoAllowMultipleStartedWorkOrders(pool)
+    if (!allowMultipleStarted) {
+      const siteIds = accessibleSiteIds(scope) ?? []
+      const adminUnrestricted = scope.isAdmin
+      const conflict = await client.query<{ ok: number }>(
+        `SELECT 1 AS ok FROM work_orders w
+         INNER JOIN work_order_employees woe
+           ON woe.work_order_id = w.id AND woe.employee_id = $1
+         WHERE w.id <> $2
+           AND w.status IN ('started', 'continued')
+           AND ($3::boolean OR w.site_id = ANY($4::uuid[]))
+         LIMIT 1`,
+        [actorEmployeeId, id, adminUnrestricted, siteIds],
+      )
+      if ((conflict.rowCount ?? 0) > 0) {
+        await client.query('ROLLBACK')
+        res.status(403).json({
+          error:
+            'You already have another work order in Started or Continued status. Finish or hold it before starting another.',
+        })
+        return
       }
     }
     const afterStatus =
@@ -1681,6 +2061,26 @@ router.post('/:id/actions/feedback', async (req, res) => {
         ],
       })
     } else if (target_status === 'done') {
+      const requireTimeForDone =
+        await getWoRequireTimeRegistrationForDone(client)
+      if (requireTimeForDone) {
+        const sumR = await client.query<{ s: string }>(
+          `SELECT COALESCE(SUM(hours), 0)::text AS s
+           FROM transactions
+           WHERE work_order_id = $1`,
+          [id],
+        )
+        const total = Number(sumR.rows[0]?.s ?? '0')
+        if (!Number.isFinite(total) || total <= 0) {
+          await client.query('ROLLBACK')
+          res.status(400).json({
+            error:
+              'Register time (hours) before marking this work order as Done.',
+            code: 'WO_FEEDBACK_DONE_REQUIRES_TIME',
+          })
+          return
+        }
+      }
       const r = await client.query<WorkOrderTableRow>(
         `UPDATE work_orders SET
            status = 'done',
@@ -1802,10 +2202,6 @@ router.post('/', async (req, res) => {
   const durationHours = durParsed ?? 0
 
   const ps = planStart === undefined ? null : planStart
-  const pe =
-    ps === null
-      ? null
-      : planEndFromStartAndDurationHours(ps, durationHours)
 
   const workTypeIdParsed = parseWorkTypeId(req.body)
   if (workTypeIdParsed === 'invalid' || workTypeIdParsed === undefined) {
@@ -1840,6 +2236,62 @@ router.post('/', async (req, res) => {
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    const woApp = await getWoAppSettings(client)
+    if (
+      ps !== null &&
+      !woApp.allow_plan_start_in_history &&
+      planStartIsBeforeUtcToday(ps)
+    ) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'plan_start cannot be before today (UTC). Enable Plan start in history in app parameters, or choose today or a future date.',
+      })
+      return
+    }
+    const planEndParsed = parseOptionalInstant(req.body, 'plan_end')
+    if (
+      planEndParsed === undefined &&
+      req.body &&
+      typeof req.body === 'object' &&
+      'plan_end' in req.body &&
+      (req.body as Record<string, unknown>).plan_end !== undefined
+    ) {
+      await client.query('ROLLBACK')
+      res.status(400).json({ error: 'Invalid plan_end.' })
+      return
+    }
+
+    let pe: Date | null
+    if (woApp.lock_end_date_by_duration) {
+      pe =
+        ps === null
+          ? null
+          : planEndFromStartAndDurationHours(ps, durationHours)
+    } else if (ps === null) {
+      pe = null
+    } else if (
+      !('plan_end' in (req.body as object)) ||
+      (req.body as Record<string, unknown>).plan_end === undefined
+    ) {
+      pe = planEndFromStartAndDurationHours(ps, durationHours)
+    } else if (planEndParsed === null) {
+      pe = null
+    } else if (planEndParsed instanceof Date) {
+      if (planEndParsed < ps) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error: 'plan_end must be on or after plan_start.',
+        })
+        return
+      }
+      pe = planEndParsed
+    } else {
+      await client.query('ROLLBACK')
+      res.status(400).json({ error: 'Invalid plan_end.' })
+      return
+    }
+
     const asset = await resolveAssetForWrite(client, assetIdRaw, siteId)
     if (!asset) {
       await client.query('ROLLBACK')
@@ -1979,6 +2431,7 @@ router.patch('/:id', async (req, res) => {
   const assetIdOpt = parseAssetId(req.body)
   const worktimeOpt = parseWorktime(req.body)
   const planStartOpt = parseOptionalInstant(req.body, 'plan_start')
+  const planEndOpt = parseOptionalInstant(req.body, 'plan_end')
   const durationOpt = parseDurationHours(req.body)
   const workTypeIdOpt = parseWorkTypeId(req.body)
   const categoryIdOpt = parseCategoryId(req.body)
@@ -2044,6 +2497,10 @@ router.patch('/:id', async (req, res) => {
   }
   if (planStartOpt === undefined && req.body?.plan_start !== undefined) {
     res.status(400).json({ error: 'Invalid plan_start.' })
+    return
+  }
+  if (planEndOpt === undefined && req.body?.plan_end !== undefined) {
+    res.status(400).json({ error: 'Invalid plan_end.' })
     return
   }
 
@@ -2234,10 +2691,46 @@ router.patch('/:id', async (req, res) => {
       nextStatus = statusOpt
     }
 
-    const nextPlanEnd =
-      nextPlanStart === null
-        ? null
-        : planEndFromStartAndDurationHours(nextPlanStart, nextDuration)
+    const woApp = await getWoAppSettings(client)
+    if (
+      nextPlanStart !== null &&
+      !woApp.allow_plan_start_in_history &&
+      planStartIsBeforeUtcToday(nextPlanStart) &&
+      !samePlanStartInstant(nextPlanStart, beforeRow.plan_start)
+    ) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'plan_start cannot be before today (UTC). Enable Plan start in history in app parameters, or choose today or a future date.',
+      })
+      return
+    }
+    let nextPlanEnd: Date | null
+    if (woApp.lock_end_date_by_duration) {
+      nextPlanEnd =
+        nextPlanStart === null
+          ? null
+          : planEndFromStartAndDurationHours(nextPlanStart, nextDuration)
+    } else if (nextPlanStart === null) {
+      nextPlanEnd = null
+    } else {
+      const planEndSent =
+        typeof req.body === 'object' &&
+        req.body !== null &&
+        Object.prototype.hasOwnProperty.call(req.body, 'plan_end')
+      if (planEndSent) {
+        nextPlanEnd = planEndOpt === undefined ? null : planEndOpt
+      } else {
+        nextPlanEnd = beforeRow.plan_end
+      }
+      if (nextPlanEnd !== null && nextPlanEnd < nextPlanStart) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error: 'plan_end must be on or after plan_start.',
+        })
+        return
+      }
+    }
 
     const r = await client.query<WorkOrderTableRow>(
       `UPDATE work_orders SET

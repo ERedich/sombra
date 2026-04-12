@@ -32,7 +32,6 @@ type UserTableRow = {
   created_by: string | null
   updated_by: string | null
   working_site_id: string | null
-  allow_site_change_on_login: boolean
   employee_id: string | null
 }
 
@@ -226,14 +225,12 @@ async function validateEmployeeAssignment(
 type NormalizedSites = {
   working_site_id: string | null
   additional_site_ids: string[]
-  allow_site_change_on_login: boolean
 }
 
 async function normalizeSiteAssignment(
   client: PoolClient,
   working: string | null,
   additional: string[],
-  allow: boolean,
 ): Promise<NormalizedSites | { error: string }> {
   const addSet = [...new Set(additional.map((x) => x.trim()).filter(Boolean))]
   for (const id of addSet) {
@@ -249,20 +246,16 @@ async function normalizeSiteAssignment(
   if (allIds.length && !(await verifySitesExist(client, [...new Set(allIds)]))) {
     return { error: 'One or more sites do not exist.' }
   }
-  let allowFinal = allow
-  if (additionalFiltered.length === 0) allowFinal = false
-  if (allowFinal && additionalFiltered.length === 0) allowFinal = false
   return {
     working_site_id: ws,
     additional_site_ids: additionalFiltered,
-    allow_site_change_on_login: allowFinal,
   }
 }
 
 const USER_SELECT = `
   u.id, u.login_name, u.name, u.email, u.role, u.created_at, u.updated_at,
   u.created_by, u.updated_by,
-  u.working_site_id, u.allow_site_change_on_login, u.employee_id,
+  u.working_site_id, u.employee_id,
   cb.login_name AS created_by_login_name,
   ub.login_name AS updated_by_login_name,
   ws.key AS working_site_key,
@@ -397,9 +390,6 @@ router.post('/', async (req, res) => {
     ? userGroupRaw.filter((x: unknown) => typeof x === 'string') as string[]
     : []
 
-  const allowRaw = req.body?.allow_site_change_on_login
-  const allow_site_change_on_login =
-    typeof allowRaw === 'boolean' ? allowRaw : false
   const employeeParsed = parseOptionalEmployeeId(req.body?.employee_id)
   if (employeeParsed.error) {
     res.status(400).json({ error: employeeParsed.error })
@@ -440,7 +430,6 @@ router.post('/', async (req, res) => {
       client,
       working_site_id,
       additional_site_ids,
-      allow_site_change_on_login,
     )
     if ('error' in norm) {
       await client.query('ROLLBACK')
@@ -469,9 +458,9 @@ router.post('/', async (req, res) => {
     const ins = await client.query<{ id: string }>(
       `INSERT INTO users (
          login_name, name, email, password_hash, role, created_by,
-         working_site_id, allow_site_change_on_login, employee_id
+         working_site_id, employee_id
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
       [
         loginName,
@@ -481,7 +470,6 @@ router.post('/', async (req, res) => {
         role,
         auth.id,
         norm.working_site_id,
-        norm.allow_site_change_on_login,
         employee_id,
       ],
     )
@@ -507,7 +495,7 @@ router.post('/', async (req, res) => {
 
     const persisted = await client.query<UserTableRow>(
       `SELECT id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-              working_site_id, allow_site_change_on_login, employee_id
+              working_site_id, employee_id
        FROM users WHERE id = $1`,
       [newId],
     )
@@ -624,9 +612,7 @@ router.patch('/:id', async (req, res) => {
   }
 
   const hasSitePatch =
-    'working_site_id' in req.body ||
-    'additional_site_ids' in req.body ||
-    'allow_site_change_on_login' in req.body
+    'working_site_id' in req.body || 'additional_site_ids' in req.body
 
   const hasGroupPatch = 'user_group_ids' in req.body
 
@@ -636,7 +622,7 @@ router.patch('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<UserTableRow>(
       `SELECT id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-              working_site_id, allow_site_change_on_login, employee_id
+              working_site_id, employee_id
        FROM users
        WHERE id = $1
        FOR UPDATE`,
@@ -677,12 +663,7 @@ router.patch('/:id', async (req, res) => {
             )
           : beforeAddIds
 
-      const al =
-        'allow_site_change_on_login' in req.body
-          ? Boolean(req.body.allow_site_change_on_login)
-          : beforeRow.allow_site_change_on_login
-
-      const nrm = await normalizeSiteAssignment(client, w, add, al)
+      const nrm = await normalizeSiteAssignment(client, w, add)
       if ('error' in nrm) {
         await client.query('ROLLBACK')
         res.status(400).json({ error: nrm.error })
@@ -696,8 +677,6 @@ router.patch('/:id', async (req, res) => {
       norm = nrm
       updates.push(`working_site_id = $${n++}`)
       values.push(norm.working_site_id)
-      updates.push(`allow_site_change_on_login = $${n++}`)
-      values.push(norm.allow_site_change_on_login)
     }
 
     if (requestedEmployeeId !== undefined || hasSitePatch) {
@@ -742,7 +721,7 @@ router.patch('/:id', async (req, res) => {
       const sql = `UPDATE users SET ${updates.join(', ')}
                    WHERE id = $${n}
                    RETURNING id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-                             working_site_id, allow_site_change_on_login, employee_id`
+                             working_site_id, employee_id`
       const r = await client.query<UserTableRow>(sql, values)
       afterTable = r.rows[0]!
     } else {
@@ -839,7 +818,7 @@ router.delete('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<UserTableRow>(
       `SELECT id, login_name, name, email, role, created_at, updated_at, created_by, updated_by,
-              working_site_id, allow_site_change_on_login, employee_id
+              working_site_id, employee_id
        FROM users
        WHERE id = $1
        FOR UPDATE`,

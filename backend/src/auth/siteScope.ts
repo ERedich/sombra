@@ -4,7 +4,6 @@ export type UserSiteScope = {
   isAdmin: boolean
   workingSiteId: string | null
   additionalSiteIds: string[]
-  allowSiteChangeOnLogin: boolean
 }
 
 type Db = Pool | PoolClient
@@ -17,11 +16,7 @@ export async function loadUserSiteScope(
   const [u, add] = await Promise.all([
     db.query<{
       working_site_id: string | null
-      allow_site_change_on_login: boolean
-    }>(
-      `SELECT working_site_id, allow_site_change_on_login FROM users WHERE id = $1`,
-      [userId],
-    ),
+    }>(`SELECT working_site_id FROM users WHERE id = $1`, [userId]),
     db.query<{ site_id: string }>(
       `SELECT site_id FROM user_additional_sites WHERE user_id = $1 ORDER BY site_id`,
       [userId],
@@ -33,7 +28,6 @@ export async function loadUserSiteScope(
     isAdmin: role === 'admin',
     workingSiteId: row?.working_site_id ?? null,
     additionalSiteIds,
-    allowSiteChangeOnLogin: row?.allow_site_change_on_login ?? false,
   }
 }
 

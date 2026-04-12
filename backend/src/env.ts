@@ -38,13 +38,49 @@ function boolEnv(name: string, defaultValue: boolean): boolean {
   return v === '1' || v === 'true' || v === 'yes'
 }
 
+const frontendOriginRaw =
+  process.env.FRONTEND_ORIGIN?.trim() || 'http://localhost:5173'
+
+/** Browser origins allowed by CORS (comma-separated in FRONTEND_ORIGIN). */
+export const corsAllowedOrigins = frontendOriginRaw
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0)
+
 export const env = {
   NODE_ENV: nodeEnv,
   PORT: Number(process.env.PORT ?? '3001'),
   DATABASE_URL: required('DATABASE_URL', process.env.DATABASE_URL),
   JWT_SECRET: jwtSecret(),
-  FRONTEND_ORIGIN: process.env.FRONTEND_ORIGIN ?? 'http://localhost:5173',
+  /** Raw env value; use `corsAllowedOrigins` for matching. */
+  FRONTEND_ORIGIN: frontendOriginRaw,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  /** Model for structured JSON drafting (default gpt-4o-mini). */
+  OPENAI_SUGGEST_MODEL:
+    process.env.OPENAI_SUGGEST_MODEL?.trim() || 'gpt-4o-mini',
+  /** Model for copilot chat + tools (defaults to OPENAI_SUGGEST_MODEL). */
+  OPENAI_COPILOT_MODEL: process.env.OPENAI_COPILOT_MODEL?.trim() || '',
+  /** Max reference rows per list sent to the model (client may send more; server truncates). */
+  AI_SUGGEST_MAX_CONTEXT_ITEMS: Math.min(
+    2000,
+    Math.max(
+      50,
+      Number(process.env.AI_SUGGEST_MAX_CONTEXT_ITEMS ?? '400') || 400,
+    ),
+  ),
+  /** Sustained requests per user per minute for /api/ai/* (suggest + transcribe). */
+  AI_RATE_LIMIT_PER_MINUTE: Math.min(
+    120,
+    Math.max(
+      5,
+      Number(process.env.AI_RATE_LIMIT_PER_MINUTE ?? '30') || 30,
+    ),
+  ),
+  /**
+   * Max JSON request body size (e.g. `10mb`). Default raised so `/api/ai/suggest`
+   * can accept large site-scoped reference lists without PayloadTooLargeError.
+   */
+  JSON_BODY_LIMIT: process.env.JSON_BODY_LIMIT?.trim() || '10mb',
   /** When true, run PM due-order generation daily at 17:30 (see `GENERATE_DUE_TIMEZONE`, default Europe/Berlin). Default off until enabled explicitly. */
   GENERATE_DUE_CRON_ENABLED: boolEnv('GENERATE_DUE_CRON_ENABLED', false),
   GENERATE_DUE_TIMEZONE: process.env.GENERATE_DUE_TIMEZONE ?? 'Europe/Berlin',

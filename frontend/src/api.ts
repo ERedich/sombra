@@ -77,7 +77,12 @@ async function fetchWithAuth(
 
   if (res.status === 401) {
     clearAuth()
-    window.location.assign('/login')
+    // Avoid assign('/login') while already on login — that full reload loops forever
+    // when unauthenticated code hits a protected API (e.g. app-parameters).
+    const p = window.location.pathname || '/'
+    if (!/\/login\/?$/i.test(p)) {
+      window.location.assign('/login')
+    }
   }
 
   return res
@@ -157,13 +162,22 @@ export async function refreshStoredAuthUser(): Promise<void> {
 }
 
 /** Removes server-side session row; does not clear local storage. Use before clearAuth on logout/idle. */
-export async function postAuthLogout(): Promise<void> {
+export async function postAuthLogout(options?: {
+  clear_shift_presence?: boolean
+}): Promise<void> {
   const token = getToken()
   if (!token) return
   try {
+    const clearShift = options?.clear_shift_presence === true
     await fetch(`${apiBase}/api/auth/logout`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(clearShift ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: clearShift
+        ? JSON.stringify({ clear_shift_presence: true })
+        : undefined,
     })
   } catch {
     /* ignore network errors */

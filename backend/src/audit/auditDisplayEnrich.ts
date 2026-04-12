@@ -39,7 +39,9 @@ export async function resolveLabels(
   pool: Pool,
   ids: string[],
 ): Promise<Map<string, string>> {
-  const unique = [...new Set(ids)].filter(Boolean)
+  const unique = [...new Set(ids)].filter(
+    (id): id is string => Boolean(id) && UUID_RE.test(id),
+  )
   if (unique.length === 0) return new Map()
 
   const r = await pool.query<{ id: string; label: string }>(

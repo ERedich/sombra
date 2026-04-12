@@ -3,12 +3,23 @@ import { useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { Card } from 'primereact/card'
 import { Message } from 'primereact/message'
-import { apiBase } from '../api'
+import { apiBase, apiJson } from '../api'
 import { getToken } from '../auth'
 import { AppShell } from '../layout/AppShell'
 
+type ShiftCapacityKpiResponse = {
+  tac_hours: number
+  tach_hours: number
+  working_site_id: string | null
+  as_of: string
+}
+
 export default function HomePage() {
   const { t } = useTranslation()
+  const [shiftKpi, setShiftKpi] = useState<ShiftCapacityKpiResponse | null>(
+    null,
+  )
+  const [shiftKpiLoading, setShiftKpiLoading] = useState(false)
   const [health, setHealth] = useState<
     'idle' | 'loading' | 'ok' | 'error'
   >('idle')
@@ -46,6 +57,29 @@ export default function HomePage() {
   useEffect(() => {
     void checkHealth()
   }, [checkHealth])
+
+  const loadShiftKpi = useCallback(async () => {
+    if (!getToken()) {
+      setShiftKpi(null)
+      setShiftKpiLoading(false)
+      return
+    }
+    setShiftKpiLoading(true)
+    try {
+      const d = await apiJson<ShiftCapacityKpiResponse>(
+        '/api/dashboard/shift-capacity',
+      )
+      setShiftKpi(d)
+    } catch {
+      setShiftKpi(null)
+    } finally {
+      setShiftKpiLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadShiftKpi()
+  }, [loadShiftKpi])
 
   const homeCardHeader = (
     <div className="app-card-hero flex align-items-start gap-3 p-4 md:p-5">
@@ -93,6 +127,46 @@ export default function HomePage() {
               className="w-full mt-2"
             />
           )}
+          {getToken() ? (
+            <div className="mt-3 pt-3 border-top-1 surface-border">
+              {shiftKpiLoading ? (
+                <p className="text-sm text-color-secondary m-0">
+                  {t('common.loading')}
+                </p>
+              ) : shiftKpi ? (
+                shiftKpi.working_site_id ? (
+                  <div className="flex flex-column gap-2">
+                    <div className="text-sm line-height-3">
+                      <span className="font-medium block sm:inline">
+                        {t('home.tac_label')}
+                      </span>
+                      <span className="sm:ml-2 font-mono text-color-secondary">
+                        {t('home.shift_capacity_hours', {
+                          hours: shiftKpi.tac_hours.toFixed(2),
+                        })}
+                      </span>
+                    </div>
+                    <div className="text-sm line-height-3">
+                      <span className="font-medium block sm:inline">
+                        {t('home.tach_label')}
+                      </span>
+                      <span className="sm:ml-2 font-mono text-color-secondary">
+                        {t('home.shift_capacity_hours', {
+                          hours: shiftKpi.tach_hours.toFixed(2),
+                        })}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <Message
+                    severity="info"
+                    className="w-full m-0"
+                    text={t('home.shift_capacity_no_site')}
+                  />
+                )
+              ) : null}
+            </div>
+          ) : null}
           </div>
         </Card>
       </div>

@@ -2,10 +2,17 @@ import type { KeyboardEvent } from 'react'
 import type { TFunction } from 'i18next'
 import { Sidebar } from 'primereact/sidebar'
 import { Button } from 'primereact/button'
-import { Calendar } from 'primereact/calendar'
+import { Calendar, type CalendarProps } from 'primereact/calendar'
 import { InputText } from 'primereact/inputtext'
 import { MultiSelect } from 'primereact/multiselect'
 import type { SearchableColumnDef, TableSearchSettingsV1 } from './types'
+
+/** Match Calendar’s datepicker icon to the adjacent clear control (outlined secondary; theme hover fill). */
+const searchPanelCalendarPt = {
+  dropdownButton: {
+    root: { className: 'p-button-outlined p-button-secondary' },
+  },
+} as NonNullable<CalendarProps['pt']>
 
 export function SearchPanel<T extends Record<string, unknown>>({
   visible,
@@ -167,6 +174,7 @@ export function SearchPanel<T extends Record<string, unknown>>({
                           placeholder={t('search_panel.from_placeholder')}
                           className="w-full"
                           inputClassName="w-full"
+                          pt={searchPanelCalendarPt}
                         />
                       ) : (
                         <InputText
@@ -219,6 +227,7 @@ export function SearchPanel<T extends Record<string, unknown>>({
                             placeholder={t('search_panel.to_placeholder')}
                             className="w-full"
                             inputClassName="w-full"
+                            pt={searchPanelCalendarPt}
                           />
                         ) : (
                           <InputText

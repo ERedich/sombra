@@ -22,6 +22,10 @@ import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
 import { Toast } from 'primereact/toast'
 import type { DataTablePageEvent } from 'primereact/datatable'
+import {
+  VoiceAssistPanel,
+  type AiSuggestAssetValidated,
+} from '../../components/ai/VoiceAssistPanel'
 import { ApiError, apiBlob, apiFetch, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
@@ -532,6 +536,53 @@ export default function AssetManagementAppPage() {
     return opts
   }, [classifications, formSiteId])
 
+  const aiAssetVoiceContext = useMemo(() => {
+    const sid = formSiteId
+    if (!sid) {
+      return {
+        assets: [] as { id: string; key: string; name: string }[],
+        costcenters: [] as { id: string; key: string; name: string }[],
+        asset_classifications: [] as { id: string; key: string; name: string }[],
+      }
+    }
+    return {
+      assets: rows
+        .filter((r) => r.site_id === sid)
+        .map((a) => ({ id: a.id, key: a.key, name: a.name })),
+      costcenters: costcenters
+        .filter((c) => c.site_id === sid)
+        .map((c) => ({ id: c.id, key: c.key, name: c.name })),
+      asset_classifications: classifications
+        .filter((ac) => ac.site_id === sid)
+        .map((ac) => ({ id: ac.id, key: ac.key, name: ac.name })),
+    }
+  }, [rows, formSiteId, costcenters, classifications])
+
+  const applyAiAssetDraft = useCallback((v: AiSuggestAssetValidated) => {
+    if (v.key?.trim()) setFormKey(v.key.trim())
+    if (v.name?.trim()) setFormName(v.name.trim())
+    if (v.asset_type) setFormAssetType(v.asset_type)
+    setFormParentId(v.parent_asset_id ?? null)
+    setFormCostcenterId(v.costcenter_id ?? null)
+    setFormAssetClassificationId(v.asset_classification_id ?? null)
+    if (v.equipment_number?.trim()) {
+      setFormEquipment(v.equipment_number.trim())
+    } else if (v.equipment_number === '') {
+      setFormEquipment('')
+    }
+    if (v.serial_no?.trim()) setFormSerial(v.serial_no.trim())
+    else if (v.serial_no === '') setFormSerial('')
+    if (v.build_year != null) setFormBuildYear(v.build_year)
+    if (v.warranty_end) {
+      const d = new Date(v.warranty_end)
+      if (!Number.isNaN(d.getTime())) setFormWarrantyEnd(d)
+    } else if (v.warranty_end === null) {
+      setFormWarrantyEnd(null)
+    }
+    if (v.priority != null) setFormPriority(v.priority)
+    else if (v.priority === null) setFormPriority(null)
+  }, [])
+
   async function uploadThumbnail(assetId: string, file: File) {
     const fd = new FormData()
     fd.append('file', file)
@@ -913,7 +964,24 @@ export default function AssetManagementAppPage() {
         footer={dialogOpen ? assetFormFooter : undefined}
       >
         <div className="flex flex-column flex-1 min-h-0 overflow-auto">
-          {dialogOpen ? assetFormInner : detailsEmptyState}
+          {dialogOpen ? (
+            <>
+              {!editingId ? (
+                <div className="px-3 pt-3 md:px-5 md:pt-4">
+                  <VoiceAssistPanel
+                    kind="asset"
+                    disabled={saving}
+                    context={aiAssetVoiceContext}
+                    onApplyValidated={applyAiAssetDraft}
+                    onError={showError}
+                  />
+                </div>
+              ) : null}
+              {assetFormInner}
+            </>
+          ) : (
+            detailsEmptyState
+          )}
         </div>
       </Card>
     </div>

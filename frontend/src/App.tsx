@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
-import { useEffect } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { useEffect, useLayoutEffect } from 'react'
+import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { refreshStoredAuthUser } from './api'
 import { getToken } from './auth'
 import HomePage from './pages/HomePage'
@@ -17,6 +17,9 @@ import TreeStructureAppPage from './apps/tree-structure/TreeStructureAppPage'
 import AssetClassificationsAppPage from './apps/asset-classifications/AssetClassificationsAppPage'
 import CostcentersAppPage from './apps/costcenters/CostcentersAppPage'
 import WorkTypesAppPage from './apps/work-types/WorkTypesAppPage'
+import ShiftsAppPage from './apps/shifts/ShiftsAppPage'
+import ShiftPlannerAppPage from './apps/shift-planner/ShiftPlannerAppPage'
+import CapacityPlannerAppPage from './apps/capacity-planner/CapacityPlannerAppPage'
 import CategoriesAppPage from './apps/categories/CategoriesAppPage'
 import EmployeesAppPage from './apps/employees/EmployeesAppPage'
 import WorkgroupsAppPage from './apps/workgroups/WorkgroupsAppPage'
@@ -25,12 +28,24 @@ import TemplateAppPage from './apps/template-app/TemplateAppPage'
 import HotkeysAppPage from './apps/hotkeys/HotkeysAppPage'
 import TranslationsAppPage from './apps/translations/TranslationsAppPage'
 import AppParametersAppPage from './apps/app-parameters/AppParametersAppPage'
+import { useKiraAssistant } from './layout/KiraAssistantProvider'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   if (!getToken()) {
     return <Navigate to="/login" replace />
   }
   return children
+}
+
+/** Old `/ai` URL: open Kira modal and return to home. */
+function KiraLegacyPath() {
+  const { openKira } = useKiraAssistant()
+  const navigate = useNavigate()
+  useLayoutEffect(() => {
+    openKira()
+    navigate('/', { replace: true })
+  }, [openKira, navigate])
+  return null
 }
 
 function AuthUserBootstrap() {
@@ -99,6 +114,30 @@ export default function App() {
         element={
           <ProtectedRoute>
             <WorkTypesAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/shifts"
+        element={
+          <ProtectedRoute>
+            <ShiftsAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/shift-planner"
+        element={
+          <ProtectedRoute>
+            <ShiftPlannerAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/capacity-planner"
+        element={
+          <ProtectedRoute>
+            <CapacityPlannerAppPage />
           </ProtectedRoute>
         }
       />
@@ -211,6 +250,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <AppParametersAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/ai"
+        element={
+          <ProtectedRoute>
+            <KiraLegacyPath />
           </ProtectedRoute>
         }
       />

@@ -31,4 +31,8 @@ export const cmmsPaths = {
   notifications: `${API_PREFIX}/notifications`,
   notificationsUnreadCount: `${API_PREFIX}/notifications/unread-count`,
   notificationsMarkRead: `${API_PREFIX}/notifications/mark-read-visible`,
+  aiSuggest: `${API_PREFIX}/ai/suggest`,
+  aiTranscribe: `${API_PREFIX}/ai/transcribe`,
+  aiCopilotTurn: `${API_PREFIX}/ai/copilot/turn`,
+  aiStatus: `${API_PREFIX}/ai/status`,
 } as const

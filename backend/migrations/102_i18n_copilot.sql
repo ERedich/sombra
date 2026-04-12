@@ -1,0 +1,32 @@
+-- Unified copilot hub (EN + DE). Idempotent.
+
+INSERT INTO ui_translations (locale, msg_key, value) VALUES
+('en', 'nav.ai', 'Copilot'),
+('en', 'shell.ai_hub_aria', 'Open copilot'),
+('en', 'ai.hub_title', 'Copilot'),
+('en', 'ai.hub_subtitle', 'Chat with the assistant to look up data and prepare work orders or assets. Nothing is saved until you confirm — the same rules apply as in the main apps.'),
+('en', 'copilot.placeholder', 'Type a message…'),
+('en', 'copilot.send', 'Send'),
+('en', 'copilot.confirm_wo', 'Create work order'),
+('en', 'copilot.confirm_asset', 'Create asset'),
+('en', 'copilot.discard', 'Discard'),
+('en', 'copilot.no_site', 'Set a working site to use the copilot.'),
+('en', 'copilot.not_configured', 'The server has no OpenAI API key configured. Copilot is unavailable until OPENAI_API_KEY is set.'),
+('en', 'copilot.sending', 'Sending…'),
+('en', 'copilot.created_wo', 'Work order created.'),
+('en', 'copilot.created_asset', 'Asset created.'),
+('de', 'nav.ai', 'Copilot'),
+('de', 'shell.ai_hub_aria', 'Copilot öffnen'),
+('de', 'ai.hub_title', 'Copilot'),
+('de', 'ai.hub_subtitle', 'Mit dem Assistenten chatten, Daten abfragen und Arbeitsaufträge oder Objekte vorbereiten. Erst nach Bestätigung wird gespeichert — wie in den Hauptapps.'),
+('de', 'copilot.placeholder', 'Nachricht eingeben…'),
+('de', 'copilot.send', 'Senden'),
+('de', 'copilot.confirm_wo', 'Arbeitsauftrag anlegen'),
+('de', 'copilot.confirm_asset', 'Objekt anlegen'),
+('de', 'copilot.discard', 'Verwerfen'),
+('de', 'copilot.no_site', 'Bitte einen Arbeitsstandort wählen, um den Copilot zu nutzen.'),
+('de', 'copilot.not_configured', 'Kein OpenAI-API-Schlüssel auf dem Server. Copilot ist erst nach OPENAI_API_KEY verfügbar.'),
+('de', 'copilot.sending', 'Wird gesendet…'),
+('de', 'copilot.created_wo', 'Arbeitsauftrag angelegt.'),
+('de', 'copilot.created_asset', 'Objekt angelegt.')
+ON CONFLICT (locale, msg_key) DO UPDATE SET value = EXCLUDED.value;

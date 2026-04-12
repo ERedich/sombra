@@ -10,11 +10,14 @@ import { requireAdmin } from '../middleware/requireAdmin.js'
 import {
   GENERAL_SETTINGS_KEY,
   getGeneralAppSettings,
+  getShiftAppSettings,
   getWoAppSettings,
   IDLE_SESSION_TIMEOUT_MAX_MINUTES,
+  isGeneralDtfId,
   isPgUndefinedRelationError,
-  parseGeneralAppSettingsJson,
+  mergeWorkOrderStatusColoursPatch,
   parseWoAppSettingsJson,
+  SHIFTS_SETTINGS_KEY,
   WO_SETTINGS_KEY,
 } from '../services/appSettings.js'
 
@@ -44,9 +47,11 @@ router.use(requireAuth)
 router.get('/', async (_req, res) => {
   const wo = await getWoAppSettings(pool)
   const general = await getGeneralAppSettings(pool)
+  const shifts = await getShiftAppSettings(pool)
   res.json({
     wo,
     general,
+    shifts,
   })
 })
 
@@ -60,6 +65,12 @@ router.patch('/', requireAdmin, async (req, res) => {
   let patchStartRequires: boolean | undefined
   let patchUserAutoAssign: boolean | undefined
   let patchAllowMultipleStarted: boolean | undefined
+  let patchLockEndDateByDuration: boolean | undefined
+  let patchAllowPlanStartInHistory: boolean | undefined
+  let patchRequireTimeForDone: boolean | undefined
+  let patchPlannedHoursRestriction: boolean | undefined
+  let patchAllowStatusColours: boolean | undefined
+  let patchStatusColours: unknown | undefined
   if (woBody !== undefined) {
     if (typeof woBody !== 'object' || woBody === null) {
       res.status(400).json({ error: 'wo must be an object.' })
@@ -93,10 +104,60 @@ router.patch('/', requireAdmin, async (req, res) => {
       }
       patchAllowMultipleStarted = w.allow_multiple_started_work_orders
     }
+    if (w.lock_end_date_by_duration !== undefined) {
+      if (typeof w.lock_end_date_by_duration !== 'boolean') {
+        res.status(400).json({
+          error: 'wo.lock_end_date_by_duration must be a boolean.',
+        })
+        return
+      }
+      patchLockEndDateByDuration = w.lock_end_date_by_duration
+    }
+    if (w.allow_plan_start_in_history !== undefined) {
+      if (typeof w.allow_plan_start_in_history !== 'boolean') {
+        res.status(400).json({
+          error: 'wo.allow_plan_start_in_history must be a boolean.',
+        })
+        return
+      }
+      patchAllowPlanStartInHistory = w.allow_plan_start_in_history
+    }
+    if (w.require_time_registration_for_done !== undefined) {
+      if (typeof w.require_time_registration_for_done !== 'boolean') {
+        res.status(400).json({
+          error: 'wo.require_time_registration_for_done must be a boolean.',
+        })
+        return
+      }
+      patchRequireTimeForDone = w.require_time_registration_for_done
+    }
+    if (w.planned_hours_restriction !== undefined) {
+      if (typeof w.planned_hours_restriction !== 'boolean') {
+        res.status(400).json({
+          error: 'wo.planned_hours_restriction must be a boolean.',
+        })
+        return
+      }
+      patchPlannedHoursRestriction = w.planned_hours_restriction
+    }
+    if (w.allow_custom_work_order_status_colours !== undefined) {
+      if (typeof w.allow_custom_work_order_status_colours !== 'boolean') {
+        res.status(400).json({
+          error: 'wo.allow_custom_work_order_status_colours must be a boolean.',
+        })
+        return
+      }
+      patchAllowStatusColours = w.allow_custom_work_order_status_colours
+    }
+    if (w.work_order_status_colours !== undefined) {
+      patchStatusColours = w.work_order_status_colours
+    }
   }
 
   const generalBody = body.general
   let patchIdleMinutes: number | undefined
+  let patchDtf: string | undefined
+  let patchAskForSiteChangeOnLogin: boolean | undefined
   if (generalBody !== undefined) {
     if (typeof generalBody !== 'object' || generalBody === null) {
       res.status(400).json({ error: 'general must be an object.' })
@@ -119,15 +180,95 @@ router.patch('/', requireAdmin, async (req, res) => {
       }
       patchIdleMinutes = v
     }
+    if (g.dtf !== undefined) {
+      if (!isGeneralDtfId(g.dtf)) {
+        res.status(400).json({
+          error:
+            'general.dtf must be one of: ddmmyyyy_hhmm, ddmmyy_hhmm, mmddyyyy_hhmm, mmddyy_hhmm.',
+        })
+        return
+      }
+      patchDtf = g.dtf
+    }
+    if (g.ask_for_site_change_on_login !== undefined) {
+      if (typeof g.ask_for_site_change_on_login !== 'boolean') {
+        res.status(400).json({
+          error: 'general.ask_for_site_change_on_login must be a boolean.',
+        })
+        return
+      }
+      patchAskForSiteChangeOnLogin = g.ask_for_site_change_on_login
+    }
+  }
+
+  const shiftsBody = body.shifts
+  let patchShiftLoginRecognition: boolean | undefined
+  let patchShiftPlanningCapacityPct: number | undefined
+  let patchShiftBoundProjection: boolean | undefined
+  if (shiftsBody !== undefined) {
+    if (typeof shiftsBody !== 'object' || shiftsBody === null) {
+      res.status(400).json({ error: 'shifts must be an object.' })
+      return
+    }
+    const s = shiftsBody as Record<string, unknown>
+    if (s.shift_login_recognition !== undefined) {
+      if (typeof s.shift_login_recognition !== 'boolean') {
+        res.status(400).json({
+          error: 'shifts.shift_login_recognition must be a boolean.',
+        })
+        return
+      }
+      patchShiftLoginRecognition = s.shift_login_recognition
+    }
+    if (s.shift_planning_capacity_pct !== undefined) {
+      const pct = s.shift_planning_capacity_pct
+      if (typeof pct !== 'number' || !Number.isInteger(pct)) {
+        res.status(400).json({
+          error:
+            'shifts.shift_planning_capacity_pct must be an integer between 0 and 100.',
+        })
+        return
+      }
+      if (pct < 0 || pct > 100) {
+        res.status(400).json({
+          error:
+            'shifts.shift_planning_capacity_pct must be an integer between 0 and 100.',
+        })
+        return
+      }
+      patchShiftPlanningCapacityPct = pct
+    }
+    if (s.shift_bound_projection !== undefined) {
+      if (typeof s.shift_bound_projection !== 'boolean') {
+        res.status(400).json({
+          error: 'shifts.shift_bound_projection must be a boolean.',
+        })
+        return
+      }
+      patchShiftBoundProjection = s.shift_bound_projection
+    }
   }
 
   const hasWoPatch =
     patchStartRequires !== undefined ||
     patchUserAutoAssign !== undefined ||
-    patchAllowMultipleStarted !== undefined
-  const hasGeneralPatch = patchIdleMinutes !== undefined
+    patchAllowMultipleStarted !== undefined ||
+    patchLockEndDateByDuration !== undefined ||
+    patchAllowPlanStartInHistory !== undefined ||
+    patchRequireTimeForDone !== undefined ||
+    patchPlannedHoursRestriction !== undefined ||
+    patchAllowStatusColours !== undefined ||
+    patchStatusColours !== undefined
+  const hasGeneralPatch =
+    patchIdleMinutes !== undefined ||
+    patchDtf !== undefined ||
+    patchAskForSiteChangeOnLogin !== undefined
+  const hasShiftsPatch =
+    patchShiftLoginRecognition !== undefined ||
+    patchShiftPlanningCapacityPct !== undefined ||
+    patchShiftBoundProjection !== undefined
 
-  if (!hasWoPatch && !hasGeneralPatch) {
+  if (!hasWoPatch && !hasGeneralPatch && !hasShiftsPatch) {
     res.status(400).json({ error: 'No supported fields to update.' })
     return
   }
@@ -168,6 +309,34 @@ router.patch('/', requireAdmin, async (req, res) => {
       }
       if (patchAllowMultipleStarted !== undefined) {
         base.allow_multiple_started_work_orders = patchAllowMultipleStarted
+      }
+      if (patchLockEndDateByDuration !== undefined) {
+        base.lock_end_date_by_duration = patchLockEndDateByDuration
+      }
+      if (patchAllowPlanStartInHistory !== undefined) {
+        base.allow_plan_start_in_history = patchAllowPlanStartInHistory
+      }
+      if (patchRequireTimeForDone !== undefined) {
+        base.require_time_registration_for_done = patchRequireTimeForDone
+      }
+      if (patchPlannedHoursRestriction !== undefined) {
+        base.planned_hours_restriction = patchPlannedHoursRestriction
+      }
+      if (patchAllowStatusColours !== undefined) {
+        base.allow_custom_work_order_status_colours = patchAllowStatusColours
+      }
+      if (patchStatusColours !== undefined) {
+        const parsedBefore = parseWoAppSettingsJson(base)
+        const merged = mergeWorkOrderStatusColoursPatch(
+          parsedBefore.work_order_status_colours,
+          patchStatusColours,
+        )
+        if (!merged.ok) {
+          await client.query('ROLLBACK')
+          res.status(400).json({ error: merged.error })
+          return
+        }
+        base.work_order_status_colours = merged.value
       }
       const valueJson = JSON.stringify(base)
       const upd = await client.query<AppSettingTableRow>(
@@ -230,7 +399,15 @@ router.patch('/', requireAdmin, async (req, res) => {
         !Array.isArray(beforeRowG.value_json)
           ? { ...(beforeRowG.value_json as Record<string, unknown>) }
           : {}
-      baseG.idle_session_timeout_minutes = patchIdleMinutes
+      if (patchIdleMinutes !== undefined) {
+        baseG.idle_session_timeout_minutes = patchIdleMinutes
+      }
+      if (patchDtf !== undefined) {
+        baseG.dtf = patchDtf
+      }
+      if (patchAskForSiteChangeOnLogin !== undefined) {
+        baseG.ask_for_site_change_on_login = patchAskForSiteChangeOnLogin
+      }
       const valueJsonG = JSON.stringify(baseG)
       const updG = await client.query<AppSettingTableRow>(
         `UPDATE app_settings SET
@@ -270,10 +447,81 @@ router.patch('/', requireAdmin, async (req, res) => {
       })
     }
 
+    if (hasShiftsPatch) {
+      const prevS = await client.query<AppSettingTableRow>(
+        `SELECT key, value_json, updated_at, updated_by
+         FROM app_settings WHERE key = $1 FOR UPDATE`,
+        [SHIFTS_SETTINGS_KEY],
+      )
+      const beforeRowS = prevS.rows[0]
+      if (!beforeRowS) {
+        await client.query('ROLLBACK')
+        res.status(500).json({ error: 'Shifts app settings row missing.' })
+        return
+      }
+      const beforeStateS = redactForAudit(
+        'app_setting',
+        rowToAuditRecord(beforeRowS),
+      )
+      const baseS: Record<string, unknown> =
+        typeof beforeRowS.value_json === 'object' &&
+        beforeRowS.value_json !== null &&
+        !Array.isArray(beforeRowS.value_json)
+          ? { ...(beforeRowS.value_json as Record<string, unknown>) }
+          : {}
+      if (patchShiftLoginRecognition !== undefined) {
+        baseS.shift_login_recognition = patchShiftLoginRecognition
+      }
+      if (patchShiftPlanningCapacityPct !== undefined) {
+        baseS.shift_planning_capacity_pct = patchShiftPlanningCapacityPct
+      }
+      if (patchShiftBoundProjection !== undefined) {
+        baseS.shift_bound_projection = patchShiftBoundProjection
+      }
+      const valueJsonS = JSON.stringify(baseS)
+      const updS = await client.query<AppSettingTableRow>(
+        `UPDATE app_settings SET
+           value_json = $1::jsonb,
+           updated_at = now(),
+           updated_by = $2
+         WHERE key = $3
+         RETURNING key, value_json, updated_at, updated_by`,
+        [valueJsonS, auth.id, SHIFTS_SETTINGS_KEY],
+      )
+      const afterRowS = updS.rows[0]
+      if (!afterRowS) {
+        await client.query('ROLLBACK')
+        res.status(500).json({ error: 'Shifts settings update failed.' })
+        return
+      }
+      const afterStateS = redactForAudit(
+        'app_setting',
+        rowToAuditRecord(afterRowS),
+      )
+      const changesS =
+        beforeStateS && afterStateS
+          ? fieldChanges(beforeStateS, afterStateS)
+          : null
+      await writeAudit(client, {
+        actorUserId: auth.id,
+        actorKey: auth.login_name,
+        actorName: auth.name,
+        operation: 'update',
+        resourceType: 'app_setting',
+        resourceId: SHIFTS_SETTINGS_KEY,
+        beforeState: beforeStateS,
+        afterState: afterStateS,
+        fieldChanges: changesS,
+        httpMethod: req.method,
+        path: auditPath,
+      })
+    }
+
     await client.query('COMMIT')
     const wo = await getWoAppSettings(pool)
     const general = await getGeneralAppSettings(pool)
-    res.json({ wo, general })
+    const shifts = await getShiftAppSettings(pool)
+    res.json({ wo, general, shifts })
   } catch (e) {
     try {
       await client.query('ROLLBACK')

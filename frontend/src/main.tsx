@@ -1,3 +1,4 @@
+import './setupDevPerformanceMeasure'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
@@ -10,11 +11,13 @@ import './i18n/i18n.ts'
 import { registerPrimeLocales } from './i18n/registerPrimeLocales'
 import { PrimeLocaleSync } from './i18n/PrimeLocaleSync'
 import { AppI18nLoader } from './i18n/AppI18nLoader'
+import { AppParametersProvider } from './layout/AppParametersProvider'
 import App from './App.tsx'
 import { HotkeySettingsProvider } from './hotkeys/HotkeySettingsContext'
 import { AppCreateShortcutProvider } from './layout/AppCreateShortcut'
 import { AppToolbarSearchFocusProvider } from './layout/AppToolbarSearchFocus'
 import { OpenLastAppShortcutProvider } from './layout/OpenLastAppShortcutProvider'
+import { KiraAssistantProvider } from './layout/KiraAssistantProvider'
 import { QuickAccessProvider } from './layout/QuickAccessProvider'
 import { WorkOrderNotificationsProvider } from './notifications/WorkOrderNotificationsContext'
 
@@ -24,22 +27,26 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <PrimeReactProvider>
-        <PrimeLocaleSync />
-        <HotkeySettingsProvider>
-          <QuickAccessProvider>
+        <AppParametersProvider>
+          <PrimeLocaleSync />
+          <HotkeySettingsProvider>
             <WorkOrderNotificationsProvider>
               <OpenLastAppShortcutProvider>
                 <AppToolbarSearchFocusProvider>
                   <AppCreateShortcutProvider>
                     <AppI18nLoader>
-                      <App />
+                      <KiraAssistantProvider>
+                        <QuickAccessProvider>
+                          <App />
+                        </QuickAccessProvider>
+                      </KiraAssistantProvider>
                     </AppI18nLoader>
                   </AppCreateShortcutProvider>
                 </AppToolbarSearchFocusProvider>
               </OpenLastAppShortcutProvider>
             </WorkOrderNotificationsProvider>
-          </QuickAccessProvider>
-        </HotkeySettingsProvider>
+          </HotkeySettingsProvider>
+        </AppParametersProvider>
       </PrimeReactProvider>
     </BrowserRouter>
   </StrictMode>,

@@ -9,7 +9,7 @@ import { InputText } from 'primereact/inputtext'
 import { Message } from 'primereact/message'
 import { Password } from 'primereact/password'
 import { apiBase } from '../api'
-import { getToken, setAuth, type AuthUser } from '../auth'
+import { getToken, normalizeAuthUser, setAuth, type AuthUser } from '../auth'
 import { ensureTranslationsLoaded } from '../i18n/loadTranslations'
 import './LoginPage.css'
 
@@ -65,15 +65,21 @@ function regionCodeToFlagEmoji(region: string): string {
   )
 }
 
+function plantSiteOptions(user: AuthUser) {
+  return (user.selectable_working_sites ?? []).filter((s) => s.is_plant === true)
+}
+
+function defaultPlantPickSiteId(user: AuthUser): string | null {
+  const plants = plantSiteOptions(user)
+  const cur = user.working_site_id
+  if (cur && plants.some((p) => p.id === cur)) return cur
+  return plants[0]?.id ?? null
+}
+
 function needsWorkingSitePicker(user: AuthUser): boolean {
   if (user.login_name === 'admin') return false
   if (!user.allow_site_change_on_login) return false
-  const ids = new Set(
-    [user.working_site_id, ...user.additional_site_ids].filter(
-      (x): x is string => typeof x === 'string' && x.length > 0,
-    ),
-  )
-  return ids.size >= 2
+  return plantSiteOptions(user).length >= 2
 }
 
 export default function LoginPage() {
@@ -200,7 +206,7 @@ export default function LoginPage() {
         setPendingParallelWarning(warn)
         setPendingToken(data.token)
         setPendingUser(user)
-        setPickedSiteId(user.working_site_id)
+        setPickedSiteId(defaultPlantPickSiteId(user))
         setSiteDialogOpen(true)
         return
       }
@@ -406,6 +412,7 @@ export default function LoginPage() {
             label={t('login.parallel_session_ack')}
             icon="pi pi-check"
             onClick={acknowledgeParallelAndContinue}
+            pt={{ root: { 'data-pc-autofocus': true } }}
           />
         }
       >
@@ -437,6 +444,7 @@ export default function LoginPage() {
               onClick={() => void confirmWorkingSite()}
               loading={siteSubmitting}
               disabled={!pickedSiteId}
+              pt={{ root: { 'data-pc-autofocus': true } }}
             />
           </div>
         }
@@ -451,7 +459,9 @@ export default function LoginPage() {
           <Dropdown
             value={pickedSiteId}
             onChange={(e) => setPickedSiteId(e.value as string | null)}
-            options={pendingUser?.selectable_working_sites ?? []}
+            options={
+              pendingUser ? plantSiteOptions(pendingUser) : []
+            }
             optionLabel="name"
             optionValue="id"
             className="w-full"
@@ -485,23 +495,5 @@ export default function LoginPage() {
 }
 
 function normalizeAuthUserFromApi(u: AuthUser): AuthUser {
-  return {
-    ...u,
-    employee_id: u.employee_id ?? null,
-    employee_workgroup_ids: Array.isArray(u.employee_workgroup_ids)
-      ? u.employee_workgroup_ids
-      : [],
-    working_site_id: u.working_site_id ?? null,
-    allow_site_change_on_login: Boolean(u.allow_site_change_on_login),
-    additional_site_ids: Array.isArray(u.additional_site_ids)
-      ? u.additional_site_ids
-      : [],
-    accessible_site_ids: Array.isArray(u.accessible_site_ids)
-      ? u.accessible_site_ids
-      : [],
-    selectable_working_sites: Array.isArray(u.selectable_working_sites)
-      ? u.selectable_working_sites
-      : [],
-    locale: typeof u.locale === 'string' && u.locale.length > 0 ? u.locale : 'en',
-  }
+  return normalizeAuthUser({ ...u } as AuthUser & { key?: string })
 }

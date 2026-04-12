@@ -35,6 +35,7 @@ import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import { AssetPickerSidebarContent } from '../../components/sel-item/AssetPickerSidebarContent'
 import { SelItemField } from '../../components/sel-item/SelItemField'
 import { formatDateTime } from '../../utils/dateTime'
+import { workPlanDaysUntilGenerationOpens } from '../../utils/workPlanGenerationCountdown'
 import { WorkAssignmentsIcons } from '../../components/work-instructions/WorkAssignmentsIcons'
 import { WorkInstructionViewModal } from '../../components/work-instructions/WorkInstructionViewModal'
 import {
@@ -489,6 +490,27 @@ export default function WorkPlanningAppPage() {
         sortable: true,
         type: 'datetime',
         body: (row) => formatDateTime(row.next_due_at),
+      },
+      {
+        field: 'wo_gen_countdown',
+        headerKey: 'wp.col_wo_gen_countdown',
+        sortable: false,
+        body: (row) => {
+          const n = workPlanDaysUntilGenerationOpens(
+            row.next_due_at,
+            row.lead_time_days,
+          )
+          return n === null ? emDash : String(n)
+        },
+        search: {
+          getSearchValue: (row) => {
+            const n = workPlanDaysUntilGenerationOpens(
+              row.next_due_at,
+              row.lead_time_days,
+            )
+            return n === null ? '' : String(n)
+          },
+        },
       },
       {
         field: 'interval_count',

@@ -19,7 +19,10 @@ import {
   type NavSection,
 } from '../navigation/registeredApps'
 import '../App.css'
+import { formatDateTime } from '../utils/dateTime'
 import { IdleSessionLogoutController } from './IdleSessionLogoutController'
+import { useAppParameters } from './AppParametersProvider'
+import { useKiraAssistant } from './KiraAssistantProvider'
 
 const THEME_LINK_ID = 'theme-link'
 const THEME_LIGHT = 'lara-light-amber'
@@ -111,6 +114,8 @@ const asideFixedStyle: CSSProperties = {
 export function AppShell({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const { openKira } = useKiraAssistant()
+  const { shiftLoginRecognition } = useAppParameters()
   const location = useLocation()
   const { changeTheme } = useContext(PrimeReactContext)
   const user = getStoredUser()
@@ -259,6 +264,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }, [darkMode, changeTheme])
 
+  function runLogout(clearShiftPresence: boolean) {
+    void postAuthLogout(
+      clearShiftPresence ? { clear_shift_presence: true } : undefined,
+    )
+    clearAuth()
+    navigate('/login', { replace: true })
+  }
+
   function confirmLogout() {
     confirmDialog({
       tagKey: 'logout',
@@ -270,9 +283,23 @@ export function AppShell({ children }: { children: ReactNode }) {
       defaultFocus: 'reject',
       dismissableMask: true,
       accept: () => {
-        void postAuthLogout()
-        clearAuth()
-        navigate('/login', { replace: true })
+        const u = getStoredUser()
+        if (shiftLoginRecognition && u?.employee_id) {
+          confirmDialog({
+            tagKey: 'logout_shift',
+            header: t('shell.logout_shift_header'),
+            message: t('shell.logout_shift_message'),
+            icon: 'pi pi-clock',
+            acceptLabel: t('shell.logout_shift_accept'),
+            rejectLabel: t('shell.logout_shift_reject'),
+            defaultFocus: 'reject',
+            dismissableMask: true,
+            accept: () => runLogout(true),
+            reject: () => runLogout(false),
+          })
+          return
+        }
+        runLogout(false)
       },
     })
   }
@@ -338,7 +365,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   })}
                 </div>
                 <div className="text-xs text-color-secondary mt-1">
-                  {new Date(n.created_at).toLocaleString()}
+                  {formatDateTime(n.created_at)}
                 </div>
               </div>
             ))
@@ -346,6 +373,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </Dialog>
       <ConfirmDialog tagKey="logout" dismissableMask />
+      <ConfirmDialog tagKey="logout_shift" dismissableMask />
       <OverlayPanel
         ref={flyoutRef}
         dismissable
@@ -362,23 +390,45 @@ export function AppShell({ children }: { children: ReactNode }) {
                 {t('shell.nav_section_empty')}
               </span>
             ) : (
-              flyoutSection.children.map((app) => (
-                <NavLink
-                  key={app.path}
-                  to={app.path}
-                  className={({ isActive }) =>
-                    [
+              flyoutSection.children.map((app) =>
+                app.shellAction === 'kira' ? (
+                  <button
+                    key={app.path}
+                    type="button"
+                    className={[
                       'app-sidebar-link',
                       'flex align-items-center gap-2 px-2 py-2 border-round text-sm no-underline transition-colors transition-duration-150',
-                      isActive ? 'app-sidebar-link--active' : 'text-color-secondary',
-                    ].join(' ')
-                  }
-                  onClick={() => closeFlyout()}
-                >
-                  <i className={app.icon} aria-hidden />
-                  <span>{t(app.labelKey)}</span>
-                </NavLink>
-              ))
+                      'w-full text-left cursor-pointer border-none bg-transparent',
+                      'text-color-secondary',
+                    ].join(' ')}
+                    onClick={() => {
+                      openKira()
+                      closeFlyout()
+                    }}
+                  >
+                    <i className={app.icon} aria-hidden />
+                    <span>{t(app.labelKey)}</span>
+                  </button>
+                ) : (
+                  <NavLink
+                    key={app.path}
+                    to={app.path}
+                    className={({ isActive }) =>
+                      [
+                        'app-sidebar-link',
+                        'flex align-items-center gap-2 px-2 py-2 border-round text-sm no-underline transition-colors transition-duration-150',
+                        isActive ?
+                          'app-sidebar-link--active'
+                        : 'text-color-secondary',
+                      ].join(' ')
+                    }
+                    onClick={() => closeFlyout()}
+                  >
+                    <i className={app.icon} aria-hidden />
+                    <span>{t(app.labelKey)}</span>
+                  </NavLink>
+                ),
+              )
             )}
           </div>
         ) : null}
@@ -478,25 +528,43 @@ export function AppShell({ children }: { children: ReactNode }) {
                             {t('shell.nav_section_empty')}
                           </span>
                         ) : (
-                          section.children.map((app) => (
-                            <NavLink
-                              key={app.path}
-                              to={app.path}
-                              tabIndex={isOpen ? undefined : -1}
-                              className={({ isActive }) =>
-                                [
+                          section.children.map((app) =>
+                            app.shellAction === 'kira' ? (
+                              <button
+                                key={app.path}
+                                type="button"
+                                tabIndex={isOpen ? undefined : -1}
+                                className={[
                                   'app-sidebar-link',
                                   'flex align-items-center gap-2 px-2 py-1 border-round text-sm no-underline transition-colors transition-duration-150',
-                                  isActive ?
-                                    'app-sidebar-link--active'
-                                  : 'text-color-secondary',
-                                ].join(' ')
-                              }
-                            >
-                              <i className={app.icon} aria-hidden />
-                              <span>{t(app.labelKey)}</span>
-                            </NavLink>
-                          ))
+                                  'w-full text-left cursor-pointer border-none bg-transparent',
+                                  'text-color-secondary',
+                                ].join(' ')}
+                                onClick={() => openKira()}
+                              >
+                                <i className={app.icon} aria-hidden />
+                                <span>{t(app.labelKey)}</span>
+                              </button>
+                            ) : (
+                              <NavLink
+                                key={app.path}
+                                to={app.path}
+                                tabIndex={isOpen ? undefined : -1}
+                                className={({ isActive }) =>
+                                  [
+                                    'app-sidebar-link',
+                                    'flex align-items-center gap-2 px-2 py-1 border-round text-sm no-underline transition-colors transition-duration-150',
+                                    isActive ?
+                                      'app-sidebar-link--active'
+                                    : 'text-color-secondary',
+                                  ].join(' ')
+                                }
+                              >
+                                <i className={app.icon} aria-hidden />
+                                <span>{t(app.labelKey)}</span>
+                              </NavLink>
+                            ),
+                          )
                         )}
                       </div>
                     </div>
@@ -545,6 +613,15 @@ export function AppShell({ children }: { children: ReactNode }) {
                   void notifications.markVisibleAsRead()
                 }}
                 aria-label={t('notifications.button_aria')}
+              />
+              <Button
+                type="button"
+                icon="pi pi-sparkles"
+                rounded
+                text
+                severity="secondary"
+                onClick={() => openKira()}
+                aria-label={t('shell.kira_aria')}
               />
               <Button
                 type="button"
