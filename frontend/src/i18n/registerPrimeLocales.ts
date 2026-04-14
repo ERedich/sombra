@@ -11,7 +11,7 @@ const dePrime: Record<string, unknown> = {
   clear: 'Leeren',
   today: 'Heute',
   weekHeader: 'KW',
-  firstDayOfWeek: 1,
+  // firstDayOfWeek: set from general.fdw in PrimeLocaleSync (defaults to Monday there).
   // Prime Calendar: paired `yy` renders full calendar year (DD.MM.YYYY-style).
   dateFormat: 'dd.mm.yy',
   monthNames: [

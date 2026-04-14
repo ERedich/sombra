@@ -251,9 +251,25 @@ export function isGeneralDtfId(value: unknown): value is GeneralDtfId {
   )
 }
 
+/** First day of week (general app setting `fdw`). */
+export const GENERAL_FDW_VALUES = ['monday', 'sunday'] as const
+
+export type GeneralFdwId = (typeof GENERAL_FDW_VALUES)[number]
+
+export const DEFAULT_GENERAL_FDW: GeneralFdwId = 'monday'
+
+export function isGeneralFdwId(value: unknown): value is GeneralFdwId {
+  return (
+    typeof value === 'string' &&
+    (GENERAL_FDW_VALUES as readonly string[]).includes(value)
+  )
+}
+
 export type GeneralAppSettings = {
   idle_session_timeout_minutes: number
   dtf: GeneralDtfId
+  /** FDW: first column of week-based calendars (Prime + custom month grid). */
+  fdw: GeneralFdwId
   /** When true, users with 2+ assigned plant sites are prompted for working site at login. */
   ask_for_site_change_on_login: boolean
 }
@@ -261,6 +277,7 @@ export type GeneralAppSettings = {
 const DEFAULT_GENERAL: GeneralAppSettings = {
   idle_session_timeout_minutes: 0,
   dtf: DEFAULT_GENERAL_DTF,
+  fdw: DEFAULT_GENERAL_FDW,
   ask_for_site_change_on_login: false,
 }
 
@@ -279,6 +296,9 @@ export function parseGeneralAppSettingsJson(
   }
   if (isGeneralDtfId(o.dtf)) {
     base.dtf = o.dtf
+  }
+  if (isGeneralFdwId(o.fdw)) {
+    base.fdw = o.fdw
   }
   if (typeof o.ask_for_site_change_on_login === 'boolean') {
     base.ask_for_site_change_on_login = o.ask_for_site_change_on_login

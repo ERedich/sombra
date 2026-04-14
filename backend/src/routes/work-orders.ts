@@ -813,7 +813,7 @@ router.get('/', async (req, res) => {
   const auth = req.authUser!
   if (auth.role === 'admin') {
     const r = await pool.query<WorkOrderRow>(
-      `${LIST_SQL} ORDER BY w.wo_key ASC`,
+      `${LIST_SQL} ORDER BY w.wo_key DESC`,
     )
     res.json({ work_orders: r.rows })
     return
@@ -826,7 +826,7 @@ router.get('/', async (req, res) => {
   }
   const r = await pool.query<WorkOrderRow>(
     `${LIST_SQL} WHERE w.site_id = ANY($1::uuid[])
-     ORDER BY w.wo_key ASC`,
+     ORDER BY w.wo_key DESC`,
     [allowed],
   )
   res.json({ work_orders: r.rows })
@@ -1307,6 +1307,25 @@ router.put('/:id/capacity-allocation', async (req, res) => {
       return
     }
 
+    if (!wo.plan_start || !wo.plan_end) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'This work order has no planned start and end; capacity cannot be assigned.',
+      })
+      return
+    }
+    const psY = utcCalendarYmd(wo.plan_start)
+    const peY = utcCalendarYmd(wo.plan_end)
+    if (adRaw < psY || adRaw > peY) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'allocation_date must fall on a calendar day within the work order plan period (UTC).',
+      })
+      return
+    }
+
     const empR = await client.query<{ site_id: string }>(
       `SELECT site_id FROM employees WHERE id = $1`,
       [employeeId],
@@ -1392,18 +1411,8 @@ router.put('/:id/capacity-allocation', async (req, res) => {
       return
     }
 
-    const woDuration = Number(wo.duration)
-    if (Number.isFinite(woDuration)) {
-      const maxByDuration =
-        woDuration > 0 ? roundPlannedHours(woDuration) : 0
-      if (roundPlannedHours(plannedHours) > maxByDuration) {
-        await client.query('ROLLBACK')
-        res.status(400).json({
-          error: 'Planned hours cannot exceed the work order duration.',
-        })
-        return
-      }
-    }
+    // Planned capacity per employee/day is bounded by shift/SPC (and PHR), not by
+    // work_orders.duration — duration is a separate planning field for the WO.
 
     const hadEmployeeR = await client.query(
       `SELECT 1 FROM work_order_employees

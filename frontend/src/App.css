@@ -457,6 +457,39 @@ html.theme-transition-fallback #root {
   }
 }
 
+/* Minimized CRUD modal dock — below open dialogs (mask ~1100), above shell */
+.app-mw-minimized-dock {
+  position: fixed;
+  z-index: 1090;
+  pointer-events: auto;
+  /* Opaque panel (Lara --surface-card can read translucent via utilities; section is solid) */
+  background-color: var(--surface-section);
+  background-image: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app-mw-minimized-dock--bottom-center {
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(36rem, calc(100vw - 2rem));
+  width: calc(100vw - 2rem);
+}
+
+/* Work order global MW: compact chip under top bar / safe area */
+.app-mw-minimized-dock--top-right {
+  left: auto;
+  right: 1rem;
+  transform: none;
+  max-width: min(36rem, calc(100vw - 2rem));
+  width: max-content;
+  min-width: min(14rem, calc(100vw - 2rem));
+}
+
+.app-crud-dialog-header-inner {
+  margin-right: -0.25rem;
+}
+
 /* App card header — shared frosted-glass hero (all apps using .app-card-hero) */
 .app-card-hero {
   position: relative;
@@ -941,6 +974,37 @@ html.theme-transition-fallback #root {
 .shift-planner-drop-target--active {
   outline: 2px dashed var(--primary-color);
   outline-offset: 2px;
+}
+
+/* Inner planner panels: no theme default card outline */
+.app-capacity-planner .cp-planner-inner-card {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Softer grid lines (less harsh than default surface-border on tables) */
+.app-capacity-planner {
+  --cp-planner-grid-border: color-mix(in srgb, var(--surface-600) 20%, var(--surface-300));
+}
+
+.app-capacity-planner table.cp-planner-table :is(th, td) {
+  border-color: var(--cp-planner-grid-border) !important;
+}
+
+.app-capacity-planner table.cp-planner-table th .border-left-1,
+.app-capacity-planner table.cp-planner-table .cp-timeline > div.flex-1 {
+  border-color: var(--cp-planner-grid-border) !important;
+}
+
+.app-capacity-planner .cp-planner-scroll.border-top-1,
+.app-capacity-planner .cp-planner-empty.border-top-1 {
+  border-top-color: var(--cp-planner-grid-border) !important;
+}
+
+/* Sticky label column: same seam as grid; stack above timeline (WO pill uses z-index 1) */
+.app-capacity-planner table.cp-planner-table :is(th, td).cp-planner-col-first {
+  border-right-color: var(--cp-planner-grid-border) !important;
+  z-index: 2 !important;
 }
 
 /* WO horizontal move: subtle highlight on timelines while dragging */

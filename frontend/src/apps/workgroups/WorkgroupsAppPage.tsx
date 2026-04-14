@@ -10,7 +10,7 @@ import { Card } from 'primereact/card'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { Dropdown } from 'primereact/dropdown'
 import { PickList } from 'primereact/picklist'
 import { ProgressSpinner } from 'primereact/progressspinner'
@@ -775,8 +775,8 @@ export default function WorkgroupsAppPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={
+      <AppCrudDialog
+        title={
           editingId
             ? t('workgroups.dialog_edit')
             : t('workgroups.dialog_new')
@@ -845,12 +845,13 @@ export default function WorkgroupsAppPage() {
             />
           </div>
         </div>
-      </Dialog>
+      </AppCrudDialog>
 
-      <Dialog
-        header={t('workgroups.members_title')}
+      <AppCrudDialog
+        title={t('workgroups.members_title')}
         visible={membersOpen}
         onHide={tryCloseMembersDialog}
+        dismissableMask={!memberSaving}
         style={{ width: 'min(56rem, 98vw)' }}
         footer={
           <div className="flex justify-content-between align-items-center gap-2 flex-wrap w-full">
@@ -921,7 +922,7 @@ export default function WorkgroupsAppPage() {
             />
           </div>
         )}
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

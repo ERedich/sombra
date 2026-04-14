@@ -16,7 +16,7 @@ import { Calendar } from 'primereact/calendar'
 import { Checkbox } from 'primereact/checkbox'
 import { Card } from 'primereact/card'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { Divider } from 'primereact/divider'
 import { Dropdown } from 'primereact/dropdown'
 import { InputTextarea } from 'primereact/inputtextarea'
@@ -1906,12 +1906,17 @@ export default function ShiftPlannerAppPage() {
         </Card>
       </div>
 
-      <Dialog
+      <AppCrudDialog
         visible={!!planningCellModal}
         onHide={() => setPlanningCellModal(null)}
         dismissableMask={!rolloutApplying && !loading}
         style={{ width: 'min(40rem, 96vw)' }}
-        header={
+        dockTitle={
+          planningCellModal && planningModalShift
+            ? `${planningModalShift.name} (${planningModalShift.key}) · ${formatDate(`${planningCellModal.ymd}T12:00:00`)}`
+            : ''
+        }
+        title={
           planningCellModal && planningModalShift ? (
             <div className="flex flex-column gap-1 pr-3">
               <span className="text-lg font-semibold line-height-3">
@@ -2150,10 +2155,10 @@ export default function ShiftPlannerAppPage() {
             </div>
           </div>
         ) : null}
-      </Dialog>
+      </AppCrudDialog>
 
-      <Dialog
-        header={t('shift_planner.absent_dialog_title')}
+      <AppCrudDialog
+        title={t('shift_planner.absent_dialog_title')}
         visible={absentOpen}
         onHide={() => setAbsentOpen(false)}
         style={{ width: 'min(28rem, 96vw)' }}
@@ -2212,7 +2217,7 @@ export default function ShiftPlannerAppPage() {
             />
           </div>
         </div>
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

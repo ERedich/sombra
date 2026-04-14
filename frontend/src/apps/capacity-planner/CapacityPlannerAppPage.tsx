@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { Calendar } from 'primereact/calendar'
 import { Card } from 'primereact/card'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { InputNumber } from 'primereact/inputnumber'
 import { Message } from 'primereact/message'
 import { Toast } from 'primereact/toast'
@@ -15,6 +15,7 @@ import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { AppShell } from '../../layout/AppShell'
 import { useAppParameters } from '../../layout/AppParametersProvider'
+import { useWorkOrderMw } from '../../layout/WorkOrderMwProvider'
 import { formatDate, formatDateTime } from '../../utils/dateTime'
 import { primeDateFormatForDtf } from '../../utils/dateTimeFormatPreference'
 
@@ -213,6 +214,17 @@ function barLayout(
   return { leftPct, widthPct }
 }
 
+/** UTC calendar day `ymd` (YYYY-MM-DD) within WO plan window (same semantics as barLayout). */
+function allocationDateInsideWoPlan(
+  wo: SnapshotWorkOrder,
+  ymd: string,
+): boolean {
+  if (!wo.plan_start || !wo.plan_end) return false
+  const psY = toUtcYmd(wo.plan_start)
+  const peY = toUtcYmd(wo.plan_end)
+  return psY <= ymd && ymd <= peY
+}
+
 type ModalCtx = {
   workOrder: SnapshotWorkOrder
   employeeId: string
@@ -252,6 +264,10 @@ export default function CapacityPlannerAppPage() {
   const [modalSaving, setModalSaving] = useState(false)
   const [woMoveDragActive, setWoMoveDragActive] = useState(false)
 
+  const ganttScrollRef = useRef<HTMLDivElement>(null)
+  const utilScrollRef = useRef<HTMLDivElement>(null)
+  const syncingHorizontalScroll = useRef(false)
+
   const dateList = useMemo(
     () => enumerateDates(rangeFrom, rangeTo),
     [rangeFrom, rangeTo],
@@ -261,6 +277,8 @@ export default function CapacityPlannerAppPage() {
     () => primeDateFormatForDtf(dtf),
     [dtf],
   )
+
+  const { mountWoMw, subscribeWorkOrderMwEvents } = useWorkOrderMw()
 
   const loadSnapshot = useCallback(async () => {
     const df = toYmd(rangeFrom)
@@ -291,6 +309,44 @@ export default function CapacityPlannerAppPage() {
   useEffect(() => {
     void loadSnapshot()
   }, [loadSnapshot])
+
+  useEffect(
+    () =>
+      subscribeWorkOrderMwEvents((ev) => {
+        if (
+          ev.type === 'merged_row' ||
+          ev.type === 'created_row' ||
+          ev.type === 'silent_list_refresh'
+        ) {
+          void loadSnapshot()
+        }
+      }),
+    [subscribeWorkOrderMwEvents, loadSnapshot],
+  )
+
+  const onGanttTableScroll = useCallback(() => {
+    if (syncingHorizontalScroll.current) return
+    const src = ganttScrollRef.current
+    const dst = utilScrollRef.current
+    if (!src || !dst) return
+    syncingHorizontalScroll.current = true
+    dst.scrollLeft = src.scrollLeft
+    requestAnimationFrame(() => {
+      syncingHorizontalScroll.current = false
+    })
+  }, [])
+
+  const onUtilTableScroll = useCallback(() => {
+    if (syncingHorizontalScroll.current) return
+    const src = utilScrollRef.current
+    const dst = ganttScrollRef.current
+    if (!src || !dst) return
+    syncingHorizontalScroll.current = true
+    dst.scrollLeft = src.scrollLeft
+    requestAnimationFrame(() => {
+      syncingHorizontalScroll.current = false
+    })
+  }, [])
 
   const spcFrac = shiftPlanningCapacityPct / 100
 
@@ -328,6 +384,27 @@ export default function CapacityPlannerAppPage() {
     return snapshot?.used_hours_by_employee_date[employeeId]?.[ymd] ?? 0
   }
 
+  /** Per calendar day: sum of shift×SPC capacity and planned hours across employees in the grid. */
+  const capacityGridColumnTotals = useMemo(() => {
+    const assigns = snapshot?.shift_assignments ?? []
+    const usedMap = snapshot?.used_hours_by_employee_date ?? {}
+    return dateList.map((ymd) => {
+      let totalCap = 0
+      let totalPlanned = 0
+      for (const emp of employeesInRange) {
+        const empAssigns = assigns.filter(
+          (a) => a.employee_id === emp.id && a.assignment_date === ymd,
+        )
+        for (const a of empAssigns) {
+          totalCap +=
+            shiftHoursOnAssignmentDay(a.time_start, a.time_end) * spcFrac
+        }
+        totalPlanned += usedMap[emp.id]?.[ymd] ?? 0
+      }
+      return { cap: totalCap, planned: totalPlanned }
+    })
+  }, [snapshot, dateList, employeesInRange, spcFrac])
+
   function openAssignModal(
     wo: SnapshotWorkOrder,
     employeeId: string,
@@ -345,6 +422,14 @@ export default function CapacityPlannerAppPage() {
       })
       return
     }
+    if (!allocationDateInsideWoPlan(wo, allocationDate)) {
+      toast.current?.show({
+        severity: 'warn',
+        summary: t('capacity_planner.drop_outside_plan'),
+        life: 5000,
+      })
+      return
+    }
     const cap = capForCell(employeeId, allocationDate)
     const used = usedForCell(employeeId, allocationDate)
     const existing = (snapshot?.capacity_allocations ?? []).find(
@@ -353,23 +438,16 @@ export default function CapacityPlannerAppPage() {
         c.employee_id === employeeId &&
         c.allocation_date === allocationDate,
     )
-    const dur = Number(wo.duration)
-    const maxFromWo = Number.isFinite(dur) ? dur : cap
     const remaining = Math.max(
       0,
       roundPlannedHours(cap - used + (existing?.planned_hours ?? 0)),
     )
-    const woDurCap =
-      Number.isFinite(dur) && dur > 0
-        ? dur
-        : CP_PLANNED_HOURS_INPUT_MAX_UNRESTRICTED
     const def = plannedHoursRestriction
-      ? Math.min(
-          maxFromWo > 0 ? maxFromWo : remaining,
-          remaining,
+      ? Math.min(remaining, Math.max(0.25, remaining))
+      : Math.min(
+          CP_PLANNED_HOURS_INPUT_MAX_UNRESTRICTED,
           Math.max(0.25, remaining),
         )
-      : Math.min(woDurCap, 0.25)
     setModalCtx({
       workOrder: wo,
       employeeId,
@@ -458,7 +536,7 @@ export default function CapacityPlannerAppPage() {
     }
   }
 
-  async function patchPlanStart(wo: SnapshotWorkOrder, newStart: Date) {
+  async function patchWoPlanAfterDrag(wo: SnapshotWorkOrder, newStart: Date) {
     const now = Date.now()
     if (newStart.getTime() < now) {
       toast.current?.show({
@@ -468,10 +546,23 @@ export default function CapacityPlannerAppPage() {
       })
       return
     }
+    const oldStartMs = new Date(wo.plan_start!).getTime()
+    const deltaMs = newStart.getTime() - oldStartMs
+    if (deltaMs === 0) return
+
+    const body: Record<string, string> = {
+      plan_start: newStart.toISOString(),
+    }
+    if (wo.plan_end) {
+      body.plan_end = new Date(
+        new Date(wo.plan_end).getTime() + deltaMs,
+      ).toISOString()
+    }
+
     try {
       await apiJson(`/api/work-orders/${encodeURIComponent(wo.id)}`, {
         method: 'PATCH',
-        body: JSON.stringify({ plan_start: newStart.toISOString() }),
+        body: JSON.stringify(body),
       })
       await loadSnapshot()
     } catch (e) {
@@ -504,7 +595,7 @@ export default function CapacityPlannerAppPage() {
     const newStart = planStartOnCalendarDay(wo.plan_start, targetYmd)
     const clamped = new Date(Math.max(newStart.getTime(), Date.now()))
     if (clamped.getTime() === new Date(wo.plan_start).getTime()) return
-    void patchPlanStart(wo, clamped)
+    void patchWoPlanAfterDrag(wo, clamped)
   }
 
   function handleShiftSlotDropOnWo(e: React.DragEvent, wo: SnapshotWorkOrder) {
@@ -527,18 +618,21 @@ export default function CapacityPlannerAppPage() {
       return
     }
     if (!employeeId || !allocationDate) return
+    if (!allocationDateInsideWoPlan(wo, allocationDate)) {
+      toast.current?.show({
+        severity: 'warn',
+        summary: t('capacity_planner.drop_outside_plan'),
+        life: 5000,
+      })
+      return
+    }
     openAssignModal(wo, employeeId, employeeName, allocationDate)
   }
 
   const modalMaxHours = useMemo(() => {
     if (!modalCtx || !snapshot) return 99
-    const dur = Number(modalCtx.workOrder.duration)
-    const woOnlyCap =
-      Number.isFinite(dur) && dur > 0
-        ? roundPlannedHours(dur)
-        : CP_PLANNED_HOURS_INPUT_MAX_UNRESTRICTED
     if (!plannedHoursRestriction) {
-      return Math.max(0, woOnlyCap)
+      return Math.max(0, CP_PLANNED_HOURS_INPUT_MAX_UNRESTRICTED)
     }
     const cap = capForCell(modalCtx.employeeId, modalCtx.allocationDate)
     const used = usedForCell(modalCtx.employeeId, modalCtx.allocationDate)
@@ -552,9 +646,7 @@ export default function CapacityPlannerAppPage() {
       0,
       roundPlannedHours(cap - used + (existing?.planned_hours ?? 0)),
     )
-    const woCap =
-      Number.isFinite(dur) && dur > 0 ? roundPlannedHours(dur) : remaining
-    return Math.max(0, Math.min(remaining, woCap))
+    return Math.max(0, remaining)
   }, [modalCtx, snapshot, plannedHoursRestriction])
 
   const headerNode = (
@@ -639,21 +731,23 @@ export default function CapacityPlannerAppPage() {
           <div className="flex flex-column gap-3">
             <Card
               title={t('capacity_planner.panel_gantt')}
-              className="shadow-none border-1 surface-border border-round-lg overflow-hidden surface-ground"
+              className="cp-planner-inner-card shadow-none border-none border-round-lg overflow-hidden surface-ground"
               pt={{
                 title: { className: 'text-lg font-semibold mb-0' },
                 body: { className: 'p-0' },
               }}
             >
               <div
-                className="overflow-auto border-top-1 surface-border"
+                ref={ganttScrollRef}
+                className="cp-planner-scroll overflow-auto border-top-1 surface-border"
                 style={{ maxHeight: 'min(48vh, 520px)' }}
+                onScroll={onGanttTableScroll}
               >
-              <table className="w-full text-sm border-collapse">
+              <table className="cp-planner-table w-full text-sm border-collapse">
                 <thead>
                   <tr>
                     <th
-                      className="text-left p-2 border-bottom-1 surface-border white-space-nowrap"
+                      className="cp-planner-col-first text-left p-2 border-bottom-1 surface-border white-space-nowrap sticky left-0 bg-surface-ground"
                       style={{
                         width: CP_FIRST_COL_MIN_PX,
                         minWidth: CP_FIRST_COL_MIN_PX,
@@ -683,15 +777,23 @@ export default function CapacityPlannerAppPage() {
                       ? wo.work_type_colour
                       : 'var(--primary-color)'
                     return (
-                      <tr key={wo.id}>
+                      <tr
+                        key={wo.id}
+                        onDoubleClick={(e) => {
+                          if ((e.target as HTMLElement).closest('.cp-wo-pill-drag-handle')) {
+                            return
+                          }
+                          mountWoMw(wo.id)
+                        }}
+                      >
                         <td
-                          className="p-2 align-top border-bottom-1 surface-border"
+                          className="cp-planner-col-first p-2 align-top border-bottom-1 surface-border font-medium sticky left-0 bg-surface-ground cursor-pointer"
                           style={{
                             width: CP_FIRST_COL_MIN_PX,
                             minWidth: CP_FIRST_COL_MIN_PX,
                           }}
                         >
-                          <div className="font-medium">
+                          <div>
                             #{wo.wo_key}{' '}
                             <span className="font-normal">{wo.short_text}</span>
                           </div>
@@ -723,7 +825,7 @@ export default function CapacityPlannerAppPage() {
                             ))}
                             {layout ? (
                               <div
-                                className="absolute border-round-md flex align-items-stretch overflow-hidden shadow-1 cp-wo-pill cursor-grab"
+                                className="absolute border-round-md flex align-items-stretch overflow-hidden shadow-1 cp-wo-pill cursor-pointer"
                                 style={{
                                   left: `${layout.leftPct}%`,
                                   width: `${layout.widthPct}%`,
@@ -735,16 +837,6 @@ export default function CapacityPlannerAppPage() {
                                   zIndex: 1,
                                 }}
                                 title={t('capacity_planner.wo_move_tooltip')}
-                                draggable
-                                onDragStart={(ev) => {
-                                  ev.dataTransfer.setData(
-                                    WO_MOVE_MIME,
-                                    JSON.stringify({ workOrderId: wo.id }),
-                                  )
-                                  ev.dataTransfer.effectAllowed = 'move'
-                                  setWoMoveDragActive(true)
-                                }}
-                                onDragEnd={() => setWoMoveDragActive(false)}
                                 onDragOver={(e) => {
                                   if (dndTypesInclude(e.dataTransfer, SHIFT_SLOT_DRAG_MIME)) {
                                     e.preventDefault()
@@ -770,7 +862,20 @@ export default function CapacityPlannerAppPage() {
                                 }}
                                 aria-label={t('capacity_planner.wo_move_aria')}
                               >
-                                <div className="flex-shrink-0 surface-100 border-right-1 surface-border flex align-items-center justify-content-center">
+                                <div
+                                  className="cp-wo-pill-drag-handle flex-shrink-0 surface-100 border-right-1 surface-border flex align-items-center justify-content-center cursor-grab"
+                                  draggable
+                                  title={t('capacity_planner.wo_move_tooltip')}
+                                  onDragStart={(ev) => {
+                                    ev.dataTransfer.setData(
+                                      WO_MOVE_MIME,
+                                      JSON.stringify({ workOrderId: wo.id }),
+                                    )
+                                    ev.dataTransfer.effectAllowed = 'move'
+                                    setWoMoveDragActive(true)
+                                  }}
+                                  onDragEnd={() => setWoMoveDragActive(false)}
+                                >
                                   <WoPerforatedGrip />
                                 </div>
                                 <div className="flex-1 min-w-0" aria-hidden />
@@ -784,7 +889,7 @@ export default function CapacityPlannerAppPage() {
                 </tbody>
               </table>
               {!loading && (snapshot?.work_orders?.length ?? 0) === 0 ? (
-                <div className="p-5 text-center text-color-secondary text-sm border-top-1 surface-border">
+                <div className="cp-planner-empty p-5 text-center text-color-secondary text-sm border-top-1 surface-border">
                   {t('capacity_planner.empty_gantt')}
                 </div>
               ) : null}
@@ -796,7 +901,7 @@ export default function CapacityPlannerAppPage() {
               subTitle={t('capacity_planner.spc_hint', {
                 pct: shiftPlanningCapacityPct,
               })}
-              className="shadow-none border-1 surface-border border-round-lg overflow-hidden surface-ground"
+              className="cp-planner-inner-card shadow-none border-none border-round-lg overflow-hidden surface-ground"
               pt={{
                 title: { className: 'text-lg font-semibold mb-0' },
                 subTitle: {
@@ -806,14 +911,16 @@ export default function CapacityPlannerAppPage() {
               }}
             >
               <div
-                className="overflow-auto border-top-1 surface-border"
+                ref={utilScrollRef}
+                className="cp-planner-scroll overflow-auto border-top-1 surface-border"
                 style={{ maxHeight: 'min(44vh, 480px)' }}
+                onScroll={onUtilTableScroll}
               >
-              <table className="w-full text-xs border-collapse">
+              <table className="cp-planner-table w-full text-xs border-collapse">
                 <thead>
                   <tr>
                     <th
-                      className="text-left p-2 border-bottom-1 surface-border white-space-nowrap sticky left-0 bg-surface-ground z-1"
+                      className="cp-planner-col-first text-left p-2 border-bottom-1 surface-border white-space-nowrap sticky left-0 bg-surface-ground"
                       style={{
                         width: CP_FIRST_COL_MIN_PX,
                         minWidth: CP_FIRST_COL_MIN_PX,
@@ -824,7 +931,7 @@ export default function CapacityPlannerAppPage() {
                     {dateList.map((ymd) => (
                       <th
                         key={ymd}
-                        className="p-2 border-bottom-1 surface-border text-center white-space-nowrap"
+                        className="p-2 border-bottom-1 border-left-1 surface-border text-center white-space-nowrap"
                         style={{ minWidth: CP_DAY_COL_MIN_PX }}
                       >
                         {formatDate(`${ymd}T12:00:00.000Z`)}
@@ -836,7 +943,7 @@ export default function CapacityPlannerAppPage() {
                   {employeesInRange.map((emp) => (
                     <tr key={emp.id}>
                       <td
-                        className="p-2 border-bottom-1 surface-border font-medium sticky left-0 bg-surface-ground z-1"
+                        className="cp-planner-col-first p-2 border-bottom-1 surface-border font-medium sticky left-0 bg-surface-ground"
                         style={{
                           width: CP_FIRST_COL_MIN_PX,
                           minWidth: CP_FIRST_COL_MIN_PX,
@@ -863,7 +970,7 @@ export default function CapacityPlannerAppPage() {
                         return (
                           <td
                             key={ymd}
-                            className={`p-2 border-bottom-1 surface-border text-center align-middle${hasShiftCapacity ? ' cp-shift-slot-drag-source cursor-grab' : ''}`}
+                            className={`p-2 border-bottom-1 border-left-1 surface-border text-center align-middle${hasShiftCapacity ? ' cp-shift-slot-drag-source cursor-grab' : ''}`}
                             style={{ minWidth: CP_DAY_COL_MIN_PX }}
                             draggable={hasShiftCapacity}
                             onDragStart={
@@ -904,10 +1011,56 @@ export default function CapacityPlannerAppPage() {
                       })}
                     </tr>
                   ))}
+                  {employeesInRange.length > 0 ? (
+                    <tr className="cp-planner-util-sum-row">
+                      <td
+                        className="cp-planner-col-first p-2 border-bottom-1 surface-border font-semibold sticky left-0 bg-surface-ground border-top-2"
+                        style={{
+                          width: CP_FIRST_COL_MIN_PX,
+                          minWidth: CP_FIRST_COL_MIN_PX,
+                        }}
+                      >
+                        {t('capacity_planner.row_sum_label')}
+                      </td>
+                      {dateList.map((ymd, idx) => {
+                        const { cap, planned } = capacityGridColumnTotals[idx]!
+                        const hasShiftCapacity = cap > 1e-6
+                        const util = utilizationClass(cap, planned)
+                        const utilClass =
+                          util === 'low'
+                            ? 'capacity-planner-util--low'
+                            : util === 'mid'
+                              ? 'capacity-planner-util--mid'
+                              : util === 'high'
+                                ? 'capacity-planner-util--high'
+                                : ''
+                        return (
+                          <td
+                            key={ymd}
+                            className="p-2 border-bottom-1 border-left-1 surface-border text-center align-middle border-top-2"
+                            style={{ minWidth: CP_DAY_COL_MIN_PX }}
+                          >
+                            {!hasShiftCapacity ? (
+                              <span className="text-color-secondary">—</span>
+                            ) : (
+                              <span
+                                className={`capacity-planner-util text-sm font-semibold ${utilClass}`.trim()}
+                              >
+                                {t('capacity_planner.cell_planned_total', {
+                                  planned: planned.toFixed(2),
+                                  total: cap.toFixed(2),
+                                })}
+                              </span>
+                            )}
+                          </td>
+                        )
+                      })}
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
               {!loading && employeesInRange.length === 0 ? (
-                <div className="p-5 text-center text-color-secondary text-sm border-top-1 surface-border">
+                <div className="cp-planner-empty p-5 text-center text-color-secondary text-sm border-top-1 surface-border">
                   {t('capacity_planner.empty_capacity')}
                 </div>
               ) : null}
@@ -917,8 +1070,8 @@ export default function CapacityPlannerAppPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={t('capacity_planner.modal_title')}
+      <AppCrudDialog
+        title={t('capacity_planner.modal_title')}
         visible={Boolean(modalCtx)}
         dismissableMask={!modalSaving}
         onHide={() => !modalSaving && setModalCtx(null)}
@@ -1067,7 +1220,7 @@ export default function CapacityPlannerAppPage() {
             </Card>
           </div>
         ) : null}
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

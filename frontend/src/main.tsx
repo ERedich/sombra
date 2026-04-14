@@ -19,6 +19,8 @@ import { AppToolbarSearchFocusProvider } from './layout/AppToolbarSearchFocus'
 import { OpenLastAppShortcutProvider } from './layout/OpenLastAppShortcutProvider'
 import { KiraAssistantProvider } from './layout/KiraAssistantProvider'
 import { QuickAccessProvider } from './layout/QuickAccessProvider'
+import { MinimizedDockStackProvider } from './components/app-crud-dialog'
+import { WorkOrderMwProvider } from './layout/WorkOrderMwProvider'
 import { WorkOrderNotificationsProvider } from './notifications/WorkOrderNotificationsContext'
 
 registerPrimeLocales()
@@ -30,6 +32,8 @@ createRoot(document.getElementById('root')!).render(
         <AppParametersProvider>
           <PrimeLocaleSync />
           <HotkeySettingsProvider>
+            <MinimizedDockStackProvider>
+            <WorkOrderMwProvider>
             <WorkOrderNotificationsProvider>
               <OpenLastAppShortcutProvider>
                 <AppToolbarSearchFocusProvider>
@@ -45,6 +49,8 @@ createRoot(document.getElementById('root')!).render(
                 </AppToolbarSearchFocusProvider>
               </OpenLastAppShortcutProvider>
             </WorkOrderNotificationsProvider>
+            </WorkOrderMwProvider>
+            </MinimizedDockStackProvider>
           </HotkeySettingsProvider>
         </AppParametersProvider>
       </PrimeReactProvider>

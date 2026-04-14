@@ -7,7 +7,7 @@ import { Card } from 'primereact/card'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../components/app-crud-dialog'
 import { Dropdown } from 'primereact/dropdown'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
@@ -744,8 +744,8 @@ export default function UsersPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={editingId ? t('users.dialog_edit') : t('users.dialog_new')}
+      <AppCrudDialog
+        title={editingId ? t('users.dialog_edit') : t('users.dialog_new')}
         visible={dialogOpen}
         onHide={() => {
           setFieldErrors({})
@@ -1056,7 +1056,7 @@ export default function UsersPage() {
             </div>
           </TabPanel>
         </TabView>
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

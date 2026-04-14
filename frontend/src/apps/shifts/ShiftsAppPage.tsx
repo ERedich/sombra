@@ -10,7 +10,7 @@ import { Card } from 'primereact/card'
 import { Column } from 'primereact/column'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
@@ -409,12 +409,12 @@ export default function ShiftsAppPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={editingId ? t('shifts.edit') : t('shifts.create')}
+      <AppCrudDialog
+        title={editingId ? t('shifts.edit') : t('shifts.create')}
         visible={dialogOpen}
         onHide={() => setDialogOpen(false)}
         style={{ width: 'min(32rem, 96vw)' }}
-        dismissableMask
+        dismissableMask={!saving}
         footer={
           <div className="flex justify-content-end gap-2">
             <Button
@@ -510,7 +510,7 @@ export default function ShiftsAppPage() {
             />
           </div>
         </div>
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

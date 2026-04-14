@@ -11,7 +11,7 @@ import { Card } from 'primereact/card'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { Dropdown } from 'primereact/dropdown'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
@@ -898,8 +898,8 @@ export default function WorkPlanningAppPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={editingId ? t('wp.dialog_edit') : t('wp.dialog_new')}
+      <AppCrudDialog
+        title={editingId ? t('wp.dialog_edit') : t('wp.dialog_new')}
         visible={dialogOpen}
         onHide={closeWorkPlanDialog}
         dismissableMask={!saving}
@@ -1172,7 +1172,7 @@ export default function WorkPlanningAppPage() {
             </div>
           </TabPanel>
         </TabView>
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

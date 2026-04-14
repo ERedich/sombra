@@ -8,13 +8,14 @@ import {
   useRef,
   useState,
 } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { Toast } from 'primereact/toast'
 import type { ToastMessage } from 'primereact/toast'
 import { ApiError, apiBase, apiJson } from '../api'
 import { getToken } from '../auth'
+import { useWorkOrderMw } from '../layout/WorkOrderMwProvider'
 
 export type WorkOrderNotificationItem = {
   id: string
@@ -74,7 +75,7 @@ export function WorkOrderNotificationsProvider({
   children: ReactNode
 }) {
   const location = useLocation()
-  const navigate = useNavigate()
+  const { mountWoMw } = useWorkOrderMw()
   const { t } = useTranslation()
   const toastRef = useRef<Toast>(null)
   const [items, setItems] = useState<WorkOrderNotificationItem[]>([])
@@ -136,9 +137,9 @@ export function WorkOrderNotificationsProvider({
       const id = workOrderId.trim()
       if (!id) return
       toastRef.current?.clear()
-      navigate(`/work-orders?workOrderId=${encodeURIComponent(id)}`)
+      mountWoMw(id)
     },
-    [navigate],
+    [mountWoMw],
   )
 
   useEffect(() => {

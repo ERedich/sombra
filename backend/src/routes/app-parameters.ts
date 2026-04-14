@@ -14,6 +14,7 @@ import {
   getWoAppSettings,
   IDLE_SESSION_TIMEOUT_MAX_MINUTES,
   isGeneralDtfId,
+  isGeneralFdwId,
   isPgUndefinedRelationError,
   mergeWorkOrderStatusColoursPatch,
   parseWoAppSettingsJson,
@@ -157,6 +158,7 @@ router.patch('/', requireAdmin, async (req, res) => {
   const generalBody = body.general
   let patchIdleMinutes: number | undefined
   let patchDtf: string | undefined
+  let patchFdw: string | undefined
   let patchAskForSiteChangeOnLogin: boolean | undefined
   if (generalBody !== undefined) {
     if (typeof generalBody !== 'object' || generalBody === null) {
@@ -189,6 +191,15 @@ router.patch('/', requireAdmin, async (req, res) => {
         return
       }
       patchDtf = g.dtf
+    }
+    if (g.fdw !== undefined) {
+      if (!isGeneralFdwId(g.fdw)) {
+        res.status(400).json({
+          error: 'general.fdw must be one of: monday, sunday.',
+        })
+        return
+      }
+      patchFdw = g.fdw
     }
     if (g.ask_for_site_change_on_login !== undefined) {
       if (typeof g.ask_for_site_change_on_login !== 'boolean') {
@@ -262,6 +273,7 @@ router.patch('/', requireAdmin, async (req, res) => {
   const hasGeneralPatch =
     patchIdleMinutes !== undefined ||
     patchDtf !== undefined ||
+    patchFdw !== undefined ||
     patchAskForSiteChangeOnLogin !== undefined
   const hasShiftsPatch =
     patchShiftLoginRecognition !== undefined ||
@@ -404,6 +416,9 @@ router.patch('/', requireAdmin, async (req, res) => {
       }
       if (patchDtf !== undefined) {
         baseG.dtf = patchDtf
+      }
+      if (patchFdw !== undefined) {
+        baseG.fdw = patchFdw
       }
       if (patchAskForSiteChangeOnLogin !== undefined) {
         baseG.ask_for_site_change_on_login = patchAskForSiteChangeOnLogin

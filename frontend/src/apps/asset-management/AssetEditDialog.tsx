@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from 'primereact/button'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { Toast } from 'primereact/toast'
 import { ApiError, apiBlob, apiFetch, apiJson } from '../../api'
 import { AssetFormDialogDefault } from './AssetFormDialogDefault'
@@ -357,8 +357,8 @@ export function AssetEditDialog({
   return (
     <>
       <Toast ref={toast} position="top-right" />
-      <Dialog
-        header="Edit asset"
+      <AppCrudDialog
+        title="Edit asset"
         visible={open && asset != null}
         onHide={closeDialog}
         dismissableMask={!saving}
@@ -368,7 +368,7 @@ export function AssetEditDialog({
         footer={asset ? assetFormFooter : null}
       >
         {asset ? assetFormInner : null}
-      </Dialog>
+      </AppCrudDialog>
     </>
   )
 }

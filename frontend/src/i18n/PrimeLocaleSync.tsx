@@ -2,6 +2,7 @@ import { useContext, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { addLocale, PrimeReactContext } from 'primereact/api'
 import { useAppParameters } from '../layout/AppParametersProvider'
+import { primeFirstDayOfWeekFromFdw } from '../utils/firstDayOfWeekPreference'
 import { primeDateFormatForDtf } from '../utils/dateTimeFormatPreference'
 import { primeLocaleForAppLocale } from './registerPrimeLocales'
 
@@ -12,13 +13,14 @@ import { primeLocaleForAppLocale } from './registerPrimeLocales'
 export function PrimeLocaleSync() {
   const { i18n } = useTranslation()
   const ctx = useContext(PrimeReactContext)
-  const { dtf } = useAppParameters()
+  const { dtf, fdw } = useAppParameters()
 
   useEffect(() => {
     const fmt = primeDateFormatForDtf(dtf)
-    addLocale('de', { dateFormat: fmt })
-    addLocale('en', { dateFormat: fmt })
-  }, [dtf])
+    const firstDayOfWeek = primeFirstDayOfWeekFromFdw(fdw)
+    addLocale('de', { dateFormat: fmt, firstDayOfWeek })
+    addLocale('en', { dateFormat: fmt, firstDayOfWeek })
+  }, [dtf, fdw])
 
   useEffect(() => {
     if (!ctx?.setLocale) return

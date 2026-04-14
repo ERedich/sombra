@@ -101,7 +101,7 @@ router.get('/snapshot', async (req, res) => {
     `${WORK_ORDERS_LIST_SQL}
      WHERE ${woOverlap}
      ${siteFilterWo}
-     ORDER BY w.plan_start ASC NULLS LAST, w.wo_key ASC`,
+     ORDER BY w.wo_key DESC`,
     woParams,
   )
 

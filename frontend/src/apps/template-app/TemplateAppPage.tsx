@@ -11,7 +11,7 @@ import { Card } from 'primereact/card'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
@@ -385,8 +385,8 @@ export default function TemplateAppPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={
+      <AppCrudDialog
+        title={
           editingId ? t('template.dialog_edit') : t('template.dialog_new')
         }
         visible={dialogOpen}
@@ -440,7 +440,7 @@ export default function TemplateAppPage() {
             />
           </div>
         </div>
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

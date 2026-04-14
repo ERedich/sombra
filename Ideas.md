@@ -9,3 +9,4 @@ Work order subscriptions let users receive timely updates for specific work orde
 - Dynamic change from generic to virtual table
 - Binding layouts to presets
 - Clickable notification WO
+- Half-day work order badge (visual indicator for partial-day / half-day WOs)

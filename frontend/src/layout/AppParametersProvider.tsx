@@ -12,6 +12,11 @@ import { useLocation } from 'react-router-dom'
 import { apiJson } from '../api'
 import { getToken } from '../auth'
 import {
+  DEFAULT_GENERAL_FDW,
+  isGeneralFdwId,
+  type GeneralFdwId,
+} from '../utils/firstDayOfWeekPreference'
+import {
   DEFAULT_GENERAL_DTF,
   isGeneralDtfId,
   setDateTimeFormatPreference,
@@ -23,6 +28,7 @@ const IDLE_SESSION_MAX_MINUTES = 10080
 export type AppParametersGeneralSnapshot = {
   idle_session_timeout_minutes: number
   dtf: GeneralDtfId
+  fdw: GeneralFdwId
   ask_for_site_change_on_login: boolean
 }
 
@@ -33,6 +39,7 @@ type AppParametersApiResponse = {
   general?: {
     idle_session_timeout_minutes?: number
     dtf?: string
+    fdw?: string
     ask_for_site_change_on_login?: boolean
   }
   shifts?: {
@@ -67,16 +74,21 @@ const AppParametersContext = createContext<AppParametersContextValue | null>(
 )
 
 function normalizeGeneral(
-  raw: AppParametersApiResponse['general'] | undefined,
+  raw:
+    | AppParametersApiResponse['general']
+    | AppParametersGeneralSnapshot
+    | undefined,
 ): AppParametersGeneralSnapshot {
   const idleRaw = raw?.idle_session_timeout_minutes
   const idle =
     typeof idleRaw === 'number' && Number.isInteger(idleRaw) ? idleRaw : 0
   const idleClamped = Math.min(Math.max(0, idle), IDLE_SESSION_MAX_MINUTES)
   const dtf = isGeneralDtfId(raw?.dtf) ? raw.dtf : DEFAULT_GENERAL_DTF
+  const fdw = isGeneralFdwId(raw?.fdw) ? raw.fdw : DEFAULT_GENERAL_FDW
   return {
     idle_session_timeout_minutes: idleClamped,
     dtf,
+    fdw,
     ask_for_site_change_on_login:
       raw?.ask_for_site_change_on_login === true,
   }
@@ -111,6 +123,7 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<AppParametersGeneralSnapshot>(() => ({
     idle_session_timeout_minutes: 0,
     dtf: DEFAULT_GENERAL_DTF,
+    fdw: DEFAULT_GENERAL_FDW,
     ask_for_site_change_on_login: false,
   }))
   const [shiftsSnapshot, setShiftsSnapshot] = useState<AppParametersShiftsSnapshot>(
@@ -127,6 +140,7 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
         setSnapshot({
           idle_session_timeout_minutes: 0,
           dtf: DEFAULT_GENERAL_DTF,
+          fdw: DEFAULT_GENERAL_FDW,
           ask_for_site_change_on_login: false,
         })
         setShiftsSnapshot(normalizeShiftsSnapshot(undefined))
@@ -148,6 +162,7 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
         setSnapshot({
           idle_session_timeout_minutes: 0,
           dtf: DEFAULT_GENERAL_DTF,
+          fdw: DEFAULT_GENERAL_FDW,
           ask_for_site_change_on_login: false,
         })
         setShiftsSnapshot(normalizeShiftsSnapshot(undefined))

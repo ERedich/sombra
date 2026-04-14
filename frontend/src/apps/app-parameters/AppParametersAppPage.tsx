@@ -24,6 +24,12 @@ import {
   isGeneralDtfId,
   type GeneralDtfId,
 } from '../../utils/dateTimeFormatPreference'
+import {
+  DEFAULT_GENERAL_FDW,
+  GENERAL_FDW_IDS,
+  isGeneralFdwId,
+  type GeneralFdwId,
+} from '../../utils/firstDayOfWeekPreference'
 
 const IDLE_SESSION_MAX_MINUTES = 10080
 
@@ -53,6 +59,7 @@ type AppParametersResponse = {
   general: {
     idle_session_timeout_minutes: number
     dtf?: string
+    fdw?: string
     ask_for_site_change_on_login?: boolean
   }
   shifts?: {
@@ -67,6 +74,11 @@ const DTF_LABEL_KEYS: Record<GeneralDtfId, string> = {
   ddmmyy_hhmm: 'app_params.general_dtf_opt_ddmmyy',
   mmddyyyy_hhmm: 'app_params.general_dtf_opt_mmddyyyy',
   mmddyy_hhmm: 'app_params.general_dtf_opt_mmddyy',
+}
+
+const FDW_LABEL_KEYS: Record<GeneralFdwId, string> = {
+  monday: 'app_params.general_fdw_opt_monday',
+  sunday: 'app_params.general_fdw_opt_sunday',
 }
 
 export default function AppParametersAppPage() {
@@ -113,6 +125,10 @@ export default function AppParametersAppPage() {
   const [baselineDtf, setBaselineDtf] = useState<GeneralDtfId>(
     DEFAULT_GENERAL_DTF,
   )
+  const [fdw, setFdw] = useState<GeneralFdwId>(DEFAULT_GENERAL_FDW)
+  const [baselineFdw, setBaselineFdw] = useState<GeneralFdwId>(
+    DEFAULT_GENERAL_FDW,
+  )
   const [askSiteChangeOnLogin, setAskSiteChangeOnLogin] = useState(false)
   const [baselineAskSiteChangeOnLogin, setBaselineAskSiteChangeOnLogin] =
     useState(false)
@@ -137,6 +153,7 @@ export default function AppParametersAppPage() {
   const generalDirty =
     idleSessionTimeoutMinutes !== baselineIdleSessionTimeoutMinutes ||
     dtf !== baselineDtf ||
+    fdw !== baselineFdw ||
     askSiteChangeOnLogin !== baselineAskSiteChangeOnLogin
   const shiftsDirty =
     shiftSlr !== baselineShiftSlr ||
@@ -221,6 +238,11 @@ export default function AppParametersAppPage() {
         : DEFAULT_GENERAL_DTF
       setDtf(dtfNext)
       setBaselineDtf(dtfNext)
+      const fdwNext = isGeneralFdwId(data.general?.fdw)
+        ? data.general!.fdw
+        : DEFAULT_GENERAL_FDW
+      setFdw(fdwNext)
+      setBaselineFdw(fdwNext)
       const askSite =
         data.general?.ask_for_site_change_on_login === true
       setAskSiteChangeOnLogin(askSite)
@@ -275,6 +297,7 @@ export default function AppParametersAppPage() {
         body.general = {
           idle_session_timeout_minutes: idleSessionTimeoutMinutes,
           dtf,
+          fdw,
           ask_for_site_change_on_login: askSiteChangeOnLogin,
         }
       }
@@ -299,6 +322,9 @@ export default function AppParametersAppPage() {
           dtf: isGeneralDtfId(data.general.dtf)
             ? data.general.dtf
             : DEFAULT_GENERAL_DTF,
+          fdw: isGeneralFdwId(data.general.fdw)
+            ? data.general.fdw
+            : DEFAULT_GENERAL_FDW,
           ask_for_site_change_on_login:
             data.general.ask_for_site_change_on_login === true,
         })
@@ -313,6 +339,7 @@ export default function AppParametersAppPage() {
       setBaselineStatusColours({ ...statusColours })
       setBaselineIdleSessionTimeoutMinutes(idleSessionTimeoutMinutes)
       setBaselineDtf(dtf)
+      setBaselineFdw(fdw)
       setBaselineAskSiteChangeOnLogin(askSiteChangeOnLogin)
       if (shiftsDirty && data.shifts) {
         const slr = data.shifts.shift_login_recognition !== false
@@ -365,6 +392,7 @@ export default function AppParametersAppPage() {
     generalDirty,
     idleSessionTimeoutMinutes,
     dtf,
+    fdw,
     askSiteChangeOnLogin,
     woDirty,
     shiftsDirty,
@@ -1074,6 +1102,37 @@ export default function AppParametersAppPage() {
                             className="text-sm cursor-pointer"
                           >
                             {t(DTF_LABEL_KEYS[id])}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-column gap-2">
+                    <h2 className="text-base font-semibold m-0">
+                      {t('app_params.general_fdw_heading')}
+                    </h2>
+                    <p className="text-sm text-color-secondary m-0 line-height-3">
+                      {t('app_params.general_fdw_help')}
+                    </p>
+                    <div
+                      className="flex flex-column gap-2 align-items-start"
+                      role="radiogroup"
+                      aria-label={t('app_params.general_fdw_heading')}
+                    >
+                      {GENERAL_FDW_IDS.map((id) => (
+                        <div key={id} className="flex align-items-center gap-2">
+                          <RadioButton
+                            inputId={`app_params_fdw_${id}`}
+                            onChange={() => setFdw(id)}
+                            checked={fdw === id}
+                            disabled={loading || !isAdmin}
+                          />
+                          <label
+                            htmlFor={`app_params_fdw_${id}`}
+                            className="text-sm cursor-pointer"
+                          >
+                            {t(FDW_LABEL_KEYS[id])}
                           </label>
                         </div>
                       ))}

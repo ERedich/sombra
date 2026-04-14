@@ -10,7 +10,7 @@ import { Card } from 'primereact/card'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
@@ -467,8 +467,8 @@ export default function CategoriesAppPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={
+      <AppCrudDialog
+        title={
           editingId ? t('categories.dialog_edit') : t('categories.dialog_new')
         }
         visible={dialogOpen}
@@ -522,7 +522,7 @@ export default function CategoriesAppPage() {
             />
           </div>
         </div>
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

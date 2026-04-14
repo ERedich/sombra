@@ -6,7 +6,7 @@ import type { TFunction } from 'i18next'
 import { Checkbox } from 'primereact/checkbox'
 import { Column } from 'primereact/column'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../app-crud-dialog'
 import { Toast } from 'primereact/toast'
 import { ApiError, apiJson } from '../../api'
 import {
@@ -149,8 +149,8 @@ export function WorkInstructionViewModal({
   const showDoneCol = mode === 'wo'
 
   return (
-    <Dialog
-      header={t('wi.view_title')}
+    <AppCrudDialog
+      title={t('wi.view_title')}
       visible={visible}
       onHide={onHide}
       dismissableMask
@@ -212,6 +212,6 @@ export function WorkInstructionViewModal({
           />
         ) : null}
       </DataTable>
-    </Dialog>
+    </AppCrudDialog>
   )
 }

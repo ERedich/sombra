@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from 'primereact/button'
 import { Card } from 'primereact/card'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../../components/app-crud-dialog'
 import { InputText } from 'primereact/inputtext'
 import { Paginator, type PaginatorPageChangeEvent } from 'primereact/paginator'
 import { Tag } from 'primereact/tag'
@@ -507,13 +507,12 @@ export default function AuditLogAppPage() {
         </Card>
       </div>
 
-      <Dialog
-        header="Audit entry detail"
+      <AppCrudDialog
+        title="Audit entry detail"
         visible={detailEntry !== null}
         onHide={() => setDetailEntry(null)}
         dismissableMask
         style={{ width: 'min(42rem, 96vw)' }}
-        maximizable
         footer={
           detailEntry ? (
             <div className="flex justify-content-between align-items-center flex-wrap gap-2">
@@ -619,7 +618,7 @@ export default function AuditLogAppPage() {
             </div>
           </div>
         ) : null}
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }

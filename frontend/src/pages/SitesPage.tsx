@@ -9,7 +9,7 @@ import { ColorPicker } from 'primereact/colorpicker'
 import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../components/app-crud-dialog'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
@@ -501,8 +501,8 @@ export default function SitesPage() {
         </Card>
       </div>
 
-      <Dialog
-        header={editingId ? t('sites.dialog_edit') : t('sites.dialog_new')}
+      <AppCrudDialog
+        title={editingId ? t('sites.dialog_edit') : t('sites.dialog_new')}
         visible={dialogOpen}
         onHide={() => setDialogOpen(false)}
         dismissableMask={!saving}
@@ -585,7 +585,7 @@ export default function SitesPage() {
             </label>
           </div>
         </div>
-      </Dialog>
+      </AppCrudDialog>
     </AppShell>
   )
 }
