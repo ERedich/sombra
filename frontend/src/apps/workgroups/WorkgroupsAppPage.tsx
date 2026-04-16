@@ -16,6 +16,7 @@ import { PickList } from 'primereact/picklist'
 import { ProgressSpinner } from 'primereact/progressspinner'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
+import { InputNumber } from 'primereact/inputnumber'
 import { InputText } from 'primereact/inputtext'
 import { Toast } from 'primereact/toast'
 import { ApiError, apiJson } from '../../api'
@@ -27,6 +28,7 @@ import {
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
 import { AppShell } from '../../layout/AppShell'
+import { useAppParameters } from '../../layout/AppParametersProvider'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../../table-wizard'
 import {
@@ -49,6 +51,9 @@ export type Workgroup = {
   costcenter_id: string | null
   costcenter_key: string | null
   costcenter_name: string | null
+  /** Hourly rate; API may return string from numeric column. */
+  hour_rate?: string | number | null
+  hour_rate_currency?: string | null
   created_at: string
   updated_at: string
   created_by: string | null
@@ -130,8 +135,24 @@ function costcenterBody(row: Workgroup, emDash: string) {
   return k || n || emDash
 }
 
+function parseWorkgroupHourRate(
+  v: string | number | null | undefined,
+): number | null {
+  if (v === null || v === undefined) return null
+  const n = typeof v === 'number' ? v : Number(String(v).trim())
+  return Number.isFinite(n) ? n : null
+}
+
+function hourRateBody(row: Workgroup, emDash: string) {
+  const rate = parseWorkgroupHourRate(row.hour_rate)
+  const cur = row.hour_rate_currency?.trim().toUpperCase() ?? ''
+  if (rate === null || !cur) return emDash
+  return `${rate} ${cur}`
+}
+
 export default function WorkgroupsAppPage() {
   const { t } = useTranslation()
+  const { currencies } = useAppParameters()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const workgroupIdParam = searchParams.get('workgroupId')?.trim() ?? ''
@@ -149,6 +170,8 @@ export default function WorkgroupsAppPage() {
   const [formKey, setFormKey] = useState('')
   const [formName, setFormName] = useState('')
   const [formCostcenterId, setFormCostcenterId] = useState<string | null>(null)
+  const [formHourRate, setFormHourRate] = useState<number | null>(null)
+  const [formHourCurrency, setFormHourCurrency] = useState<string | null>(null)
   const [selected, setSelected] = useState<Workgroup | null>(null)
   const [search, setSearch] = useState('')
   const [membersOpen, setMembersOpen] = useState(false)
@@ -181,6 +204,13 @@ export default function WorkgroupsAppPage() {
         sortable: true,
         sortField: 'costcenter_key',
         body: (row) => costcenterBody(row, emDash),
+      },
+      {
+        field: 'hour_rate',
+        headerKey: 'workgroups.col_hour_rate',
+        sortable: true,
+        sortField: 'hour_rate',
+        body: (row) => hourRateBody(row, emDash),
       },
       {
         field: 'created_at',
@@ -244,6 +274,7 @@ export default function WorkgroupsAppPage() {
         c.name.toLowerCase().includes(q) ||
         (c.costcenter_key?.toLowerCase().includes(q) ?? false) ||
         (c.costcenter_name?.toLowerCase().includes(q) ?? false) ||
+        hourRateBody(c, '').toLowerCase().includes(q) ||
         c.created_at.toLowerCase().includes(q) ||
         c.updated_at.toLowerCase().includes(q) ||
         formatDateTime(c.created_at).toLowerCase().includes(q) ||
@@ -333,6 +364,13 @@ export default function WorkgroupsAppPage() {
     void loadWorkgroups()
     void loadRefs()
   }, [loadWorkgroups, loadRefs])
+
+  const currencyOptionsForForm = useMemo(() => {
+    return currencies.map((code) => ({
+      label: code,
+      value: code,
+    }))
+  }, [currencies])
 
   const costcenterOptionsForForm = useMemo(() => {
     const sid = editingId
@@ -509,6 +547,8 @@ export default function WorkgroupsAppPage() {
     setFormKey('')
     setFormName('')
     setFormCostcenterId(null)
+    setFormHourRate(null)
+    setFormHourCurrency(null)
     setDialogOpen(true)
   }
 
@@ -519,6 +559,9 @@ export default function WorkgroupsAppPage() {
     setFormKey(row.key)
     setFormName(row.name)
     setFormCostcenterId(row.costcenter_id)
+    setFormHourRate(parseWorkgroupHourRate(row.hour_rate))
+    const cur = row.hour_rate_currency?.trim().toUpperCase() ?? null
+    setFormHourCurrency(cur && cur.length === 3 ? cur : null)
     setDialogOpen(true)
   }
 
@@ -529,8 +572,26 @@ export default function WorkgroupsAppPage() {
       showError('Key and name are required.')
       return
     }
+    if (formHourRate !== null && !formHourCurrency) {
+      showError(t('workgroups.err_hour_rate_currency'))
+      return
+    }
+    if (
+      formHourCurrency &&
+      !currencies.map((c) => c.toUpperCase()).includes(formHourCurrency)
+    ) {
+      showError(t('workgroups.err_hour_rate_currency_invalid'))
+      return
+    }
     const body: Record<string, unknown> = { key, name }
     body.costcenter_id = formCostcenterId
+    if (formHourRate === null) {
+      body.hour_rate = null
+      body.hour_rate_currency = null
+    } else {
+      body.hour_rate = formHourRate
+      body.hour_rate_currency = formHourCurrency
+    }
 
     setSaving(true)
     try {
@@ -843,6 +904,64 @@ export default function WorkgroupsAppPage() {
               className="w-full"
               disabled={saving}
             />
+          </div>
+          <div className="flex flex-column gap-2">
+            <span className="text-sm font-medium" id="wg-hour-rate-group-label">
+              {t('workgroups.col_hour_rate')}
+            </span>
+            <div
+              className="flex gap-2 align-items-end flex-wrap"
+              aria-labelledby="wg-hour-rate-group-label"
+            >
+              <div className="flex flex-column gap-2 flex-1" style={{ minWidth: '8rem' }}>
+                <label htmlFor="wg-hour-rate" className="text-xs text-color-secondary">
+                  {t('workgroups.field_hour_rate')}
+                </label>
+                <InputNumber
+                  id="wg-hour-rate"
+                  value={formHourRate}
+                  onValueChange={(e) => {
+                    const v = e.value
+                    const next =
+                      v === null || v === undefined || typeof v !== 'number'
+                        ? null
+                        : v
+                    setFormHourRate(next)
+                    if (next === null) {
+                      setFormHourCurrency(null)
+                    } else {
+                      setFormHourCurrency((cur) => {
+                        if (cur) return cur
+                        const d = currencies[0]?.toUpperCase() ?? null
+                        return d
+                      })
+                    }
+                  }}
+                  min={0}
+                  minFractionDigits={0}
+                  maxFractionDigits={4}
+                  className="w-full"
+                  inputClassName="w-full"
+                  disabled={saving}
+                />
+              </div>
+              <div className="flex flex-column gap-2 flex-1" style={{ minWidth: '8rem' }}>
+                <label htmlFor="wg-hour-curr" className="text-xs text-color-secondary">
+                  {t('workgroups.field_hour_rate_currency')}
+                </label>
+                <Dropdown
+                  id="wg-hour-curr"
+                  value={formHourCurrency}
+                  options={currencyOptionsForForm}
+                  onChange={(e) =>
+                    setFormHourCurrency((e.value as string | null) ?? null)
+                  }
+                  className="w-full"
+                  disabled={saving || formHourRate === null}
+                  showClear={formHourRate !== null}
+                />
+              </div>
+            </div>
           </div>
         </div>
       </AppCrudDialog>

@@ -10,6 +10,11 @@ import {
 import { pool } from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { fieldChanges, redactForAudit, writeAudit } from '../audit/auditLog.js'
+import {
+  getShiftAppSettings,
+  isReservedDspShiftKey,
+  RESERVED_DSP_SHIFT_KEY,
+} from '../services/appSettings.js'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -194,6 +199,18 @@ router.post('/', async (req, res) => {
     res.status(400).json({ error: 'Key and name are required.' })
     return
   }
+  if (isReservedDspShiftKey(key)) {
+    res.status(400).json({ error: 'This shift key is reserved for the default shift plan.' })
+    return
+  }
+  const shiftAppSettings = await getShiftAppSettings(pool)
+  if (shiftAppSettings.apply_default_shift_plan) {
+    res.status(403).json({
+      error:
+        'Shift templates are managed in App Parameters while DSP (Apply Default Shift Plan) is enabled.',
+    })
+    return
+  }
   const time_start = parseTimeToPg(tsRaw)
   const time_end = parseTimeToPg(teRaw)
   if (!time_start || !time_end) {
@@ -293,6 +310,10 @@ router.patch('/:id', async (req, res) => {
       res.status(400).json({ error: 'Key cannot be empty.' })
       return
     }
+    if (isReservedDspShiftKey(key)) {
+      res.status(400).json({ error: 'This shift key is reserved for the default shift plan.' })
+      return
+    }
     updates.push(`key = $${n++}`)
     values.push(key)
   }
@@ -363,6 +384,15 @@ router.patch('/:id', async (req, res) => {
 
   const auditPath = `${req.baseUrl}${req.path}`
 
+  const shiftAppSettings = await getShiftAppSettings(pool)
+  if (shiftAppSettings.apply_default_shift_plan) {
+    res.status(403).json({
+      error:
+        'Shift templates are managed in App Parameters while DSP (Apply Default Shift Plan) is enabled.',
+    })
+    return
+  }
+
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -381,6 +411,11 @@ router.patch('/:id', async (req, res) => {
     if (!beforeRow || !canAccessSite(scope, beforeRow.site_id)) {
       await client.query('ROLLBACK')
       res.status(404).json({ error: 'Shift not found.' })
+      return
+    }
+    if (beforeRow.key === RESERVED_DSP_SHIFT_KEY) {
+      await client.query('ROLLBACK')
+      res.status(400).json({ error: 'This shift is managed by App Parameters (DSP).' })
       return
     }
 
@@ -437,6 +472,15 @@ router.delete('/:id', async (req, res) => {
   const auth = req.authUser!
   const scope = await loadUserSiteScope(pool, auth.id, auth.role)
 
+  const shiftAppSettings = await getShiftAppSettings(pool)
+  if (shiftAppSettings.apply_default_shift_plan) {
+    res.status(403).json({
+      error:
+        'Shift templates are managed in App Parameters while DSP (Apply Default Shift Plan) is enabled.',
+    })
+    return
+  }
+
   const auditPath = `${req.baseUrl}${req.path}`
 
   const client = await pool.connect()
@@ -457,6 +501,11 @@ router.delete('/:id', async (req, res) => {
     if (!beforeRow || !canAccessSite(scope, beforeRow.site_id)) {
       await client.query('ROLLBACK')
       res.status(404).json({ error: 'Shift not found.' })
+      return
+    }
+    if (beforeRow.key === RESERVED_DSP_SHIFT_KEY) {
+      await client.query('ROLLBACK')
+      res.status(400).json({ error: 'This shift is managed by App Parameters (DSP).' })
       return
     }
 

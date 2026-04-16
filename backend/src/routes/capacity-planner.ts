@@ -1,10 +1,16 @@
 import { Router } from 'express'
-import { accessibleSiteIds, loadUserSiteScope } from '../auth/siteScope.js'
+import {
+  accessibleSiteIds,
+  canAccessSite,
+  loadUserSiteScope,
+} from '../auth/siteScope.js'
 import { pool } from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { WORK_ORDERS_LIST_SQL } from './workOrderListSql.js'
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 type AssignmentRow = {
   id: string
@@ -31,8 +37,8 @@ SELECT sa.id, sa.shift_id, sa.assignment_date::text AS assignment_date,
        sa.absent_reason, sa.absent_remark,
        sa.created_at, sa.updated_at, sa.created_by, sa.updated_by,
        sh.key AS shift_key, sh.name AS shift_name,
-       sh.time_start::text AS time_start,
-       sh.time_end::text AS time_end,
+       COALESCE(sa.override_time_start, sh.time_start)::text AS time_start,
+       COALESCE(sa.override_time_end, sh.time_end)::text AS time_end,
        sh.available_weekdays,
        sh.site_id,
        e.key AS employee_key, e.name AS employee_name
@@ -60,11 +66,41 @@ router.get('/snapshot', async (req, res) => {
     return
   }
 
+  const workgroupIdRaw =
+    typeof req.query.workgroup_id === 'string' ? req.query.workgroup_id.trim() : ''
+  const workgroupId =
+    workgroupIdRaw && UUID_RE.test(workgroupIdRaw) ? workgroupIdRaw : null
+  if (workgroupIdRaw && !workgroupId) {
+    res.status(400).json({
+      error: 'workgroup_id query param must be a valid UUID when provided.',
+    })
+    return
+  }
+
   const auth = req.authUser!
   const scope = await loadUserSiteScope(pool, auth.id, auth.role)
 
+  if (workgroupId) {
+    const wgR = await pool.query<{ site_id: string }>(
+      `SELECT site_id FROM workgroups WHERE id = $1`,
+      [workgroupId],
+    )
+    const wgSite = wgR.rows[0]?.site_id
+    if (!wgSite) {
+      res.status(404).json({ error: 'Workgroup not found.' })
+      return
+    }
+    if (!canAccessSite(scope, wgSite)) {
+      res.status(403).json({ error: 'You cannot access this workgroup.' })
+      return
+    }
+  }
+
   let siteFilterWo = ''
   let siteFilterSa = ''
+  let wgFilterWo = ''
+  let wgFilterSa = ''
+  let wgFilterAlloc = ''
   const woParams: unknown[] = [dateFrom, dateTo]
   const saParams: unknown[] = [dateFrom, dateTo]
   let allocParams: unknown[] = [dateFrom, dateTo]
@@ -90,9 +126,24 @@ router.get('/snapshot', async (req, res) => {
     allocParams = [dateFrom, dateTo, allowed]
   }
 
+  if (workgroupId) {
+    wgFilterWo = ` AND w.workgroup_id = $${woParams.length + 1}::uuid`
+    woParams.push(workgroupId)
+    wgFilterSa = ` AND EXISTS (
+      SELECT 1 FROM workgroup_employees we
+      WHERE we.employee_id = sa.employee_id
+        AND we.workgroup_id = $${saParams.length + 1}::uuid
+    )`
+    saParams.push(workgroupId)
+    wgFilterAlloc = ` AND w.workgroup_id = $${allocParams.length + 1}::uuid`
+    allocParams.push(workgroupId)
+  }
+
+  /** WO included if planned window overlaps [date_from, date_to] on UTC calendar dates (inclusive). */
   const woOverlap = `
     w.plan_start IS NOT NULL
     AND w.plan_end IS NOT NULL
+    AND w.plan_start <> w.plan_end
     AND (w.plan_start AT TIME ZONE 'UTC')::date <= $2::date
     AND (w.plan_end AT TIME ZONE 'UTC')::date >= $1::date
   `
@@ -101,6 +152,7 @@ router.get('/snapshot', async (req, res) => {
     `${WORK_ORDERS_LIST_SQL}
      WHERE ${woOverlap}
      ${siteFilterWo}
+     ${wgFilterWo}
      ORDER BY w.wo_key DESC`,
     woParams,
   )
@@ -109,6 +161,7 @@ router.get('/snapshot', async (req, res) => {
     `${SHIFT_ASSIGNMENTS_LIST_SQL}
      WHERE sa.assignment_date >= $1::date AND sa.assignment_date <= $2::date
      ${siteFilterSa}
+     ${wgFilterSa}
      ORDER BY sa.assignment_date ASC, sh.key ASC, e.name ASC`,
     saParams,
   )
@@ -122,7 +175,8 @@ router.get('/snapshot', async (req, res) => {
          FROM work_order_capacity_allocations woca
          INNER JOIN work_orders w ON w.id = woca.work_order_id
          WHERE woca.allocation_date >= $1::date
-           AND woca.allocation_date <= $2::date`
+           AND woca.allocation_date <= $2::date
+           ${wgFilterAlloc}`
       : `SELECT woca.work_order_id::text AS work_order_id,
                 woca.employee_id::text AS employee_id,
                 woca.allocation_date::text AS allocation_date,
@@ -131,7 +185,8 @@ router.get('/snapshot', async (req, res) => {
          INNER JOIN work_orders w ON w.id = woca.work_order_id
          WHERE woca.allocation_date >= $1::date
            AND woca.allocation_date <= $2::date
-           AND w.site_id = ANY($3::uuid[])`
+           AND w.site_id = ANY($3::uuid[])
+           ${wgFilterAlloc}`
 
   const allocationsR = await pool.query<{
     work_order_id: string

@@ -10,6 +10,7 @@ import {
 import { pool } from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { fieldChanges, redactForAudit, writeAudit } from '../audit/auditLog.js'
+import { getGeneralAppSettings } from '../services/appSettings.js'
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -20,6 +21,8 @@ type WorkgroupTableRow = {
   key: string
   name: string
   costcenter_id: string | null
+  hour_rate: string | number | null
+  hour_rate_currency: string | null
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -60,6 +63,7 @@ async function fetchWorkgroupWithJoins(
 ): Promise<WorkgroupRow | undefined> {
   const r = await client.query<WorkgroupRow>(
     `SELECT wg.id, wg.site_id, wg.key, wg.name, wg.costcenter_id,
+            wg.hour_rate, wg.hour_rate_currency,
             wg.created_at, wg.updated_at, wg.created_by, wg.updated_by,
             st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
             cc.key AS costcenter_key, cc.name AS costcenter_name,
@@ -98,11 +102,168 @@ function rowToAuditRecord(row: WorkgroupTableRow): Record<string, unknown> {
   return row as unknown as Record<string, unknown>
 }
 
+function coalescePgNumericHourRate(
+  v: string | number | null | undefined,
+): number | null {
+  if (v === null || v === undefined) return null
+  const n = typeof v === 'number' ? v : Number(String(v).trim())
+  return Number.isFinite(n) ? n : null
+}
+
+function normalizeStoredCurrency(
+  v: string | null | undefined,
+): string | null {
+  if (v === null || v === undefined) return null
+  const u = String(v).trim().toUpperCase()
+  return u.length === 0 ? null : u
+}
+
+function parseBodyHourRate(
+  value: unknown,
+): number | null | 'invalid' {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return 'invalid'
+    return value
+  }
+  if (typeof value === 'string') {
+    const t = value.trim()
+    if (!t) return null
+    const n = Number(t.replace(',', '.'))
+    if (!Number.isFinite(n) || n < 0) return 'invalid'
+    return n
+  }
+  return 'invalid'
+}
+
+function parseBodyHourRateCurrency(
+  value: unknown,
+): string | null | 'invalid' {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'string') {
+    const u = value.trim().toUpperCase()
+    if (!u) return null
+    if (!/^[A-Z]{3}$/.test(u)) return 'invalid'
+    return u
+  }
+  return 'invalid'
+}
+
+async function assertHourRateAllowedByCurr(
+  client: PoolClient,
+  hourRate: number | null,
+  currency: string | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (hourRate === null && currency === null) return { ok: true }
+  if (hourRate === null && currency !== null) {
+    return {
+      ok: false,
+      error: 'hour_rate_currency cannot be set without hour_rate.',
+    }
+  }
+  if (hourRate !== null && currency === null) {
+    return {
+      ok: false,
+      error: 'hour_rate_currency is required when hour_rate is set.',
+    }
+  }
+  const g = await getGeneralAppSettings(client)
+  const allowed = new Set(g.currencies.map((c) => c.toUpperCase()))
+  if (!allowed.has(currency!)) {
+    return {
+      ok: false,
+      error:
+        'hour_rate_currency must be one of the currencies configured in app parameters (CURR).',
+    }
+  }
+  return { ok: true }
+}
+
+function mergeHourRateFieldsForPatch(
+  before: WorkgroupTableRow,
+  body: Record<string, unknown>,
+):
+  | { ok: false; error: string }
+  | {
+      ok: true
+      hour_rate: number | null
+      hour_rate_currency: string | null
+      touched: boolean
+    } {
+  const hasRate = Object.prototype.hasOwnProperty.call(body, 'hour_rate')
+  const hasCurr = Object.prototype.hasOwnProperty.call(
+    body,
+    'hour_rate_currency',
+  )
+  if (!hasRate && !hasCurr) {
+    return {
+      ok: true,
+      hour_rate: coalescePgNumericHourRate(before.hour_rate),
+      hour_rate_currency: normalizeStoredCurrency(before.hour_rate_currency),
+      touched: false,
+    }
+  }
+
+  let nextRate = coalescePgNumericHourRate(before.hour_rate)
+  let nextCurr = normalizeStoredCurrency(before.hour_rate_currency)
+
+  if (hasRate) {
+    const pr = parseBodyHourRate(body.hour_rate)
+    if (pr === 'invalid') {
+      return { ok: false, error: 'Invalid hour_rate.' }
+    }
+    if (pr === null) {
+      nextRate = null
+      nextCurr = null
+    } else {
+      nextRate = pr
+    }
+  }
+
+  if (hasCurr) {
+    const pc = parseBodyHourRateCurrency(body.hour_rate_currency)
+    if (pc === 'invalid') {
+      return { ok: false, error: 'Invalid hour_rate_currency.' }
+    }
+    if (nextRate === null) {
+      if (pc !== null) {
+        return {
+          ok: false,
+          error: 'hour_rate_currency cannot be set without hour_rate.',
+        }
+      }
+      nextCurr = null
+    } else if (pc === null) {
+      return {
+        ok: false,
+        error: 'hour_rate_currency cannot be cleared while hour_rate is set.',
+      }
+    } else {
+      nextCurr = pc
+    }
+  }
+
+  if (nextRate !== null && nextCurr === null) {
+    return {
+      ok: false,
+      error: 'hour_rate_currency is required when hour_rate is set.',
+    }
+  }
+
+  return {
+    ok: true,
+    hour_rate: nextRate,
+    hour_rate_currency: nextCurr,
+    touched: true,
+  }
+}
+
 const router = Router()
 router.use(requireAuth)
 
 const LIST_SQL = `
 SELECT wg.id, wg.site_id, wg.key, wg.name, wg.costcenter_id,
+       wg.hour_rate, wg.hour_rate_currency,
        wg.created_at, wg.updated_at, wg.created_by, wg.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        cc.key AS costcenter_key, cc.name AS costcenter_name,
@@ -414,16 +575,67 @@ router.post('/', async (req, res) => {
     }
   }
 
+  const bodyObj = req.body as Record<string, unknown>
+  const hasPostRate = Object.prototype.hasOwnProperty.call(bodyObj, 'hour_rate')
+  const hasPostCurr = Object.prototype.hasOwnProperty.call(
+    bodyObj,
+    'hour_rate_currency',
+  )
+  let postHourRate: number | null = null
+  let postHourCurr: string | null = null
+  if (hasPostRate) {
+    const pr = parseBodyHourRate(bodyObj.hour_rate)
+    if (pr === 'invalid') {
+      res.status(400).json({ error: 'Invalid hour_rate.' })
+      return
+    }
+    postHourRate = pr
+  }
+  if (hasPostCurr) {
+    const pc = parseBodyHourRateCurrency(bodyObj.hour_rate_currency)
+    if (pc === 'invalid') {
+      res.status(400).json({ error: 'Invalid hour_rate_currency.' })
+      return
+    }
+    postHourCurr = pc
+  }
+  if (postHourRate === null) {
+    postHourCurr = null
+  } else if (postHourCurr === null) {
+    res.status(400).json({
+      error: 'hour_rate_currency is required when hour_rate is set.',
+    })
+    return
+  }
+
   const auditPath = `${req.baseUrl}${req.path}`
 
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
+    const pairOk = await assertHourRateAllowedByCurr(
+      client,
+      postHourRate,
+      postHourCurr,
+    )
+    if (!pairOk.ok) {
+      await client.query('ROLLBACK')
+      res.status(400).json({ error: pairOk.error })
+      return
+    }
     const r = await client.query<{ id: string }>(
-      `INSERT INTO workgroups (key, name, site_id, costcenter_id, created_by)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO workgroups (key, name, site_id, costcenter_id, hour_rate, hour_rate_currency, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id`,
-      [key, name, siteId, costcenterId, auth.id],
+      [
+        key,
+        name,
+        siteId,
+        costcenterId,
+        postHourRate,
+        postHourCurr,
+        auth.id,
+      ],
     )
     const insertedId = r.rows[0]?.id
     if (!insertedId) {
@@ -432,7 +644,8 @@ router.post('/', async (req, res) => {
       return
     }
     const tableRow = await client.query<WorkgroupTableRow>(
-      `SELECT id, site_id, key, name, costcenter_id, created_at, updated_at, created_by, updated_by
+      `SELECT id, site_id, key, name, costcenter_id, hour_rate, hour_rate_currency,
+              created_at, updated_at, created_by, updated_by
        FROM workgroups WHERE id = $1`,
       [insertedId],
     )
@@ -481,9 +694,13 @@ router.patch('/:id', async (req, res) => {
   const auth = req.authUser!
   const scope = await loadUserSiteScope(pool, auth.id, auth.role)
 
-  const updates: string[] = []
-  const values: unknown[] = []
-  let n = 1
+  const patchBody = req.body as Record<string, unknown>
+  const setClauses: string[] = []
+  const setValues: unknown[] = []
+  const pushSet = (col: string, v: unknown) => {
+    setClauses.push(`${col} = $${setValues.length + 1}`)
+    setValues.push(v)
+  }
 
   if (req.body?.key !== undefined) {
     const key =
@@ -492,8 +709,7 @@ router.patch('/:id', async (req, res) => {
       res.status(400).json({ error: 'Key cannot be empty.' })
       return
     }
-    updates.push(`key = $${n++}`)
-    values.push(key)
+    pushSet('key', key)
   }
   if (req.body?.name !== undefined) {
     const name =
@@ -502,37 +718,29 @@ router.patch('/:id', async (req, res) => {
       res.status(400).json({ error: 'Name cannot be empty.' })
       return
     }
-    updates.push(`name = $${n++}`)
-    values.push(name)
+    pushSet('name', name)
   }
   if (req.body?.costcenter_id !== undefined) {
     if (req.body.costcenter_id === null) {
-      updates.push(`costcenter_id = $${n++}`)
-      values.push(null)
+      pushSet('costcenter_id', null)
     } else {
       const s = String(req.body.costcenter_id).trim()
       if (!UUID_RE.test(s)) {
         res.status(400).json({ error: 'Invalid costcenter_id.' })
         return
       }
-      updates.push(`costcenter_id = $${n++}`)
-      values.push(s)
+      pushSet('costcenter_id', s)
     }
   }
 
-  if (updates.length === 0) {
+  const hasHourPatch =
+    Object.prototype.hasOwnProperty.call(patchBody, 'hour_rate') ||
+    Object.prototype.hasOwnProperty.call(patchBody, 'hour_rate_currency')
+
+  if (setClauses.length === 0 && !hasHourPatch) {
     res.status(400).json({ error: 'No fields to update.' })
     return
   }
-
-  updates.push(`updated_at = now()`)
-  updates.push(`updated_by = $${n++}`)
-  values.push(auth.id)
-  values.push(id)
-
-  const sql = `UPDATE workgroups SET ${updates.join(', ')}
-               WHERE id = $${n}
-               RETURNING id, site_id, key, name, costcenter_id, created_at, updated_at, created_by, updated_by`
 
   const auditPath = `${req.baseUrl}${req.path}`
 
@@ -540,7 +748,8 @@ router.patch('/:id', async (req, res) => {
   try {
     await client.query('BEGIN')
     const prev = await client.query<WorkgroupTableRow>(
-      `SELECT id, site_id, key, name, costcenter_id, created_at, updated_at, created_by, updated_by
+      `SELECT id, site_id, key, name, costcenter_id, hour_rate, hour_rate_currency,
+              created_at, updated_at, created_by, updated_by
        FROM workgroups
        WHERE id = $1
        FOR UPDATE`,
@@ -571,7 +780,59 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    const r = await client.query<WorkgroupTableRow>(sql, values)
+    let hourTouched = false
+    let hourRate: number | null = coalescePgNumericHourRate(beforeRow.hour_rate)
+    let hourCurr = normalizeStoredCurrency(beforeRow.hour_rate_currency)
+    if (hasHourPatch) {
+      const merged = mergeHourRateFieldsForPatch(beforeRow, patchBody)
+      if (!merged.ok) {
+        await client.query('ROLLBACK')
+        res.status(400).json({ error: merged.error })
+        return
+      }
+      hourTouched = merged.touched
+      hourRate = merged.hour_rate
+      hourCurr = merged.hour_rate_currency
+      if (hourTouched) {
+        const pairOk = await assertHourRateAllowedByCurr(
+          client,
+          hourRate,
+          hourCurr,
+        )
+        if (!pairOk.ok) {
+          await client.query('ROLLBACK')
+          res.status(400).json({ error: pairOk.error })
+          return
+        }
+      }
+    }
+
+    if (setClauses.length === 0 && !hourTouched) {
+      await client.query('ROLLBACK')
+      res.status(400).json({ error: 'No fields to update.' })
+      return
+    }
+
+    const allSets = [...setClauses]
+    const allVals = [...setValues]
+    if (hourTouched) {
+      allSets.push(`hour_rate = $${allVals.length + 1}`)
+      allVals.push(hourRate)
+      allSets.push(`hour_rate_currency = $${allVals.length + 1}`)
+      allVals.push(hourCurr)
+    }
+    allSets.push('updated_at = now()')
+    allSets.push(`updated_by = $${allVals.length + 1}`)
+    allVals.push(auth.id)
+    const wherePh = `$${allVals.length + 1}`
+    allVals.push(id)
+
+    const sql = `UPDATE workgroups SET ${allSets.join(', ')}
+               WHERE id = ${wherePh}
+               RETURNING id, site_id, key, name, costcenter_id, hour_rate, hour_rate_currency,
+                          created_at, updated_at, created_by, updated_by`
+
+    const r = await client.query<WorkgroupTableRow>(sql, allVals)
     const afterTable = r.rows[0]
     if (!afterTable) {
       await client.query('ROLLBACK')
@@ -636,7 +897,8 @@ router.delete('/:id', async (req, res) => {
   try {
     await client.query('BEGIN')
     const prev = await client.query<WorkgroupTableRow>(
-      `SELECT id, site_id, key, name, costcenter_id, created_at, updated_at, created_by, updated_by
+      `SELECT id, site_id, key, name, costcenter_id, hour_rate, hour_rate_currency,
+              created_at, updated_at, created_by, updated_by
        FROM workgroups
        WHERE id = $1
        FOR UPDATE`,

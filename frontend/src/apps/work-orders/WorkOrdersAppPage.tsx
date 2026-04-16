@@ -47,6 +47,7 @@ import {
   type WorkOrderWsMessage,
 } from '../../realtime/workOrderWs'
 import { formatDateTime } from '../../utils/dateTime'
+import { contrastTextOnHex } from '../../utils/contrastTextOnHex'
 import { WorkAssignmentsIcons } from '../../components/work-instructions/WorkAssignmentsIcons'
 import { WorkInstructionViewModal } from '../../components/work-instructions/WorkInstructionViewModal'
 import type { ColumnRegistryEntry } from '../../table-wizard'
@@ -112,17 +113,6 @@ const WO_STATUS_I18N_KEYS: Record<string, string> = {
   on_hold: 'wo.status_on_hold',
   done: 'wo.status_done',
   closed: 'wo.status_closed',
-}
-
-/** Readable foreground on solid badge background (hex #rrggbb). */
-function contrastTextOnHex(bgHex: string): string {
-  const s = bgHex.trim().replace(/^#/, '')
-  if (!/^[0-9a-fA-F]{6}$/.test(s)) return '#ffffff'
-  const r = parseInt(s.slice(0, 2), 16)
-  const g = parseInt(s.slice(2, 4), 16)
-  const b = parseInt(s.slice(4, 6), 16)
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-  return lum > 0.55 ? '#0f172a' : '#ffffff'
 }
 
 function statusBody(
@@ -744,19 +734,21 @@ export function WorkOrdersPage({
     const defs: ColumnRegistryEntry<WorkOrder>[] = [
       {
         field: 'wo_key',
-        headerKey: 'wo.col_wo_primary',
+        headerKey: isMonitoring ? 'common.col_key' : 'wo.col_wo_primary',
         sortable: true,
-        body: (row) => workOrderPrimaryColumnBody(row, emDash),
+        body: (row) => (isMonitoring ? row.wo_key : workOrderPrimaryColumnBody(row, emDash)),
         search: {
           getSearchValue: (row) =>
-            [
-              row.wo_key,
-              row.short_text,
-              row.asset_key,
-              row.asset_name,
-            ]
-              .filter((v) => v != null && String(v).trim() !== '')
-              .join(' '),
+            isMonitoring
+              ? String(row.wo_key)
+              : [
+                  row.wo_key,
+                  row.short_text,
+                  row.asset_key,
+                  row.asset_name,
+                ]
+                  .filter((v) => v != null && String(v).trim() !== '')
+                  .join(' '),
         },
       },
       {

@@ -121,6 +121,11 @@ export const NAV_SECTIONS: NavSection[] = [
         labelKey: 'nav.capacity_planner',
         icon: 'pi pi-chart-bar',
       },
+      {
+        path: '/schedule',
+        labelKey: 'nav.schedule',
+        icon: 'pi pi-calendar',
+      },
     ],
   },
   {

@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import type { TFunction } from 'i18next'
 import { Button } from 'primereact/button'
 import { Checkbox } from 'primereact/checkbox'
-import { Dialog } from 'primereact/dialog'
+import { AppCrudDialog } from '../components/app-crud-dialog'
 import { Dropdown } from 'primereact/dropdown'
 import { InputNumber } from 'primereact/inputnumber'
 import { InputText } from 'primereact/inputtext'
@@ -188,8 +188,8 @@ export function TableWizardDialog<T>({
   }
 
   return (
-    <Dialog
-      header={t('table_wizard.title')}
+    <AppCrudDialog
+      title={t('table_wizard.title')}
       visible={visible}
       onHide={onHide}
       dismissableMask={!saving}
@@ -759,6 +759,6 @@ export function TableWizardDialog<T>({
           </div>
         </TabPanel>
       </TabView>
-    </Dialog>
+    </AppCrudDialog>
   )
 }

@@ -34,6 +34,7 @@ import {
 import {
   roundPlannedHours,
   shiftHoursOnAssignmentDay,
+  woOverlapsAnyShiftFirstSegmentUtc,
 } from '../services/capacityPlanning.js'
 import {
   buildWorkOrderEmployeeAssignedNotifications,
@@ -1371,6 +1372,23 @@ router.put('/:id/capacity-allocation', async (req, res) => {
       await client.query('ROLLBACK')
       res.status(400).json({
         error: 'This employee has no shift assignment on the chosen date.',
+      })
+      return
+    }
+
+    if (
+      plannedHours > 0 &&
+      !woOverlapsAnyShiftFirstSegmentUtc(
+        wo.plan_start,
+        wo.plan_end,
+        adRaw,
+        shiftsR.rows,
+      )
+    ) {
+      await client.query('ROLLBACK')
+      res.status(400).json({
+        error:
+          'Work order planned time does not overlap any shift on this date (UTC).',
       })
       return
     }

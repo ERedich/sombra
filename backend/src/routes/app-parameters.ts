@@ -8,6 +8,7 @@ import { pool } from '../db.js'
 import { requireAuth } from '../middleware/auth.js'
 import { requireAdmin } from '../middleware/requireAdmin.js'
 import {
+  dspShiftScheduleIsValid,
   GENERAL_SETTINGS_KEY,
   getGeneralAppSettings,
   getShiftAppSettings,
@@ -17,12 +18,28 @@ import {
   isGeneralFdwId,
   isPgUndefinedRelationError,
   mergeWorkOrderStatusColoursPatch,
+  parseShiftAppSettingsJson,
+  parseShiftSettingTimeToPg,
   parseWoAppSettingsJson,
+  RESERVED_DSP_SHIFT_KEY,
+  RESERVED_DSP_SHIFT_NAME,
   SHIFTS_SETTINGS_KEY,
+  validateGeneralCurrenciesPatch,
   WO_SETTINGS_KEY,
 } from '../services/appSettings.js'
 
 const router = Router()
+
+function parseWeekdaysPatch(raw: unknown): number[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null
+  const out: number[] = []
+  for (const x of raw) {
+    if (typeof x !== 'number' || !Number.isInteger(x)) return null
+    if (x < 1 || x > 7) return null
+    out.push(x)
+  }
+  return [...new Set(out)].sort((a, b) => a - b)
+}
 
 type AppSettingTableRow = {
   key: string
@@ -160,6 +177,7 @@ router.patch('/', requireAdmin, async (req, res) => {
   let patchDtf: string | undefined
   let patchFdw: string | undefined
   let patchAskForSiteChangeOnLogin: boolean | undefined
+  let patchCurrencies: string[] | undefined
   if (generalBody !== undefined) {
     if (typeof generalBody !== 'object' || generalBody === null) {
       res.status(400).json({ error: 'general must be an object.' })
@@ -210,12 +228,24 @@ router.patch('/', requireAdmin, async (req, res) => {
       }
       patchAskForSiteChangeOnLogin = g.ask_for_site_change_on_login
     }
+    if (g.currencies !== undefined) {
+      const cur = validateGeneralCurrenciesPatch(g.currencies)
+      if (!cur.ok) {
+        res.status(400).json({ error: cur.error })
+        return
+      }
+      patchCurrencies = cur.value
+    }
   }
 
   const shiftsBody = body.shifts
   let patchShiftLoginRecognition: boolean | undefined
   let patchShiftPlanningCapacityPct: number | undefined
   let patchShiftBoundProjection: boolean | undefined
+  let patchApplyDefaultShiftPlan: boolean | undefined
+  let patchDefaultShiftTimeStart: string | undefined
+  let patchDefaultShiftTimeEnd: string | undefined
+  let patchDefaultShiftWeekdays: number[] | undefined
   if (shiftsBody !== undefined) {
     if (typeof shiftsBody !== 'object' || shiftsBody === null) {
       res.status(400).json({ error: 'shifts must be an object.' })
@@ -258,6 +288,44 @@ router.patch('/', requireAdmin, async (req, res) => {
       }
       patchShiftBoundProjection = s.shift_bound_projection
     }
+    if (s.apply_default_shift_plan !== undefined) {
+      if (typeof s.apply_default_shift_plan !== 'boolean') {
+        res.status(400).json({
+          error: 'shifts.apply_default_shift_plan must be a boolean.',
+        })
+        return
+      }
+      patchApplyDefaultShiftPlan = s.apply_default_shift_plan
+    }
+    if (s.default_shift_time_start !== undefined) {
+      if (typeof s.default_shift_time_start !== 'string') {
+        res.status(400).json({
+          error: 'shifts.default_shift_time_start must be a string (HH:mm or HH:mm:ss).',
+        })
+        return
+      }
+      patchDefaultShiftTimeStart = s.default_shift_time_start.trim()
+    }
+    if (s.default_shift_time_end !== undefined) {
+      if (typeof s.default_shift_time_end !== 'string') {
+        res.status(400).json({
+          error: 'shifts.default_shift_time_end must be a string (HH:mm or HH:mm:ss).',
+        })
+        return
+      }
+      patchDefaultShiftTimeEnd = s.default_shift_time_end.trim()
+    }
+    if (s.default_shift_weekdays !== undefined) {
+      const wd = parseWeekdaysPatch(s.default_shift_weekdays)
+      if (!wd) {
+        res.status(400).json({
+          error:
+            'shifts.default_shift_weekdays must be a non-empty array of integers 1–7 (Mon–Sun, ISO).',
+        })
+        return
+      }
+      patchDefaultShiftWeekdays = wd
+    }
   }
 
   const hasWoPatch =
@@ -274,11 +342,16 @@ router.patch('/', requireAdmin, async (req, res) => {
     patchIdleMinutes !== undefined ||
     patchDtf !== undefined ||
     patchFdw !== undefined ||
-    patchAskForSiteChangeOnLogin !== undefined
+    patchAskForSiteChangeOnLogin !== undefined ||
+    patchCurrencies !== undefined
   const hasShiftsPatch =
     patchShiftLoginRecognition !== undefined ||
     patchShiftPlanningCapacityPct !== undefined ||
-    patchShiftBoundProjection !== undefined
+    patchShiftBoundProjection !== undefined ||
+    patchApplyDefaultShiftPlan !== undefined ||
+    patchDefaultShiftTimeStart !== undefined ||
+    patchDefaultShiftTimeEnd !== undefined ||
+    patchDefaultShiftWeekdays !== undefined
 
   if (!hasWoPatch && !hasGeneralPatch && !hasShiftsPatch) {
     res.status(400).json({ error: 'No supported fields to update.' })
@@ -423,6 +496,9 @@ router.patch('/', requireAdmin, async (req, res) => {
       if (patchAskForSiteChangeOnLogin !== undefined) {
         baseG.ask_for_site_change_on_login = patchAskForSiteChangeOnLogin
       }
+      if (patchCurrencies !== undefined) {
+        baseG.currencies = patchCurrencies
+      }
       const valueJsonG = JSON.stringify(baseG)
       const updG = await client.query<AppSettingTableRow>(
         `UPDATE app_settings SET
@@ -474,6 +550,7 @@ router.patch('/', requireAdmin, async (req, res) => {
         res.status(500).json({ error: 'Shifts app settings row missing.' })
         return
       }
+      const beforeParsed = parseShiftAppSettingsJson(beforeRowS.value_json)
       const beforeStateS = redactForAudit(
         'app_setting',
         rowToAuditRecord(beforeRowS),
@@ -493,6 +570,120 @@ router.patch('/', requireAdmin, async (req, res) => {
       if (patchShiftBoundProjection !== undefined) {
         baseS.shift_bound_projection = patchShiftBoundProjection
       }
+      if (patchApplyDefaultShiftPlan !== undefined) {
+        baseS.apply_default_shift_plan = patchApplyDefaultShiftPlan
+      }
+      if (patchDefaultShiftTimeStart !== undefined) {
+        baseS.default_shift_time_start = patchDefaultShiftTimeStart
+      }
+      if (patchDefaultShiftTimeEnd !== undefined) {
+        baseS.default_shift_time_end = patchDefaultShiftTimeEnd
+      }
+      if (patchDefaultShiftWeekdays !== undefined) {
+        baseS.default_shift_weekdays = patchDefaultShiftWeekdays
+      }
+
+      const nextParsed = parseShiftAppSettingsJson(baseS)
+      baseS.apply_default_shift_plan = nextParsed.apply_default_shift_plan
+      baseS.default_shift_time_start = nextParsed.default_shift_time_start
+      baseS.default_shift_time_end = nextParsed.default_shift_time_end
+      baseS.default_shift_weekdays = nextParsed.default_shift_weekdays
+
+      if (!dspShiftScheduleIsValid(nextParsed)) {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error:
+            'When DSP is enabled, provide valid default start/end times and at least one weekday (1–7).',
+          code: 'DSP_INVALID_SCHEDULE',
+        })
+        return
+      }
+
+      const confirmPurge = body.confirm_purge_shifts_for_dsp === true
+      if (
+        !beforeParsed.apply_default_shift_plan &&
+        nextParsed.apply_default_shift_plan
+      ) {
+        if (!confirmPurge) {
+          await client.query('ROLLBACK')
+          res.status(400).json({
+            error:
+              'Confirm purge of shifts is required when enabling DSP (send confirm_purge_shifts_for_dsp).',
+            code: 'DSP_PURGE_CONFIRM_REQUIRED',
+          })
+          return
+        }
+        await client.query(`DELETE FROM shifts`)
+        const tStart = parseShiftSettingTimeToPg(nextParsed.default_shift_time_start)
+        const tEnd = parseShiftSettingTimeToPg(nextParsed.default_shift_time_end)
+        if (!tStart || !tEnd) {
+          await client.query('ROLLBACK')
+          res.status(400).json({
+            error:
+              'When DSP is enabled, provide valid default start/end times and at least one weekday (1–7).',
+            code: 'DSP_INVALID_SCHEDULE',
+          })
+          return
+        }
+        await client.query(
+          `INSERT INTO shifts (key, name, time_start, time_end, available_weekdays, site_id, created_by)
+           SELECT $1::varchar, $2::text, $3::time, $4::time, $5::smallint[], s.id, $6::uuid
+           FROM sites s`,
+          [
+            RESERVED_DSP_SHIFT_KEY,
+            RESERVED_DSP_SHIFT_NAME,
+            tStart,
+            tEnd,
+            nextParsed.default_shift_weekdays,
+            auth.id,
+          ],
+        )
+      } else if (
+        beforeParsed.apply_default_shift_plan &&
+        !nextParsed.apply_default_shift_plan
+      ) {
+        await client.query(`DELETE FROM shifts WHERE key = $1`, [
+          RESERVED_DSP_SHIFT_KEY,
+        ])
+      } else if (
+        beforeParsed.apply_default_shift_plan &&
+        nextParsed.apply_default_shift_plan &&
+        (beforeParsed.default_shift_time_start !==
+          nextParsed.default_shift_time_start ||
+          beforeParsed.default_shift_time_end !==
+            nextParsed.default_shift_time_end ||
+          JSON.stringify(beforeParsed.default_shift_weekdays) !==
+            JSON.stringify(nextParsed.default_shift_weekdays))
+      ) {
+        const tStart = parseShiftSettingTimeToPg(nextParsed.default_shift_time_start)
+        const tEnd = parseShiftSettingTimeToPg(nextParsed.default_shift_time_end)
+        if (!tStart || !tEnd) {
+          await client.query('ROLLBACK')
+          res.status(400).json({
+            error:
+              'When DSP is enabled, provide valid default start/end times and at least one weekday (1–7).',
+            code: 'DSP_INVALID_SCHEDULE',
+          })
+          return
+        }
+        await client.query(
+          `UPDATE shifts SET
+             time_start = $1::time,
+             time_end = $2::time,
+             available_weekdays = $3::smallint[],
+             updated_at = now(),
+             updated_by = $4
+           WHERE key = $5`,
+          [
+            tStart,
+            tEnd,
+            nextParsed.default_shift_weekdays,
+            auth.id,
+            RESERVED_DSP_SHIFT_KEY,
+          ],
+        )
+      }
+
       const valueJsonS = JSON.stringify(baseS)
       const updS = await client.query<AppSettingTableRow>(
         `UPDATE app_settings SET

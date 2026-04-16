@@ -1,0 +1,30 @@
+-- App parameters → General: CURR (currencies) list + guidelines copy.
+INSERT INTO ui_translations (locale, msg_key, value)
+VALUES
+  ('en', 'app_params.general_curr_heading', 'CURR — Currencies'),
+  ('de', 'app_params.general_curr_heading', 'CURR — Währungen'),
+  ('en', 'app_params.general_curr_help', 'Codes used wherever the app offers a currency choice (three letters, A–Z). The first code is the default when none is selected.'),
+  ('de', 'app_params.general_curr_help', 'Codes, die überall dort verwendet werden, wo die App eine Währungswahl anbietet (drei Buchstaben, A–Z). Der erste Code ist die Voreinstellung, wenn keine gewählt ist.'),
+  ('en', 'app_params.general_curr_default_hint', 'Order matters: the first currency is the app default.'),
+  ('de', 'app_params.general_curr_default_hint', 'Die Reihenfolge zählt: die erste Währung ist die App-Standardwährung.'),
+  ('en', 'app_params.general_curr_add_label', 'Add currency code'),
+  ('de', 'app_params.general_curr_add_label', 'Währungscode hinzufügen'),
+  ('en', 'app_params.general_curr_add_aria', 'New currency code (three letters)'),
+  ('de', 'app_params.general_curr_add_aria', 'Neuer Währungscode (drei Buchstaben)'),
+  ('en', 'app_params.general_curr_add', 'Add'),
+  ('de', 'app_params.general_curr_add', 'Hinzufügen'),
+  ('en', 'app_params.general_curr_remove_aria', 'Remove currency {{code}}'),
+  ('de', 'app_params.general_curr_remove_aria', 'Währung {{code}} entfernen'),
+  ('en', 'app_params.general_curr_input_ph', 'e.g. USD'),
+  ('de', 'app_params.general_curr_input_ph', 'z. B. USD'),
+  ('en', 'app_params.general_curr_invalid', 'Enter a valid 3-letter currency code (A–Z).'),
+  ('de', 'app_params.general_curr_invalid', 'Geben Sie einen gültigen 3-Buchstaben-Währungscode (A–Z) ein.'),
+  ('en', 'app_params.general_curr_duplicate', 'That currency is already in the list.'),
+  ('de', 'app_params.general_curr_duplicate', 'Diese Währung steht bereits in der Liste.'),
+  ('en', 'app_params.general_curr_max', 'At most {{max}} distinct currencies are allowed.'),
+  ('de', 'app_params.general_curr_max', 'Es sind höchstens {{max}} verschiedene Währungen erlaubt.'),
+  ('en', 'app_params.general_guidelines_info_messages_body', 'The grey help lines under Date/time format, First day of week, Site change prompt, Currencies (CURR), and Idle session are hidden by default. Use the info button at the top of this tab to show or hide them.'),
+  ('de', 'app_params.general_guidelines_info_messages_body', 'Die grauen Hilfezeilen unter Datums-/Zeitformat, erster Wochentag, Standortwechsel, Währungen (CURR) und Leerlauf-Sitzung sind standardmäßig ausgeblendet. Über die Info-Schaltfläche oben in diesem Reiter blenden Sie sie ein oder aus.'),
+  ('en', 'app_params.general_info_toggle_show_tooltip', 'Show explanatory text under each section (date format, week start, site prompt, currencies, idle timeout)'),
+  ('de', 'app_params.general_info_toggle_show_tooltip', 'Erklärungstexte unter den Abschnitten anzeigen (Datumsformat, Wochenbeginn, Standortabfrage, Währungen, Sitzungs-Timeout)')
+ON CONFLICT (locale, msg_key) DO UPDATE SET value = EXCLUDED.value;

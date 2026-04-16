@@ -1101,6 +1101,7 @@ export function WorkOrderFormDialog({
       <AppCrudDialog
         title={editingId ? t('wo.dialog_edit') : t('wo.dialog_new')}
         minimizedDockPlacement="top-right"
+        restoreOnChangeToken={session}
         visible={dialogOpen}
         onMinimizedChange={(min) => {
           if (min) {

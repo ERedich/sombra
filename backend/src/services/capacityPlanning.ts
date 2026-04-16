@@ -109,3 +109,65 @@ export function tachHoursForRow(
 export function roundPlannedHours(n: number): number {
   return Math.round(n * 100) / 100
 }
+
+const MS_PER_DAY = 86400000
+const MS_PER_MINUTE = 60000
+
+/** Parse `YYYY-MM-DD` as UTC midnight (capacity planner / WO plan use UTC calendar semantics). */
+export function utcYmdToDayStartMs(ymd: string): number {
+  const [y, m, d] = ymd.split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+    return NaN
+  }
+  return Date.UTC(y, m - 1, d, 0, 0, 0, 0)
+}
+
+/** WO plan interval clipped to the UTC calendar day `ymd`, in epoch ms; null if empty. */
+export function woSegmentMsOnUtcDay(
+  planStart: Date,
+  planEnd: Date,
+  ymd: string,
+): { lo: number; hi: number } | null {
+  const dayStart = utcYmdToDayStartMs(ymd)
+  if (Number.isNaN(dayStart)) return null
+  const dayEnd = dayStart + MS_PER_DAY
+  const woLo = planStart.getTime()
+  const woHi = planEnd.getTime()
+  const lo = Math.max(woLo, dayStart)
+  const hi = Math.min(woHi, dayEnd)
+  if (!(hi > lo)) return null
+  return { lo, hi }
+}
+
+export function intervalsOverlapMs(
+  aLo: number,
+  aHi: number,
+  bLo: number,
+  bHi: number,
+): boolean {
+  return Math.max(aLo, bLo) < Math.min(aHi, bHi)
+}
+
+/**
+ * True if the WO plan window overlaps any shift’s first segment on `allocationDateYmd`.
+ * Shift wall times are interpreted as UTC on that calendar day (same frame as WO instants).
+ * If plants use non-UTC local wall clocks for shifts, add site timezone and convert intervals.
+ */
+export function woOverlapsAnyShiftFirstSegmentUtc(
+  planStart: Date,
+  planEnd: Date,
+  allocationDateYmd: string,
+  shifts: { time_start: string; time_end: string }[],
+): boolean {
+  const seg = woSegmentMsOnUtcDay(planStart, planEnd, allocationDateYmd)
+  if (!seg) return false
+  const dayStart = utcYmdToDayStartMs(allocationDateYmd)
+  if (Number.isNaN(dayStart)) return false
+  for (const sh of shifts) {
+    const r = firstSegmentMinuteRange(sh.time_start, sh.time_end)
+    const shiftLo = dayStart + r.lo * MS_PER_MINUTE
+    const shiftHi = dayStart + r.hi * MS_PER_MINUTE
+    if (intervalsOverlapMs(seg.lo, seg.hi, shiftLo, shiftHi)) return true
+  }
+  return false
+}

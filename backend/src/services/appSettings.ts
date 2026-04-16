@@ -265,6 +265,91 @@ export function isGeneralFdwId(value: unknown): value is GeneralFdwId {
   )
 }
 
+/** CURR: selectable ISO-style currency codes (3 letters). First = app default. */
+export const DEFAULT_GENERAL_CURRENCIES: readonly string[] = ['EUR']
+
+export const GENERAL_CURRENCIES_MAX = 24
+
+const GENERAL_CURRENCY_CODE_RE = /^[A-Za-z]{3}$/
+
+function normalizeOneCurrencyCode(raw: string): string | null {
+  const u = raw.trim().toUpperCase()
+  return GENERAL_CURRENCY_CODE_RE.test(u) ? u : null
+}
+
+/**
+ * Lenient parse from stored JSON: invalid entries dropped, deduped, min one code, max GENERAL_CURRENCIES_MAX.
+ */
+export function normalizeGeneralCurrenciesList(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return [...DEFAULT_GENERAL_CURRENCIES]
+  }
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const x of value) {
+    if (typeof x !== 'string') continue
+    const c = normalizeOneCurrencyCode(x)
+    if (!c || seen.has(c)) continue
+    seen.add(c)
+    out.push(c)
+    if (out.length >= GENERAL_CURRENCIES_MAX) break
+  }
+  return out.length > 0 ? out : [...DEFAULT_GENERAL_CURRENCIES]
+}
+
+/**
+ * Strict validation for PATCH `general.currencies`: non-empty, all valid 3-letter codes, deduped, capped.
+ */
+export function validateGeneralCurrenciesPatch(
+  value: unknown,
+):
+  | { ok: true; value: string[] }
+  | { ok: false; error: string } {
+  if (!Array.isArray(value)) {
+    return { ok: false, error: 'general.currencies must be an array.' }
+  }
+  if (value.length === 0) {
+    return {
+      ok: false,
+      error: 'general.currencies must contain at least one currency code.',
+    }
+  }
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (let i = 0; i < value.length; i++) {
+    const x = value[i]
+    if (typeof x !== 'string') {
+      return {
+        ok: false,
+        error: `general.currencies[${i}] must be a string (3-letter code).`,
+      }
+    }
+    const c = normalizeOneCurrencyCode(x)
+    if (!c) {
+      return {
+        ok: false,
+        error: `general.currencies[${i}] must be a 3-letter currency code (A–Z).`,
+      }
+    }
+    if (seen.has(c)) continue
+    seen.add(c)
+    out.push(c)
+    if (out.length > GENERAL_CURRENCIES_MAX) {
+      return {
+        ok: false,
+        error: `general.currencies must contain at most ${GENERAL_CURRENCIES_MAX} distinct codes.`,
+      }
+    }
+  }
+  if (out.length === 0) {
+    return {
+      ok: false,
+      error: 'general.currencies must contain at least one valid currency code.',
+    }
+  }
+  return { ok: true, value: out }
+}
+
 export type GeneralAppSettings = {
   idle_session_timeout_minutes: number
   dtf: GeneralDtfId
@@ -272,6 +357,8 @@ export type GeneralAppSettings = {
   fdw: GeneralFdwId
   /** When true, users with 2+ assigned plant sites are prompted for working site at login. */
   ask_for_site_change_on_login: boolean
+  /** CURR: ordered list of selectable currency codes; first is default. */
+  currencies: string[]
 }
 
 const DEFAULT_GENERAL: GeneralAppSettings = {
@@ -279,6 +366,7 @@ const DEFAULT_GENERAL: GeneralAppSettings = {
   dtf: DEFAULT_GENERAL_DTF,
   fdw: DEFAULT_GENERAL_FDW,
   ask_for_site_change_on_login: false,
+  currencies: [...DEFAULT_GENERAL_CURRENCIES],
 }
 
 export function parseGeneralAppSettingsJson(
@@ -303,6 +391,7 @@ export function parseGeneralAppSettingsJson(
   if (typeof o.ask_for_site_change_on_login === 'boolean') {
     base.ask_for_site_change_on_login = o.ask_for_site_change_on_login
   }
+  base.currencies = normalizeGeneralCurrenciesList(o.currencies)
   return base
 }
 
@@ -326,6 +415,43 @@ export async function getGeneralAppSettings(
 export const SHIFT_PLANNING_CAPACITY_PCT_MIN = 0
 export const SHIFT_PLANNING_CAPACITY_PCT_MAX = 100
 
+/** System shift row per site when DSP (Apply Default Shift Plan) is enabled. */
+export const RESERVED_DSP_SHIFT_KEY = '_dsp_default'
+export const RESERVED_DSP_SHIFT_NAME = 'Default shift plan'
+
+const SHIFT_TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/
+
+/** Parse HH:mm / HH:mm:ss for shift settings and DB `time` columns. */
+export function parseShiftSettingTimeToPg(value: string): string | null {
+  const t = value.trim()
+  const m = SHIFT_TIME_RE.exec(t)
+  if (!m) return null
+  const hh = m[1]!.padStart(2, '0')
+  const mm = m[2]!
+  const ss = m[3] ?? '00'
+  return `${hh}:${mm}:${ss}`
+}
+
+const DEFAULT_SHIFT_WEEKDAYS: number[] = [1, 2, 3, 4, 5]
+
+function parseDefaultShiftWeekdays(value: unknown): number[] {
+  if (!Array.isArray(value) || value.length === 0) return [...DEFAULT_SHIFT_WEEKDAYS]
+  const out: number[] = []
+  for (const x of value) {
+    if (typeof x !== 'number' || !Number.isInteger(x)) continue
+    if (x < 1 || x > 7) continue
+    out.push(x)
+  }
+  if (out.length === 0) return [...DEFAULT_SHIFT_WEEKDAYS]
+  return [...new Set(out)].sort((a, b) => a - b)
+}
+
+function normalizeShiftSettingTimeString(raw: unknown, fallbackPg: string): string {
+  if (typeof raw !== 'string') return fallbackPg
+  const pg = parseShiftSettingTimeToPg(raw)
+  return pg ?? fallbackPg
+}
+
 export type ShiftAppSettings = {
   /** SLR: auto-mark present on login when time matches assigned shift. */
   shift_login_recognition: boolean
@@ -336,12 +462,39 @@ export type ShiftAppSettings = {
    * definitions; when false, scheduled assignments may use custom wall times.
    */
   shift_bound_projection: boolean
+  /**
+   * DSP: when true, capacities use default times/weekdays (one `_dsp_default` shift per site).
+   */
+  apply_default_shift_plan: boolean
+  /** Wall times as HH:MM:SS (Postgres time). */
+  default_shift_time_start: string
+  default_shift_time_end: string
+  /** ISO weekdays 1–7 (Mon–Sun). */
+  default_shift_weekdays: number[]
 }
 
 const DEFAULT_SHIFTS: ShiftAppSettings = {
   shift_login_recognition: true,
   shift_planning_capacity_pct: SHIFT_PLANNING_CAPACITY_PCT_MAX,
   shift_bound_projection: true,
+  apply_default_shift_plan: false,
+  default_shift_time_start: '08:00:00',
+  default_shift_time_end: '17:00:00',
+  default_shift_weekdays: [...DEFAULT_SHIFT_WEEKDAYS],
+}
+
+export function dspShiftScheduleIsValid(s: ShiftAppSettings): boolean {
+  if (!s.apply_default_shift_plan) return true
+  if (!parseShiftSettingTimeToPg(s.default_shift_time_start)) return false
+  if (!parseShiftSettingTimeToPg(s.default_shift_time_end)) return false
+  if (!Array.isArray(s.default_shift_weekdays) || s.default_shift_weekdays.length === 0) {
+    return false
+  }
+  return true
+}
+
+export function isReservedDspShiftKey(key: string): boolean {
+  return key === RESERVED_DSP_SHIFT_KEY || key.startsWith('_dsp')
 }
 
 export function parseShiftAppSettingsJson(value: unknown): ShiftAppSettings {
@@ -361,6 +514,18 @@ export function parseShiftAppSettingsJson(value: unknown): ShiftAppSettings {
   if (typeof o.shift_bound_projection === 'boolean') {
     base.shift_bound_projection = o.shift_bound_projection
   }
+  if (typeof o.apply_default_shift_plan === 'boolean') {
+    base.apply_default_shift_plan = o.apply_default_shift_plan
+  }
+  base.default_shift_time_start = normalizeShiftSettingTimeString(
+    o.default_shift_time_start,
+    base.default_shift_time_start,
+  )
+  base.default_shift_time_end = normalizeShiftSettingTimeString(
+    o.default_shift_time_end,
+    base.default_shift_time_end,
+  )
+  base.default_shift_weekdays = parseDefaultShiftWeekdays(o.default_shift_weekdays)
   return base
 }
 

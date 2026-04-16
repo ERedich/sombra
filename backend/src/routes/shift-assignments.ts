@@ -42,6 +42,29 @@ function normalizeTimeHmsForPg(s: string): string | null {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
 }
 
+const MINUTES_PER_DAY = 24 * 60
+
+/** When SBPR is on, overrides must stay inside the shift definition window (wall clock). */
+function overrideWithinShiftDefWallClock(
+  nsMin: number,
+  neMin: number,
+  dsMin: number,
+  deMin: number,
+  defOvernight: boolean,
+): boolean {
+  if (nsMin === neMin) return false
+  if (!defOvernight) {
+    if (neMin <= nsMin) return false
+    return nsMin >= dsMin && neMin <= deMin
+  }
+  if (neMin > nsMin) {
+    const eveningOnly = nsMin >= dsMin && neMin <= MINUTES_PER_DAY
+    const morningOnly = nsMin < dsMin && neMin <= deMin && neMin > nsMin
+    return eveningOnly || morningOnly
+  }
+  return nsMin >= dsMin && neMin <= deMin
+}
+
 const PRESENCE = new Set(['scheduled', 'present', 'not_present', 'absent'])
 const ABSENT_REASONS = new Set(['sick', 'holiday', 'unknown'])
 
@@ -106,6 +129,8 @@ async function fetchAssignmentRow(
     `SELECT sa.id, sa.shift_id, sa.assignment_date::text AS assignment_date,
             sa.employee_id, sa.presence_status, sa.present_started_at,
             sa.absent_reason, sa.absent_remark,
+            sa.override_time_start::text AS override_time_start,
+            sa.override_time_end::text AS override_time_end,
             sa.created_at, sa.updated_at, sa.created_by, sa.updated_by,
             sh.key AS shift_key, sh.name AS shift_name,
             COALESCE(sa.override_time_start, sh.time_start)::text AS time_start,
@@ -129,6 +154,8 @@ const LIST_SQL = `
 SELECT sa.id, sa.shift_id, sa.assignment_date::text AS assignment_date,
        sa.employee_id, sa.presence_status, sa.present_started_at,
        sa.absent_reason, sa.absent_remark,
+       sa.override_time_start::text AS override_time_start,
+       sa.override_time_end::text AS override_time_end,
        sa.created_at, sa.updated_at, sa.created_by, sa.updated_by,
        sh.key AS shift_key, sh.name AS shift_name,
        COALESCE(sa.override_time_start, sh.time_start)::text AS time_start,
@@ -368,14 +395,6 @@ router.patch('/:id', async (req, res) => {
       ovStartOut = null
       ovEndOut = null
     } else if (hasOvStart) {
-      if (shiftSettings.shift_bound_projection) {
-        await client.query('ROLLBACK')
-        res.status(400).json({
-          error:
-            'Custom shift times are disabled while shift blocks are aligned with shift definitions (app parameters).',
-        })
-        return
-      }
       const vs = bodyRaw.override_time_start
       const ve = bodyRaw.override_time_end
       if (vs === null && ve === null) {
@@ -392,12 +411,69 @@ router.patch('/:id', async (req, res) => {
           })
           return
         }
-        if (timeHmsToMinutes(ne) <= timeHmsToMinutes(ns)) {
+        const shiftDefR = await client.query<{ ts: string; te: string }>(
+          `SELECT time_start::text AS ts, time_end::text AS te
+           FROM shifts WHERE id = $1 FOR UPDATE`,
+          [beforeRow.shift_id],
+        )
+        const def = shiftDefR.rows[0]
+        if (!def) {
+          await client.query('ROLLBACK')
+          res.status(404).json({ error: 'Shift not found.' })
+          return
+        }
+        const defStart = normalizeTimeHmsForPg(
+          String(def.ts).trim().split('.')[0] ?? '',
+        )
+        const defEnd = normalizeTimeHmsForPg(
+          String(def.te).trim().split('.')[0] ?? '',
+        )
+        if (!defStart || !defEnd) {
+          await client.query('ROLLBACK')
+          res.status(500).json({ error: 'Shift definition times are invalid.' })
+          return
+        }
+        const defOvernight =
+          timeHmsToMinutes(defEnd) <= timeHmsToMinutes(defStart)
+        const nsMin = timeHmsToMinutes(ns)
+        const neMin = timeHmsToMinutes(ne)
+        if (nsMin === neMin) {
           await client.query('ROLLBACK')
           res.status(400).json({
-            error: 'override_time_end must be after override_time_start (same calendar day).',
+            error:
+              'override_time_start and override_time_end must differ (zero-length interval).',
           })
           return
+        }
+        if (!defOvernight) {
+          if (neMin <= nsMin) {
+            await client.query('ROLLBACK')
+            res.status(400).json({
+              error:
+                'override_time_end must be after override_time_start (same calendar day).',
+            })
+            return
+          }
+        }
+        const dsMin = timeHmsToMinutes(defStart)
+        const deMin = timeHmsToMinutes(defEnd)
+        if (shiftSettings.shift_bound_projection) {
+          if (
+            !overrideWithinShiftDefWallClock(
+              nsMin,
+              neMin,
+              dsMin,
+              deMin,
+              defOvernight,
+            )
+          ) {
+            await client.query('ROLLBACK')
+            res.status(400).json({
+              error:
+                'With SBPR (shift bound projection) on, start and end must stay within the shift definition (no earlier start or later end than the shift).',
+            })
+            return
+          }
         }
         ovStartOut = ns
         ovEndOut = ne
@@ -411,12 +487,13 @@ router.patch('/:id', async (req, res) => {
       }
     }
 
-    let assignmentDateOut = beforeRow.assignment_date
     const adMoveRaw = req.body?.assignment_date
     const wantsDateMove =
       adMoveRaw !== undefined &&
       adMoveRaw !== null &&
       String(adMoveRaw).trim() !== ''
+
+    let nextDate = beforeRow.assignment_date
     if (wantsDateMove) {
       const nd =
         typeof adMoveRaw === 'string' ? adMoveRaw.trim() : String(adMoveRaw)
@@ -425,10 +502,34 @@ router.patch('/:id', async (req, res) => {
         res.status(400).json({ error: 'assignment_date must be YYYY-MM-DD.' })
         return
       }
+      nextDate = nd
+    }
+
+    const shiftMoveRaw = req.body?.shift_id
+    const wantsShiftMove =
+      typeof shiftMoveRaw === 'string' && shiftMoveRaw.trim() !== ''
+
+    let nextShiftId = beforeRow.shift_id
+    if (wantsShiftMove) {
+      const sid = shiftMoveRaw.trim()
+      if (!UUID_RE.test(sid)) {
+        await client.query('ROLLBACK')
+        res.status(400).json({ error: 'shift_id must be a valid UUID.' })
+        return
+      }
+      nextShiftId = sid
+    }
+
+    const geometryChanged =
+      nextDate !== beforeRow.assignment_date ||
+      nextShiftId !== beforeRow.shift_id
+
+    if (geometryChanged) {
       if (beforeRow.presence_status !== 'scheduled') {
         await client.query('ROLLBACK')
         res.status(400).json({
-          error: 'Only scheduled assignments can be moved to another date.',
+          error:
+            'Only scheduled assignments can be moved to another date or shift.',
         })
         return
       }
@@ -436,7 +537,7 @@ router.patch('/:id', async (req, res) => {
         await client.query('ROLLBACK')
         res.status(400).json({
           error:
-            'When moving assignment_date, presence_status must be scheduled.',
+            'When moving assignment_date or shift_id, presence_status must be scheduled.',
         })
         return
       }
@@ -444,19 +545,32 @@ router.patch('/:id', async (req, res) => {
         `SELECT CURRENT_DATE::text AS d`,
       )
       const today = curR.rows[0]?.d ?? ''
-      if (nd < today) {
+      if (nextDate < today) {
         await client.query('ROLLBACK')
         res
           .status(400)
           .json({ error: 'assignment_date cannot be in the past.' })
         return
       }
+      const targetShiftR = await client.query<{
+        site_id: string
+        available_weekdays: number[]
+      }>(
+        `SELECT site_id, available_weekdays FROM shifts WHERE id = $1 FOR UPDATE`,
+        [nextShiftId],
+      )
+      const targetShift = targetShiftR.rows[0]
+      if (!targetShift || !canAccessSite(scope, targetShift.site_id)) {
+        await client.query('ROLLBACK')
+        res.status(404).json({ error: 'Shift not found.' })
+        return
+      }
       const dowR = await client.query<{ iw: number }>(
         `SELECT EXTRACT(ISODOW FROM $1::date)::int AS iw`,
-        [nd],
+        [nextDate],
       )
       const iw = dowR.rows[0]?.iw
-      const wds = beforeJoin.available_weekdays.map((x) => Number(x))
+      const wds = targetShift.available_weekdays.map((x) => Number(x))
       if (iw === undefined || !wds.includes(iw)) {
         await client.query('ROLLBACK')
         res.status(400).json({
@@ -467,7 +581,7 @@ router.patch('/:id', async (req, res) => {
       const dup = await client.query(
         `SELECT 1 FROM shift_assignments
          WHERE shift_id = $1 AND employee_id = $2 AND assignment_date = $3::date AND id <> $4`,
-        [beforeJoin.shift_id, beforeJoin.employee_id, nd, id],
+        [nextShiftId, beforeRow.employee_id, nextDate, id],
       )
       if ((dup.rowCount ?? 0) > 0) {
         await client.query('ROLLBACK')
@@ -476,7 +590,13 @@ router.patch('/:id', async (req, res) => {
         })
         return
       }
-      assignmentDateOut = nd
+    }
+
+    const assignmentDateOut = nextDate
+
+    if (nextShiftId !== beforeRow.shift_id) {
+      ovStartOut = null
+      ovEndOut = null
     }
 
     let present_started_at: Date | null = beforeRow.present_started_at
@@ -493,6 +613,7 @@ router.patch('/:id', async (req, res) => {
 
     const upd = await client.query<AssignmentTableRow>(
       `UPDATE shift_assignments SET
+         shift_id = $10::uuid,
          assignment_date = $7::date,
          presence_status = $1,
          present_started_at = $2,
@@ -518,6 +639,7 @@ router.patch('/:id', async (req, res) => {
         assignmentDateOut,
         ovStartOut,
         ovEndOut,
+        nextShiftId,
       ],
     )
     const afterRow = upd.rows[0]!

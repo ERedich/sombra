@@ -4,11 +4,14 @@ import { useTranslation } from 'react-i18next'
 
 export function AppCrudDialogHeader({
   title,
+  headerStartActions,
   onMinimize,
   onClose,
   minimizeDisabled,
 }: {
   title: ReactNode
+  /** Rendered immediately left of minimize/close in the header action cluster. */
+  headerStartActions?: ReactNode
   onMinimize: () => void
   onClose: () => void
   minimizeDisabled?: boolean
@@ -19,6 +22,7 @@ export function AppCrudDialogHeader({
     <div className="flex align-items-center justify-content-between gap-2 w-full app-crud-dialog-header-inner">
       <div className="flex-1 min-w-0">{title}</div>
       <div className="flex align-items-center flex-shrink-0 gap-0">
+        {headerStartActions}
         <Button
           type="button"
           icon="pi pi-window-minimize"

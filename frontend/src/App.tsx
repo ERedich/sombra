@@ -20,6 +20,7 @@ import WorkTypesAppPage from './apps/work-types/WorkTypesAppPage'
 import ShiftsAppPage from './apps/shifts/ShiftsAppPage'
 import ShiftPlannerAppPage from './apps/shift-planner/ShiftPlannerAppPage'
 import CapacityPlannerAppPage from './apps/capacity-planner/CapacityPlannerAppPage'
+import ScheduleAppPage from './apps/schedule/ScheduleAppPage'
 import CategoriesAppPage from './apps/categories/CategoriesAppPage'
 import EmployeesAppPage from './apps/employees/EmployeesAppPage'
 import WorkgroupsAppPage from './apps/workgroups/WorkgroupsAppPage'
@@ -138,6 +139,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <CapacityPlannerAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/schedule"
+        element={
+          <ProtectedRoute>
+            <ScheduleAppPage />
           </ProtectedRoute>
         }
       />

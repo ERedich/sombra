@@ -10,6 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export default defineConfig({
   plugins: [react()],
   resolve: {
+    dedupe: ['react', 'react-dom'],
     alias: {
       '@sombra/shared': path.resolve(__dirname, '../packages/shared/src/index.ts'),
     },

@@ -24,6 +24,11 @@ export type AppCrudDialogProps = Omit<DialogProps, 'header' | 'closable'> & {
   title: ReactNode
   /** Shown on the minimized dock; defaults to `title` when `title` is a string. */
   dockTitle?: string
+  /**
+   * When this token changes while dialog is open+minimized, force restore.
+   * Useful for external "open/edit this record" actions.
+   */
+  restoreOnChangeToken?: unknown
   /** Where the minimized dock sits when `visible && minimized`. Default bottom-center. */
   minimizedDockPlacement?: MinimizedDockPlacement
   minimizable?: boolean
@@ -34,6 +39,8 @@ export type AppCrudDialogProps = Omit<DialogProps, 'header' | 'closable'> & {
   minimizeDisabled?: boolean
   /** For nested modals: parent can clear child overlays when minimized. */
   onMinimizedChange?: (minimized: boolean) => void
+  /** Rendered left of minimize/close in the header (only when `minimizable` is true). */
+  headerStartActions?: ReactNode
 }
 
 function syntheticHideEvent(): SyntheticEvent {
@@ -62,7 +69,9 @@ export function AppCrudDialog({
   minimizable = true,
   minimizeDisabled: minimizeDisabledProp,
   onMinimizedChange,
+  restoreOnChangeToken,
   minimizedDockPlacement = 'bottom-center',
+  headerStartActions,
   children,
   ...dialogProps
 }: AppCrudDialogProps) {
@@ -91,6 +100,17 @@ export function AppCrudDialog({
   useEffect(() => {
     onMinimizedChangeRef.current?.(Boolean(visible && minimized))
   }, [visible, minimized])
+
+  const restoreTokenRef = useRef(restoreOnChangeToken)
+  useEffect(() => {
+    const changed = !Object.is(restoreTokenRef.current, restoreOnChangeToken)
+    restoreTokenRef.current = restoreOnChangeToken
+    if (changed && visible && minimized) {
+      const id = requestAnimationFrame(() => setMinimized(false))
+      return () => cancelAnimationFrame(id)
+    }
+    return undefined
+  }, [restoreOnChangeToken, visible, minimized])
 
   useEffect(() => {
     if (visible && minimized) {
@@ -176,6 +196,7 @@ export function AppCrudDialog({
           minimizable ? (
             <AppCrudDialogHeader
               title={title}
+              headerStartActions={headerStartActions}
               onMinimize={() => setMinimized(true)}
               onClose={() => invokeHide()}
               minimizeDisabled={minimizeDisabled}

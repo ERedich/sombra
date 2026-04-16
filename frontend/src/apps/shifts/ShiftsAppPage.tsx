@@ -19,6 +19,7 @@ import { Toast } from 'primereact/toast'
 import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { AppShell } from '../../layout/AppShell'
+import { useAppParameters } from '../../layout/AppParametersProvider'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 
 export type Shift = {
@@ -87,6 +88,8 @@ function siteColumnBody(row: Shift, dash: string) {
 
 export default function ShiftsAppPage() {
   const { t } = useTranslation()
+  const { applyDefaultShiftPlan } = useAppParameters()
+  const dspLocked = applyDefaultShiftPlan
   const toast = useRef<Toast>(null)
   const toolbarSearchRef = useRegisterAppToolbarSearch()
   const [rows, setRows] = useState<Shift[]>([])
@@ -320,6 +323,11 @@ export default function ShiftsAppPage() {
           header={headerNode}
         >
           <div className="px-1 md:px-2">
+            {dspLocked ? (
+              <p className="text-sm text-color-secondary m-0 mb-3 p-3 border-round border-1 surface-border surface-ground line-height-3">
+                {t('shifts.dsp_managed_banner')}
+              </p>
+            ) : null}
             <div className="flex justify-content-between align-items-center gap-3 flex-wrap mb-3 w-full">
               <ButtonGroup>
                 <Button
@@ -327,12 +335,13 @@ export default function ShiftsAppPage() {
                   label={t('shifts.create')}
                   icon="pi pi-plus"
                   onClick={openCreate}
+                  disabled={dspLocked}
                 />
                 <Button
                   type="button"
                   label={t('common.edit')}
                   icon="pi pi-pencil"
-                  disabled={!selected}
+                  disabled={!selected || dspLocked}
                   onClick={() => selected && openEdit(selected)}
                 />
                 <Button
@@ -340,7 +349,7 @@ export default function ShiftsAppPage() {
                   label={t('common.delete')}
                   icon="pi pi-trash"
                   severity="danger"
-                  disabled={!selected}
+                  disabled={!selected || dspLocked}
                   onClick={() => selected && confirmDelete(selected)}
                 />
               </ButtonGroup>

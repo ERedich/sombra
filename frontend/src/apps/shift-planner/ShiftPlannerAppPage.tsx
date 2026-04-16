@@ -7,10 +7,10 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type DragEvent,
 } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
+import { Trans, useTranslation } from 'react-i18next'
 import { Button } from 'primereact/button'
 import { Calendar } from 'primereact/calendar'
 import { Checkbox } from 'primereact/checkbox'
@@ -21,6 +21,7 @@ import { Divider } from 'primereact/divider'
 import { Dropdown } from 'primereact/dropdown'
 import { InputTextarea } from 'primereact/inputtextarea'
 import { Message } from 'primereact/message'
+import { Panel } from 'primereact/panel'
 import { RadioButton } from 'primereact/radiobutton'
 import { TabPanel, TabView } from 'primereact/tabview'
 import { Tag } from 'primereact/tag'
@@ -32,12 +33,15 @@ import { AppShell } from '../../layout/AppShell'
 import { useAppParameters } from '../../layout/AppParametersProvider'
 import { formatDate, formatDateTime } from '../../utils/dateTime'
 import { primeDateFormatForDtf } from '../../utils/dateTimeFormatPreference'
+import { visualizationBarCssVars } from '../../utils/visualizationBarStyle'
 
 type EmployeeOpt = {
   id: string
   key: string
   name: string
   site_id: string
+  /** Present on `/api/employees` rows; used to strip duplicated ` (SITEKEY)` suffix from `name`. */
+  site_key?: string
 }
 
 type ShiftAssignment = {
@@ -55,6 +59,9 @@ type ShiftAssignment = {
   employee_name: string
   time_start?: string
   time_end?: string
+  /** Raw DB overrides; null means shift definition times apply. */
+  override_time_start?: string | null
+  override_time_end?: string | null
   site_id?: string
 }
 
@@ -87,6 +94,12 @@ function startOfIsoWeek(d: Date): Date {
 function addDays(d: Date, n: number): Date {
   const x = new Date(d)
   x.setDate(x.getDate() + n)
+  return x
+}
+
+function startOfDay(d: Date): Date {
+  const x = new Date(d)
+  x.setHours(0, 0, 0, 0)
   return x
 }
 
@@ -185,6 +198,20 @@ function minutesToHmsForApi(totalMin: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`
 }
 
+function parseHmsToPickerDate(hms: string): Date {
+  const p = hms.trim().split(':')
+  const h = Number(p[0] ?? 0)
+  const m = Number(p[1] ?? 0)
+  const s = p[2] !== undefined && p[2] !== '' ? Number(p[2]) : 0
+  const d = new Date()
+  d.setHours(h, m, s, 0)
+  return d
+}
+
+function pickerDateToHmsApi(d: Date): string {
+  return minutesToHmsForApi(d.getHours() * 60 + d.getMinutes())
+}
+
 /** Slide same-day block by timeline delta; preserves duration; returns null if invalid. */
 function computeSlidSameDayTimes(
   origTs: string,
@@ -232,6 +259,27 @@ function isOvernightShift(timeStart: string, timeEnd: string): boolean {
   return timeHmsToMinutes(timeEnd) <= timeHmsToMinutes(timeStart)
 }
 
+/** When SBPR is on, overrides must stay inside the shift definition (same rules as API). */
+function overrideWithinShiftDefWallClock(
+  nsMin: number,
+  neMin: number,
+  dsMin: number,
+  deMin: number,
+  defOvernight: boolean,
+): boolean {
+  if (nsMin === neMin) return false
+  if (!defOvernight) {
+    if (neMin <= nsMin) return false
+    return nsMin >= dsMin && neMin <= deMin
+  }
+  if (neMin > nsMin) {
+    const eveningOnly = nsMin >= dsMin && neMin <= MINUTES_PER_DAY
+    const morningOnly = nsMin < dsMin && neMin <= deMin && neMin > nsMin
+    return eveningOnly || morningOnly
+  }
+  return nsMin >= dsMin && neMin <= deMin
+}
+
 /** Post-midnight segment (00:00 → time_end) on the calendar day after shift start. */
 function overnightTailBarPercents(timeEnd: string): {
   leftPct: number
@@ -254,6 +302,9 @@ const TIMELINE_HOUR_TICKS = [
 /** TabView index for Detailed planner (keep in sync with TabPanel order). */
 const SHIFT_PLANNER_TAB_DETAILED = 4
 
+/** Query `?detailed=YYYY-MM-DD` opens Detailed tab for that day (capacity planner deep link). */
+const SHIFT_PLANNER_DETAILED_PARAM_RE = /^\d{4}-\d{2}-\d{2}$/
+
 function presenceSeverity(
   s: string,
 ): 'success' | 'info' | 'warning' | 'danger' | null {
@@ -271,15 +322,6 @@ function presenceAccentColor(status: string): string {
   if (status === 'not_present') return 'var(--orange-500)'
   if (status === 'absent') return 'var(--red-500)'
   return 'var(--surface-300)'
-}
-
-/** Pastel fill + outline for View cards and Detailed timeline bars. */
-function presencePastelCardStyle(status: string): CSSProperties {
-  const accent = presenceAccentColor(status)
-  return {
-    backgroundColor: `color-mix(in srgb, ${accent} 20%, var(--surface-card))`,
-    border: `1px solid color-mix(in srgb, ${accent} 34%, var(--surface-border))`,
-  }
 }
 
 const SHIFT_PLANNER_DND_MIME = 'application/x-sombra-shift-assignment+json'
@@ -314,8 +356,8 @@ function PresenceStatusLegend() {
           className="flex align-items-center gap-2 white-space-nowrap"
         >
           <span
-            className="shift-planner-legend-swatch border-round-sm flex-shrink-0"
-            style={presencePastelCardStyle(status)}
+            className="shift-planner-legend-swatch app-viz-bar-swatch flex-shrink-0"
+            style={visualizationBarCssVars(presenceAccentColor(status))}
             aria-hidden
           />
           <span className="text-xs line-height-3">
@@ -325,6 +367,21 @@ function PresenceStatusLegend() {
       ))}
     </div>
   )
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Drop trailing ` (SITEKEY)` when it matches the employee row site key (names sometimes embed site for demos). */
+function stripTrailingSiteKeySuffix(
+  name: string,
+  siteKey?: string | null,
+): string {
+  const key = siteKey?.trim()
+  if (!key) return name
+  const re = new RegExp(`\\s+\\(${escapeRegExp(key)}\\)\\s*$`, 'i')
+  return name.replace(re, '').trimEnd()
 }
 
 function truncateTooltipLine(
@@ -386,17 +443,219 @@ function PlannerEmptySlot({ caption }: { caption: string }) {
   )
 }
 
+function PlanningModalAssignmentTimes({
+  assignment,
+  modalShift,
+  loading,
+  shiftBoundProjection,
+  showInlineInfoMessages,
+  showError,
+  showSuccess,
+  patchAssignment,
+}: {
+  assignment: ShiftAssignment
+  modalShift: Shift
+  loading: boolean
+  shiftBoundProjection: boolean
+  showInlineInfoMessages: boolean
+  showError: (detail: string) => void
+  showSuccess: (detail: string) => void
+  patchAssignment: (
+    id: string,
+    body: Record<string, unknown>,
+  ) => Promise<boolean>
+}) {
+  const { t } = useTranslation()
+  const tsRaw = assignment.time_start ?? modalShift.time_start
+  const teRaw = assignment.time_end ?? modalShift.time_end
+  const [timeStart, setTimeStart] = useState<Date | null>(() =>
+    parseHmsToPickerDate(tsRaw),
+  )
+  const [timeEnd, setTimeEnd] = useState<Date | null>(() =>
+    parseHmsToPickerDate(teRaw),
+  )
+  const [savingTimes, setSavingTimes] = useState(false)
+
+  useEffect(() => {
+    const ts = assignment.time_start ?? modalShift.time_start
+    const te = assignment.time_end ?? modalShift.time_end
+    setTimeStart(parseHmsToPickerDate(ts))
+    setTimeEnd(parseHmsToPickerDate(te))
+  }, [
+    assignment.id,
+    assignment.time_start,
+    assignment.time_end,
+    assignment.override_time_start,
+    assignment.override_time_end,
+    modalShift.time_start,
+    modalShift.time_end,
+  ])
+
+  const overnight = isOvernightShift(
+    modalShift.time_start,
+    modalShift.time_end,
+  )
+  const scheduled = assignment.presence_status === 'scheduled'
+  const canEdit = scheduled && !loading
+
+  const hasOverride = !!(
+    assignment.override_time_start && assignment.override_time_end
+  )
+
+  async function saveTimes() {
+    if (!timeStart || !timeEnd) {
+      showError(t('shift_planner.modal_times_need_both'))
+      return
+    }
+    const startApi = pickerDateToHmsApi(timeStart)
+    const endApi = pickerDateToHmsApi(timeEnd)
+    const sm = timeHmsToMinutes(startApi)
+    const em = timeHmsToMinutes(endApi)
+    if (sm === em) {
+      showError(t('shift_planner.modal_times_zero_duration'))
+      return
+    }
+    if (!overnight && em <= sm) {
+      showError(t('shift_planner.modal_times_end_after_start'))
+      return
+    }
+    const dsMin = timeHmsToMinutes(modalShift.time_start)
+    const deMin = timeHmsToMinutes(modalShift.time_end)
+    if (
+      shiftBoundProjection &&
+      !overrideWithinShiftDefWallClock(sm, em, dsMin, deMin, overnight)
+    ) {
+      showError(t('shift_planner.modal_times_sbpr_contain'))
+      return
+    }
+    setSavingTimes(true)
+    try {
+      const ok = await patchAssignment(assignment.id, {
+        presence_status: 'scheduled',
+        override_time_start: startApi,
+        override_time_end: endApi,
+      })
+      if (ok) showSuccess(t('common.save'))
+    } finally {
+      setSavingTimes(false)
+    }
+  }
+
+  async function resetTimes() {
+    setSavingTimes(true)
+    try {
+      const ok = await patchAssignment(assignment.id, {
+        presence_status: 'scheduled',
+        override_time_start: null,
+        override_time_end: null,
+      })
+      if (ok) showSuccess(t('common.save'))
+    } finally {
+      setSavingTimes(false)
+    }
+  }
+
+  const busy = savingTimes || loading
+
+  return (
+    <div className="flex flex-column gap-2 border-top-1 surface-border pt-2 mt-1">
+      <span className="text-sm font-medium">
+        {t('shift_planner.modal_times_section')}
+      </span>
+      {showInlineInfoMessages && shiftBoundProjection ? (
+        <Message
+          severity="info"
+          className="m-0 w-full text-sm"
+          text={t('shift_planner.modal_times_projection_hint')}
+        />
+      ) : null}
+      {showInlineInfoMessages && overnight ? (
+        <Message
+          severity="info"
+          className="m-0 w-full text-sm"
+          text={t('shift_planner.modal_times_overnight_hint')}
+        />
+      ) : null}
+      {!scheduled ? (
+        <p className="text-xs text-color-secondary m-0 line-height-3">
+          {t('shift_planner.modal_times_scheduled_only')}
+        </p>
+      ) : null}
+      <div className="grid">
+        <div className="col-12 md:col-6 flex flex-column gap-2">
+          <label className="text-sm font-medium" htmlFor={`sa_ts_${assignment.id}`}>
+            {t('shift_planner.modal_times_start')}
+          </label>
+          <Calendar
+            inputId={`sa_ts_${assignment.id}`}
+            value={timeStart}
+            onChange={(e) => setTimeStart(e.value as Date | null)}
+            timeOnly
+            hourFormat="24"
+            showIcon
+            className="w-full"
+            inputClassName="w-full"
+            disabled={!canEdit || busy}
+          />
+        </div>
+        <div className="col-12 md:col-6 flex flex-column gap-2">
+          <label className="text-sm font-medium" htmlFor={`sa_te_${assignment.id}`}>
+            {t('shift_planner.modal_times_end')}
+          </label>
+          <Calendar
+            inputId={`sa_te_${assignment.id}`}
+            value={timeEnd}
+            onChange={(e) => setTimeEnd(e.value as Date | null)}
+            timeOnly
+            hourFormat="24"
+            showIcon
+            className="w-full"
+            inputClassName="w-full"
+            disabled={!canEdit || busy}
+          />
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          type="button"
+          className="p-button-sm"
+          label={t('shift_planner.modal_times_save')}
+          icon="pi pi-check"
+          onClick={() => void saveTimes()}
+          disabled={!canEdit || busy}
+        />
+        <Button
+          type="button"
+          className="p-button-sm p-button-secondary"
+          label={t('shift_planner.modal_times_reset')}
+          icon="pi pi-replay"
+          onClick={() => void resetTimes()}
+          disabled={!canEdit || busy || !hasOverride}
+        />
+      </div>
+    </div>
+  )
+}
+
 export default function ShiftPlannerAppPage() {
   const { t } = useTranslation()
-  const { shiftLoginRecognition, dtf, shiftBoundProjection } = useAppParameters()
+  const {
+    shiftLoginRecognition,
+    dtf,
+    shiftBoundProjection,
+    applyDefaultShiftPlan,
+  } = useAppParameters()
   const toast = useRef<Toast>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  /** After `?detailed=` deep link expands the week, pick this day in Detailed tab. */
+  const pendingDetailedYmdRef = useRef<string | null>(null)
   const workingSiteId = getStoredUser()?.working_site_id ?? null
 
   const [rangeFrom, setRangeFrom] = useState<Date | null>(() =>
-    startOfIsoWeek(new Date()),
+    startOfDay(new Date()),
   )
   const [rangeTo, setRangeTo] = useState<Date | null>(() =>
-    addDays(startOfIsoWeek(new Date()), 6),
+    addDays(startOfDay(new Date()), 7),
   )
 
   const [shifts, setShifts] = useState<Shift[]>([])
@@ -426,11 +685,35 @@ export default function ShiftPlannerAppPage() {
   const [plannerDrag, setPlannerDrag] = useState<ShiftPlannerDragPayload | null>(
     null,
   )
+  /** Same payload as `plannerDrag`, updated synchronously so `dragover` can preventDefault before paint. */
+  const plannerDragRef = useRef<ShiftPlannerDragPayload | null>(null)
+
+  /** `v:${shiftId}:${ymd}` (View grid) or `c:${ymd}` (Detailed day chip) — solid outline while pointer over. */
+  const [plannerDropHoverKey, setPlannerDropHoverKey] = useState<string | null>(
+    null,
+  )
+
+  const clearPlannerDrag = useCallback(() => {
+    plannerDragRef.current = null
+    setPlannerDrag(null)
+    setPlannerDropHoverKey(null)
+  }, [])
 
   const [planningCellModal, setPlanningCellModal] = useState<{
     shiftId: string
     ymd: string
   } | null>(null)
+  const [planningModalShowInfoMessages, setPlanningModalShowInfoMessages] =
+    useState(false)
+  const [planningModalGuidelinesCollapsed, setPlanningModalGuidelinesCollapsed] =
+    useState(true)
+
+  useEffect(() => {
+    if (planningCellModal) {
+      setPlanningModalShowInfoMessages(false)
+      setPlanningModalGuidelinesCollapsed(true)
+    }
+  }, [planningCellModal])
 
   const [rolloutTargetFrom, setRolloutTargetFrom] = useState<Date | null>(null)
   const [rolloutTargetTo, setRolloutTargetTo] = useState<Date | null>(null)
@@ -489,14 +772,56 @@ export default function ShiftPlannerAppPage() {
     [employeesHere],
   )
 
+  const workingSiteKey = useMemo(() => {
+    if (!workingSiteId) return null
+    const sites = getStoredUser()?.selectable_working_sites ?? []
+    return sites.find((s) => s.id === workingSiteId)?.key ?? null
+  }, [workingSiteId])
+
+  const employeePlannerDisplayNameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const e of employeesHere) {
+      m.set(
+        e.id,
+        stripTrailingSiteKeySuffix(e.name, e.site_key ?? workingSiteKey),
+      )
+    }
+    return m
+  }, [employeesHere, workingSiteKey])
+
   const dateColumns = useMemo(() => {
     if (!rangeFrom || !rangeTo) return []
     return enumerateDates(rangeFrom, rangeTo)
   }, [rangeFrom, rangeTo])
 
   useEffect(() => {
+    const raw = searchParams.get('detailed')?.trim() ?? ''
+    if (!raw || !SHIFT_PLANNER_DETAILED_PARAM_RE.test(raw)) return
+    pendingDetailedYmdRef.current = raw
+    const d = dateFromYmd(raw)
+    const weekStart = startOfIsoWeek(d)
+    setRangeFrom(weekStart)
+    setRangeTo(addDays(weekStart, 6))
+    setPlannerTab(SHIFT_PLANNER_TAB_DETAILED)
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('detailed')
+        return next
+      },
+      { replace: true },
+    )
+  }, [searchParams, setSearchParams])
+
+  useEffect(() => {
     if (dateColumns.length === 0) {
       setSelectedDetailYmd(null)
+      return
+    }
+    const pending = pendingDetailedYmdRef.current
+    if (pending && dateColumns.includes(pending)) {
+      setSelectedDetailYmd(pending)
+      pendingDetailedYmdRef.current = null
       return
     }
     setSelectedDetailYmd((prev) =>
@@ -775,6 +1100,121 @@ export default function ShiftPlannerAppPage() {
     [loading, reload, showError, showSuccess, t],
   )
 
+  const moveAssignmentToCell = useCallback(
+    async (
+      assignmentId: string,
+      targetShiftId: string,
+      targetYmd: string,
+    ) => {
+      if (loading) return false
+      try {
+        await apiJson<AssignmentOneResponse>(
+          `/api/shift-assignments/${assignmentId}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({
+              presence_status: 'scheduled',
+              assignment_date: targetYmd,
+              shift_id: targetShiftId,
+            }),
+          },
+        )
+        await reload()
+        showSuccess(t('common.toast_success'))
+        return true
+      } catch (e) {
+        if (e instanceof ApiError) {
+          showError(e.message)
+        } else {
+          showError(t('shift_planner.move_assignment_fail'))
+        }
+        return false
+      }
+    },
+    [loading, reload, showError, showSuccess, t],
+  )
+
+  const confirmAndMoveAssignmentToDate = useCallback(
+    (assignmentId: string, targetYmd: string) => {
+      const a = assignments.find((x) => x.id === assignmentId)
+      if (!a) return
+      const subject = `${a.employee_name} (${a.shift_name})`
+      const fromLabel = `${formatDate(`${a.assignment_date}T12:00:00`)} · ${a.shift_name}`
+      const toLabel = `${formatDate(`${targetYmd}T12:00:00`)} · ${a.shift_name}`
+      confirmDialog({
+        header: t('common.dnd_confirm_move_header'),
+        message: (
+          <Trans
+            i18nKey="common.dnd_confirm_move_msg"
+            values={{ subject, from: fromLabel, to: toLabel }}
+            components={{
+              subj: <span className="app-dnd-confirm-subject" />,
+              loc: <span className="app-dnd-confirm-location" />,
+            }}
+          />
+        ),
+        icon: 'pi pi-exclamation-triangle',
+        accept: () => {
+          void moveAssignmentToDate(assignmentId, targetYmd).then((ok) => {
+            if (ok) clearPlannerDrag()
+          })
+        },
+        reject: () => clearPlannerDrag(),
+      })
+    },
+    [
+      assignments,
+      clearPlannerDrag,
+      formatDate,
+      moveAssignmentToDate,
+      t,
+    ],
+  )
+
+  const confirmAndMoveAssignmentToCell = useCallback(
+    (assignmentId: string, targetShiftId: string, targetYmd: string) => {
+      const a = assignments.find((x) => x.id === assignmentId)
+      if (!a) return
+      const subject = `${a.employee_name} (${a.shift_name})`
+      const fromLabel = `${a.shift_name} · ${formatDate(`${a.assignment_date}T12:00:00`)}`
+      const targetShiftName =
+        shiftsById.get(targetShiftId)?.name ?? a.shift_name
+      const toLabel = `${targetShiftName} · ${formatDate(`${targetYmd}T12:00:00`)}`
+      confirmDialog({
+        header: t('common.dnd_confirm_move_header'),
+        message: (
+          <Trans
+            i18nKey="common.dnd_confirm_move_msg"
+            values={{ subject, from: fromLabel, to: toLabel }}
+            components={{
+              subj: <span className="app-dnd-confirm-subject" />,
+              loc: <span className="app-dnd-confirm-location" />,
+            }}
+          />
+        ),
+        icon: 'pi pi-exclamation-triangle',
+        accept: () => {
+          void moveAssignmentToCell(
+            assignmentId,
+            targetShiftId,
+            targetYmd,
+          ).then((ok) => {
+            if (ok) clearPlannerDrag()
+          })
+        },
+        reject: () => clearPlannerDrag(),
+      })
+    },
+    [
+      assignments,
+      clearPlannerDrag,
+      formatDate,
+      moveAssignmentToCell,
+      shiftsById,
+      t,
+    ],
+  )
+
   const onDetailedTimePointerDown = useCallback(
     (
       e: React.PointerEvent<HTMLDivElement>,
@@ -793,7 +1233,7 @@ export default function ShiftPlannerAppPage() {
       const startX = e.clientX
       const trackWidth = rect.width
       let finished = false
-      const onMove = (_ev: PointerEvent) => {
+      const onMove = () => {
         /* reserved for live preview */
       }
       const finish = async (upEv: PointerEvent) => {
@@ -863,6 +1303,7 @@ export default function ShiftPlannerAppPage() {
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData(SHIFT_PLANNER_DND_MIME, JSON.stringify(payload))
     e.dataTransfer.setData('text/plain', JSON.stringify(payload))
+    plannerDragRef.current = payload
     setPlannerDrag(payload)
   }
 
@@ -1187,10 +1628,10 @@ export default function ShiftPlannerAppPage() {
                             return (
                               <div
                                 key={a.id}
-                                className="surface-card border-round p-2 shadow-1 flex flex-column gap-1"
-                                style={{
-                                  borderLeft: `4px solid ${presenceAccentColor(a.presence_status)}`,
-                                }}
+                                className="app-viz-bar p-2 flex flex-column gap-1"
+                                style={visualizationBarCssVars(
+                                  presenceAccentColor(a.presence_status),
+                                )}
                               >
                                 <div className="flex align-items-start justify-content-between gap-2 flex-wrap">
                                   <span className="font-semibold text-sm line-height-3">
@@ -1255,32 +1696,64 @@ export default function ShiftPlannerAppPage() {
         <div className="shift-planner-day-chip-row flex flex-wrap gap-2">
           {dateColumns.map((ymd) => {
             const chipDow = isoWeekdayFromYmd(ymd)
-            const dragShift =
-              plannerDrag ? shiftsById.get(plannerDrag.shiftId) : undefined
+            const chipDrag = plannerDragRef.current ?? plannerDrag
+            const dragShift = chipDrag
+              ? shiftsById.get(chipDrag.shiftId)
+              : undefined
             const chipDropActive =
-              !!plannerDrag &&
+              !!chipDrag &&
               !loading &&
               ymd >= todayYmd &&
-              ymd !== plannerDrag.fromYmd &&
+              ymd !== chipDrag.fromYmd &&
               !!dragShift &&
               dragShift.available_weekdays.includes(chipDow)
+            const chipDropKey = `c:${ymd}`
             return (
               <Button
                 key={ymd}
                 type="button"
-                className={
-                  chipDropActive
-                    ? 'p-button-sm shift-planner-drop-target--active'
-                    : 'p-button-sm'
-                }
+                className={[
+                  'p-button-sm',
+                  chipDropActive ? 'app-viz-droppable-zone' : '',
+                  chipDropActive && plannerDropHoverKey === chipDropKey
+                    ? 'app-viz-droppable-zone--over'
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 label={`${t(`shifts.weekday_${chipDow}` as const)} · ${formatDate(`${ymd}T12:00:00`)}`}
                 outlined={selectedDetailYmd !== ymd}
                 onClick={() => setSelectedDetailYmd(ymd)}
                 disabled={loading}
+                onDragEnter={
+                  chipDropActive
+                    ? (e) => {
+                        e.preventDefault()
+                        setPlannerDropHoverKey(chipDropKey)
+                      }
+                    : undefined
+                }
+                onDragLeave={
+                  chipDropActive
+                    ? (e) => {
+                        const rel = e.relatedTarget as Node | null
+                        if (
+                          rel &&
+                          (e.currentTarget as HTMLElement).contains(rel)
+                        ) {
+                          return
+                        }
+                        setPlannerDropHoverKey((k) =>
+                          k === chipDropKey ? null : k,
+                        )
+                      }
+                    : undefined
+                }
                 onDragOver={(e) => {
                   if (!chipDropActive) return
                   e.preventDefault()
                   e.dataTransfer.dropEffect = 'move'
+                  setPlannerDropHoverKey(chipDropKey)
                 }}
                 onDrop={(e) => {
                   e.preventDefault()
@@ -1289,9 +1762,7 @@ export default function ShiftPlannerAppPage() {
                   if (ymd < todayYmd || ymd === p.fromYmd) return
                   const shP = shiftsById.get(p.shiftId)
                   if (!shP || !shP.available_weekdays.includes(chipDow)) return
-                  void moveAssignmentToDate(p.assignmentId, ymd).then((ok) => {
-                    if (ok) setPlannerDrag(null)
-                  })
+                  confirmAndMoveAssignmentToDate(p.assignmentId, ymd)
                 }}
               />
             )
@@ -1317,7 +1788,13 @@ export default function ShiftPlannerAppPage() {
                   className="mb-3 w-full"
                   text={t('shift_planner.unbound_time_drag_hint')}
                 />
-              ) : null}
+              ) : (
+                <Message
+                  severity="info"
+                  className="mb-3 w-full"
+                  text={t('shift_planner.detailed_sbpr_hint')}
+                />
+              )}
               <div className="shift-planner-timeline-hour-row">
                 <div className="shift-planner-timeline-gutter" aria-hidden />
                 <div className="shift-planner-timeline-track shift-planner-timeline-track--axis">
@@ -1362,6 +1839,10 @@ export default function ShiftPlannerAppPage() {
                   : canDragDateDetailed
                     ? 'grab'
                     : undefined
+                const barTimeLabel =
+                  row.segment === 'overnight_tail'
+                    ? `${te.slice(0, 5)}`
+                    : `${ts.slice(0, 5)}–${te.slice(0, 5)}`
                 return (
                   <div
                     key={`${a.id}-${row.segment}`}
@@ -1377,21 +1858,21 @@ export default function ShiftPlannerAppPage() {
                     </div>
                     <div className="shift-planner-timeline-track-inner">
                       <div
-                        className="shift-planner-timeline-bar flex align-items-center"
+                        className="shift-planner-timeline-bar app-viz-bar flex align-items-center overflow-hidden"
                         style={{
                           left: `${leftPct}%`,
                           width: `${Math.max(widthPct, 0.35)}%`,
-                          ...presencePastelCardStyle(a.presence_status),
+                          ...visualizationBarCssVars(
+                            presenceAccentColor(a.presence_status),
+                          ),
                           touchAction: canTimeDragDetailed ? 'none' : undefined,
                           cursor: barCursor,
-                          paddingLeft: showGrip ? '2px' : undefined,
-                          gap: showGrip ? '2px' : undefined,
                         }}
                         draggable={canDragDateDetailed}
                         onDragStart={(e) =>
                           onAssignmentDragStart(e, a, a.shift_id)
                         }
-                        onDragEnd={() => setPlannerDrag(null)}
+                        onDragEnd={() => clearPlannerDrag()}
                         onPointerDown={
                           canTimeDragDetailed
                             ? (e) => onDetailedTimePointerDown(e, a, ts, te)
@@ -1412,11 +1893,16 @@ export default function ShiftPlannerAppPage() {
                         }
                       >
                         {showGrip ? (
-                          <span
-                            className="shift-planner-dnd-grip flex-shrink-0"
+                          <div
+                            className="app-viz-bar__handle"
                             aria-hidden
-                          />
+                          >
+                            <i className="pi pi-ellipsis-v" />
+                          </div>
                         ) : null}
+                        <div className="app-viz-bar__body text-sm font-medium line-height-3 pr-1">
+                          {barTimeLabel}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1523,7 +2009,7 @@ export default function ShiftPlannerAppPage() {
   function scheduleTable(mode: 'view' | 'planning') {
     const isView = mode === 'view'
     return (
-      <div className="overflow-auto border-1 surface-border border-round">
+      <div className="shift-planner-schedule-cq overflow-auto border-1 surface-border border-round">
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="surface-100">
@@ -1603,32 +2089,67 @@ export default function ShiftPlannerAppPage() {
                   }
                   const list =
                     assignmentsByKey.get(cellKey(sh.id, ymd)) ?? []
+                  const dragFocus = plannerDragRef.current ?? plannerDrag
                   const viewDropHighlight =
                     isView &&
-                    plannerDrag &&
+                    dragFocus &&
                     !loading &&
-                    plannerDrag.shiftId === sh.id &&
                     ymd >= todayYmd &&
                     sh.available_weekdays.includes(dow) &&
-                    ymd !== plannerDrag.fromYmd
+                    (sh.id !== dragFocus.shiftId ||
+                      ymd !== dragFocus.fromYmd)
+                  const viewDropKey = `v:${sh.id}:${ymd}`
                   return (
                     <td
                       key={ymd}
                       className={[
                         'border-bottom-1 surface-border align-top',
                         isView ? 'p-2' : 'p-1',
-                        viewDropHighlight ? 'shift-planner-drop-target--active' : '',
-                      ].join(' ')}
+                        viewDropHighlight ? 'app-viz-droppable-zone' : '',
+                        viewDropHighlight &&
+                        plannerDropHoverKey === viewDropKey
+                          ? 'app-viz-droppable-zone--over'
+                          : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')}
+                      onDragEnter={
+                        isView
+                          ? (e) => {
+                              const d = plannerDragRef.current
+                              if (!d || loading) return
+                              if (ymd < todayYmd) return
+                              if (!sh.available_weekdays.includes(dow)) return
+                              if (sh.id === d.shiftId && ymd === d.fromYmd) return
+                              e.preventDefault()
+                              setPlannerDropHoverKey(viewDropKey)
+                            }
+                          : undefined
+                      }
+                      onDragLeave={
+                        isView
+                          ? (e) => {
+                              const rel = e.relatedTarget as Node | null
+                              if (rel && e.currentTarget.contains(rel)) return
+                              setPlannerDropHoverKey((k) =>
+                                k === viewDropKey ? null : k,
+                              )
+                            }
+                          : undefined
+                      }
                       onDragOver={
                         isView
                           ? (e) => {
-                              if (!plannerDrag || loading) return
-                              if (plannerDrag.shiftId !== sh.id) return
+                              const d = plannerDragRef.current
+                              if (!d || loading) return
                               if (ymd < todayYmd) return
                               if (!sh.available_weekdays.includes(dow)) return
-                              if (ymd === plannerDrag.fromYmd) return
+                              if (sh.id === d.shiftId && ymd === d.fromYmd) {
+                                return
+                              }
                               e.preventDefault()
                               e.dataTransfer.dropEffect = 'move'
+                              setPlannerDropHoverKey(viewDropKey)
                             }
                           : undefined
                       }
@@ -1638,16 +2159,16 @@ export default function ShiftPlannerAppPage() {
                               e.preventDefault()
                               const p = parsePlannerDragPayload(e.dataTransfer)
                               if (!p || loading) return
-                              if (p.shiftId !== sh.id) return
                               if (ymd < todayYmd) return
                               if (!sh.available_weekdays.includes(dow)) return
-                              if (ymd === p.fromYmd) return
-                              void moveAssignmentToDate(
+                              if (sh.id === p.shiftId && ymd === p.fromYmd) {
+                                return
+                              }
+                              confirmAndMoveAssignmentToCell(
                                 p.assignmentId,
+                                sh.id,
                                 ymd,
-                              ).then((ok) => {
-                                if (ok) setPlannerDrag(null)
-                              })
+                              )
                             }
                           : undefined
                       }
@@ -1670,6 +2191,14 @@ export default function ShiftPlannerAppPage() {
                                 : null
                               const canDragView =
                                 !loading && a.presence_status === 'scheduled'
+                              const employeeDisplayName =
+                                employeePlannerDisplayNameById.get(
+                                  a.employee_id,
+                                ) ??
+                                stripTrailingSiteKeySuffix(
+                                  a.employee_name,
+                                  workingSiteKey,
+                                )
                               return (
                                 <div
                                   key={a.id}
@@ -1677,11 +2206,11 @@ export default function ShiftPlannerAppPage() {
                                   onDragStart={(e) =>
                                     onAssignmentDragStart(e, a, sh.id)
                                   }
-                                  onDragEnd={() => setPlannerDrag(null)}
-                                  className="border-round p-2 flex flex-column gap-1"
+                                  onDragEnd={() => clearPlannerDrag()}
+                                  className="app-viz-bar flex flex-row overflow-hidden"
                                   style={{
-                                    ...presencePastelCardStyle(
-                                      a.presence_status,
+                                    ...visualizationBarCssVars(
+                                      presenceAccentColor(a.presence_status),
                                     ),
                                     cursor: canDragView ? 'grab' : undefined,
                                   }}
@@ -1697,34 +2226,37 @@ export default function ShiftPlannerAppPage() {
                                       : undefined
                                   }
                                 >
-                                  <div className="flex align-items-start gap-2">
-                                    {canDragView ? (
-                                      <span
-                                        className="shift-planner-dnd-grip flex-shrink-0 align-self-center"
-                                        aria-hidden
-                                      />
-                                    ) : null}
-                                    <div className="min-w-0 flex-1 flex flex-column gap-1">
-                                      <span className="font-semibold text-sm line-height-3">
-                                        {a.employee_name}
-                                      </span>
-                                      {a.present_started_at ? (
-                                        <div className="text-xs text-color-secondary line-height-3">
-                                          {t('shift_planner.started_at')}:{' '}
-                                          {formatDateTime(
-                                            a.present_started_at,
-                                          )}
-                                        </div>
-                                      ) : null}
-                                      {absentTip ? (
-                                        <div
-                                          className="text-xs text-color-secondary line-height-3"
-                                          title={absentTip.title}
-                                        >
-                                          {absentTip.display}
-                                        </div>
-                                      ) : null}
+                                  {canDragView ? (
+                                    <div
+                                      className="app-viz-bar__handle"
+                                      aria-hidden
+                                    >
+                                      <i className="pi pi-ellipsis-v" />
                                     </div>
+                                  ) : null}
+                                  <div className="app-viz-bar__main p-2 flex flex-column gap-1">
+                                    <span className="font-semibold text-sm line-height-3 shift-planner-cell-employee-name">
+                                      {employeeDisplayName}
+                                    </span>
+                                    <span className="font-semibold text-sm line-height-3 shift-planner-cell-employee-key">
+                                      {a.employee_key}
+                                    </span>
+                                    {a.present_started_at ? (
+                                      <div className="text-xs text-color-secondary line-height-3">
+                                        {t('shift_planner.started_at')}:{' '}
+                                        {formatDateTime(
+                                          a.present_started_at,
+                                        )}
+                                      </div>
+                                    ) : null}
+                                    {absentTip ? (
+                                      <div
+                                        className="text-xs text-color-secondary line-height-3"
+                                        title={absentTip.title}
+                                      >
+                                        {absentTip.display}
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </div>
                               )
@@ -1821,6 +2353,13 @@ export default function ShiftPlannerAppPage() {
               text={t('shift_planner.slr_banner')}
             />
           ) : null}
+          {applyDefaultShiftPlan ? (
+            <Message
+              severity="info"
+              className="mb-3"
+              text={t('shift_planner.dsp_banner')}
+            />
+          ) : null}
 
           <div className="flex flex-wrap align-items-end gap-3 mb-3 w-full">
             <div className="flex flex-column gap-2">
@@ -1911,6 +2450,33 @@ export default function ShiftPlannerAppPage() {
         onHide={() => setPlanningCellModal(null)}
         dismissableMask={!rolloutApplying && !loading}
         style={{ width: 'min(40rem, 96vw)' }}
+        headerStartActions={
+          <Button
+            type="button"
+            icon="pi pi-info-circle"
+            text
+            rounded
+            severity={
+              planningModalShowInfoMessages ? 'info' : 'secondary'
+            }
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              setPlanningModalShowInfoMessages((v) => !v)
+            }}
+            aria-pressed={planningModalShowInfoMessages}
+            aria-label={
+              planningModalShowInfoMessages
+                ? t('shift_planner.modal_info_toggle_hide_aria')
+                : t('shift_planner.modal_info_toggle_show_aria')
+            }
+            title={
+              planningModalShowInfoMessages
+                ? t('shift_planner.modal_info_toggle_hide_tooltip')
+                : t('shift_planner.modal_info_toggle_show_tooltip')
+            }
+          />
+        }
         dockTitle={
           planningCellModal && planningModalShift
             ? `${planningModalShift.name} (${planningModalShift.key}) · ${formatDate(`${planningCellModal.ymd}T12:00:00`)}`
@@ -1981,6 +2547,16 @@ export default function ShiftPlannerAppPage() {
                       : a.absent_reason}
                   </div>
                 ) : null}
+                <PlanningModalAssignmentTimes
+                  assignment={a}
+                  modalShift={planningModalShift}
+                  loading={loading}
+                  shiftBoundProjection={shiftBoundProjection}
+                  showInlineInfoMessages={planningModalShowInfoMessages}
+                  showError={showError}
+                  showSuccess={showSuccess}
+                  patchAssignment={patchAssignment}
+                />
                 <div className="flex flex-wrap gap-1">
                   <Button
                     type="button"
@@ -2153,6 +2729,30 @@ export default function ShiftPlannerAppPage() {
                 }
               />
             </div>
+            <Panel
+              header={t('shift_planner.modal_guidelines_title')}
+              toggleable
+              collapsed={planningModalGuidelinesCollapsed}
+              onToggle={(e) =>
+                setPlanningModalGuidelinesCollapsed(e.value)
+              }
+              className="mt-2"
+            >
+              <div className="flex flex-column gap-2">
+                <div className="text-sm font-medium">
+                  {t('shift_planner.modal_guidelines_info_messages_title')}
+                </div>
+                <p className="text-sm text-color-secondary m-0 line-height-3">
+                  {t('shift_planner.modal_guidelines_info_messages_body')}
+                </p>
+                <div className="text-sm font-medium pt-2">
+                  {t('shift_planner.modal_guidelines_visualization_title')}
+                </div>
+                <p className="text-sm text-color-secondary m-0 line-height-3">
+                  {t('shift_planner.modal_guidelines_drag_drop_body')}
+                </p>
+              </div>
+            </Panel>
           </div>
         ) : null}
       </AppCrudDialog>

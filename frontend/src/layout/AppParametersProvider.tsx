@@ -22,6 +22,10 @@ import {
   setDateTimeFormatPreference,
   type GeneralDtfId,
 } from '../utils/dateTimeFormatPreference'
+import {
+  DEFAULT_GENERAL_CURRENCIES,
+  normalizeGeneralCurrenciesFromApi,
+} from '../utils/generalCurrencies'
 
 const IDLE_SESSION_MAX_MINUTES = 10080
 
@@ -30,6 +34,8 @@ export type AppParametersGeneralSnapshot = {
   dtf: GeneralDtfId
   fdw: GeneralFdwId
   ask_for_site_change_on_login: boolean
+  /** CURR: ordered currency codes; first = default. */
+  currencies: string[]
 }
 
 type AppParametersApiResponse = {
@@ -41,13 +47,20 @@ type AppParametersApiResponse = {
     dtf?: string
     fdw?: string
     ask_for_site_change_on_login?: boolean
+    currencies?: string[]
   }
   shifts?: {
     shift_login_recognition?: boolean
     shift_planning_capacity_pct?: number
     shift_bound_projection?: boolean
+    apply_default_shift_plan?: boolean
+    default_shift_time_start?: string
+    default_shift_time_end?: string
+    default_shift_weekdays?: number[]
   }
 }
+
+const DEFAULT_DSP_WEEKDAYS: number[] = [1, 2, 3, 4, 5]
 
 export type AppParametersShiftsSnapshot = {
   shiftLoginRecognition: boolean
@@ -55,6 +68,12 @@ export type AppParametersShiftsSnapshot = {
   shiftPlanningCapacityPct: number
   /** SBPR: when true, planner keeps blocks on shift-defined times. */
   shiftBoundProjection: boolean
+  /** DSP: capacities from default schedule (one system shift per site). */
+  applyDefaultShiftPlan: boolean
+  /** HH:mm:ss from server */
+  defaultShiftTimeStart: string
+  defaultShiftTimeEnd: string
+  defaultShiftWeekdays: number[]
 }
 
 type AppParametersContextValue = AppParametersGeneralSnapshot &
@@ -91,6 +110,7 @@ function normalizeGeneral(
     fdw,
     ask_for_site_change_on_login:
       raw?.ask_for_site_change_on_login === true,
+    currencies: normalizeGeneralCurrenciesFromApi(raw?.currencies),
   }
 }
 
@@ -101,7 +121,25 @@ function normalizePlannedHoursRestriction(
   return raw?.planned_hours_restriction !== false
 }
 
-function normalizeShiftsSnapshot(
+function normalizeDefaultShiftWeekdays(raw: unknown): number[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [...DEFAULT_DSP_WEEKDAYS]
+  const out: number[] = []
+  for (const x of raw) {
+    if (typeof x !== 'number' || !Number.isInteger(x)) continue
+    if (x < 1 || x > 7) continue
+    out.push(x)
+  }
+  if (out.length === 0) return [...DEFAULT_DSP_WEEKDAYS]
+  return [...new Set(out)].sort((a, b) => a - b)
+}
+
+function normalizeShiftTime(raw: unknown, fallback: string): string {
+  if (typeof raw !== 'string' || !raw.trim()) return fallback
+  return raw.trim()
+}
+
+/** Normalize `/api/app-parameters` `shifts` object (GET or PATCH response). */
+export function normalizeShiftsSnapshot(
   raw: AppParametersApiResponse['shifts'] | undefined,
 ): AppParametersShiftsSnapshot {
   const shiftLoginRecognition = raw?.shift_login_recognition !== false
@@ -111,10 +149,26 @@ function normalizeShiftsSnapshot(
       ? Math.min(100, Math.max(0, pctRaw))
       : 100
   const shiftBoundProjection = raw?.shift_bound_projection !== false
+  const applyDefaultShiftPlan = raw?.apply_default_shift_plan === true
+  const defaultShiftTimeStart = normalizeShiftTime(
+    raw?.default_shift_time_start,
+    '08:00:00',
+  )
+  const defaultShiftTimeEnd = normalizeShiftTime(
+    raw?.default_shift_time_end,
+    '17:00:00',
+  )
+  const defaultShiftWeekdays = normalizeDefaultShiftWeekdays(
+    raw?.default_shift_weekdays,
+  )
   return {
     shiftLoginRecognition,
     shiftPlanningCapacityPct,
     shiftBoundProjection,
+    applyDefaultShiftPlan,
+    defaultShiftTimeStart,
+    defaultShiftTimeEnd,
+    defaultShiftWeekdays,
   }
 }
 
@@ -125,6 +179,7 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
     dtf: DEFAULT_GENERAL_DTF,
     fdw: DEFAULT_GENERAL_FDW,
     ask_for_site_change_on_login: false,
+    currencies: [...DEFAULT_GENERAL_CURRENCIES],
   }))
   const [shiftsSnapshot, setShiftsSnapshot] = useState<AppParametersShiftsSnapshot>(
     () => normalizeShiftsSnapshot(undefined),
@@ -142,6 +197,7 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
           dtf: DEFAULT_GENERAL_DTF,
           fdw: DEFAULT_GENERAL_FDW,
           ask_for_site_change_on_login: false,
+          currencies: [...DEFAULT_GENERAL_CURRENCIES],
         })
         setShiftsSnapshot(normalizeShiftsSnapshot(undefined))
         setPlannedHoursRestriction(true)
@@ -164,6 +220,7 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
           dtf: DEFAULT_GENERAL_DTF,
           fdw: DEFAULT_GENERAL_FDW,
           ask_for_site_change_on_login: false,
+          currencies: [...DEFAULT_GENERAL_CURRENCIES],
         })
         setShiftsSnapshot(normalizeShiftsSnapshot(undefined))
         setPlannedHoursRestriction(true)
