@@ -15,6 +15,10 @@ export type WeekWoBarSegment = {
   wo: WorkOrder
   startCol: number
   endCol: number
+  /** True when the WO's real start date is within this week segment. */
+  isStart: boolean
+  /** True when the WO's real end date is within this week segment. */
+  isEnd: boolean
 }
 
 export type PlacedWeekWoBar = WeekWoBarSegment & {
@@ -46,7 +50,16 @@ export function woSegmentInWeek(
     }
   }
   if (minCol < 0 || maxCol < 0) return null
-  return { wo, startCol: minCol, endCol: maxCol }
+
+  const weekStartYmd = week[0]!.ymd
+  const weekEndYmd = week[6]!.ymd
+  return {
+    wo,
+    startCol: minCol,
+    endCol: maxCol,
+    isStart: startYmd >= weekStartYmd,
+    isEnd: endYmd <= weekEndYmd,
+  }
 }
 
 export function buildWeekSegments(

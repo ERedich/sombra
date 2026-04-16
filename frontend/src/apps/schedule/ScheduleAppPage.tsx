@@ -362,11 +362,37 @@ export default function ScheduleAppPage() {
                               const label = `${p.wo.wo_key} · ${p.wo.short_text}`
                               const startLine = p.startCol + 1
                               const endLine = p.endCol + 2
+                              const continuesLeft = !p.isStart
+                              const continuesRight = !p.isEnd
+                              const barClass = [
+                                'app-schedule-span-bar',
+                                p.isStart ? 'app-schedule-span-bar--start' : '',
+                                p.isEnd ? 'app-schedule-span-bar--end' : '',
+                                continuesLeft
+                                  ? 'app-schedule-span-bar--continues-left'
+                                  : '',
+                                continuesRight
+                                  ? 'app-schedule-span-bar--continues-right'
+                                  : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' ')
+                              const a11yLabel = [
+                                label,
+                                continuesLeft
+                                  ? t('schedule.bar_continues_from_prev_week')
+                                  : '',
+                                continuesRight
+                                  ? t('schedule.bar_continues_to_next_week')
+                                  : '',
+                              ]
+                                .filter(Boolean)
+                                .join(' – ')
                               return (
                                 <button
                                   key={`${p.wo.id}-${wi}-${p.lane}-${p.startCol}-${p.endCol}`}
                                   type="button"
-                                  className="app-schedule-span-bar"
+                                  className={barClass}
                                   style={{
                                     gridColumn: `${startLine} / ${endLine}`,
                                     gridRow: p.lane + 1,
@@ -374,11 +400,28 @@ export default function ScheduleAppPage() {
                                     color: fg,
                                   }}
                                   title={label}
+                                  aria-label={a11yLabel}
                                   onClick={() => mountWoMw(p.wo.id)}
                                 >
+                                  {continuesLeft ? (
+                                    <span
+                                      className="app-schedule-span-bar-cont app-schedule-span-bar-cont--left"
+                                      aria-hidden="true"
+                                    >
+                                      <i className="pi pi-chevron-left" />
+                                    </span>
+                                  ) : null}
                                   <span className="app-schedule-span-bar-label">
                                     {label}
                                   </span>
+                                  {continuesRight ? (
+                                    <span
+                                      className="app-schedule-span-bar-cont app-schedule-span-bar-cont--right"
+                                      aria-hidden="true"
+                                    >
+                                      <i className="pi pi-chevron-right" />
+                                    </span>
+                                  ) : null}
                                 </button>
                               )
                             })}
