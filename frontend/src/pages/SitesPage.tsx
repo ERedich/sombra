@@ -19,10 +19,13 @@ import { getStoredUser } from '../auth'
 import { AppShell } from '../layout/AppShell'
 import { useRegisterCreateShortcut } from '../layout/AppCreateShortcut'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../layout/kiraRowDraft'
 import { useRegisterAppToolbarSearch } from '../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../table-wizard'
 import { useTableWizard, useTableWizardToastEffect } from '../table-wizard'
@@ -60,6 +63,7 @@ function withHash(hexWithoutHash: string): string {
 
 export default function SitesPage() {
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const siteIdParam = searchParams.get('siteId')?.trim() ?? ''
@@ -267,30 +271,45 @@ export default function SitesPage() {
 
   const auditResourceIdForMenu = siteIdParam || selectedSite?.id || ''
 
-  const crudContextMenuItems = buildCrudContextMenuModel(
-    {
-      onCreate: openCreate,
-      onEdit: () => {
-        if (selectedSite) openEdit(selectedSite)
+  const crudContextMenuItems = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selectedSite,
+      getDraft: () =>
+        selectedSite
+          ? formatKiraRowDraft(t('sites.title'), {
+              id: selectedSite.id,
+              key: selectedSite.key,
+              name: selectedSite.name,
+            })
+          : '',
+    }),
+    { separator: true },
+    ...buildCrudContextMenuModel(
+      {
+        onCreate: openCreate,
+        onEdit: () => {
+          if (selectedSite) openEdit(selectedSite)
+        },
+        onDelete: () => {
+          if (selectedSite) confirmDelete(selectedSite)
+        },
+        disableEdit: !selectedSite,
+        disableDelete: !selectedSite,
       },
-      onDelete: () => {
-        if (selectedSite) confirmDelete(selectedSite)
+      t,
+      {
+        audit: selectedSite ? rowAuditSnapshot(selectedSite) : undefined,
+        auditHistory: {
+          visible: isAdmin === true && !!auditResourceIdForMenu,
+          onNavigate: () =>
+            navigate(
+              `/audit-log?resource_type=site&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
+            ),
+        },
       },
-      disableEdit: !selectedSite,
-      disableDelete: !selectedSite,
-    },
-    t,
-    {
-      audit: selectedSite ? rowAuditSnapshot(selectedSite) : undefined,
-      auditHistory: {
-        visible: isAdmin === true && !!auditResourceIdForMenu,
-        onNavigate: () =>
-          navigate(
-            `/audit-log?resource_type=site&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
-          ),
-      },
-    },
-  )
+    ),
+  ]
 
   const colourBody = useCallback((row: Site) => (
     <div className="flex align-items-center gap-2">

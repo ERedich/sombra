@@ -33,6 +33,7 @@ import { AppShell } from '../../layout/AppShell'
 import { useAppParameters } from '../../layout/AppParametersProvider'
 import { formatDate, formatDateTime } from '../../utils/dateTime'
 import { primeDateFormatForDtf } from '../../utils/dateTimeFormatPreference'
+import { AppVizBarLegend } from '../../components/visualization/AppVizBarLegend'
 import { visualizationBarCssVars } from '../../utils/visualizationBarStyle'
 
 type EmployeeOpt = {
@@ -342,30 +343,16 @@ const PRESENCE_LEGEND_STATUSES = [
 function PresenceStatusLegend() {
   const { t } = useTranslation()
   return (
-    <div
+    <AppVizBarLegend
       className="shift-planner-presence-legend"
-      role="group"
-      aria-label={t('shift_planner.presence_legend_title')}
-    >
-      <span className="text-xs font-medium text-color-secondary white-space-nowrap">
-        {t('shift_planner.presence_legend_title')}
-      </span>
-      {PRESENCE_LEGEND_STATUSES.map((status) => (
-        <div
-          key={status}
-          className="flex align-items-center gap-2 white-space-nowrap"
-        >
-          <span
-            className="shift-planner-legend-swatch app-viz-bar-swatch flex-shrink-0"
-            style={visualizationBarCssVars(presenceAccentColor(status))}
-            aria-hidden
-          />
-          <span className="text-xs line-height-3">
-            {t(`shift_planner.presence_${status}` as const)}
-          </span>
-        </div>
-      ))}
-    </div>
+      title={t('shift_planner.presence_legend_title')}
+      ariaLabel={t('shift_planner.presence_legend_title')}
+      items={PRESENCE_LEGEND_STATUSES.map((status) => ({
+        id: status,
+        label: t(`shift_planner.presence_${status}` as const),
+        accent: presenceAccentColor(status),
+      }))}
+    />
   )
 }
 
@@ -2751,6 +2738,31 @@ export default function ShiftPlannerAppPage() {
                 <p className="text-sm text-color-secondary m-0 line-height-3">
                   {t('shift_planner.modal_guidelines_drag_drop_body')}
                 </p>
+                <div className="text-sm font-medium pt-2">
+                  {t('shift_planner.modal_guidelines_legend_bars_title')}
+                </div>
+                <p className="text-sm text-color-secondary m-0 line-height-3">
+                  {t('shift_planner.modal_guidelines_legend_bars_body')}
+                </p>
+                <AppVizBarLegend
+                  className="surface-100 border-1 surface-border border-round p-2 mt-1"
+                  title={t('shift_planner.modal_guidelines_legend_bars_example_title')}
+                  ariaLabel={t(
+                    'shift_planner.modal_guidelines_legend_bars_example_title',
+                  )}
+                  items={[
+                    {
+                      id: 'demo_scheduled',
+                      label: t('shift_planner.modal_guidelines_legend_demo_scheduled'),
+                      accent: presenceAccentColor('scheduled'),
+                    },
+                    {
+                      id: 'demo_present',
+                      label: t('shift_planner.modal_guidelines_legend_demo_present'),
+                      accent: presenceAccentColor('present'),
+                    },
+                  ]}
+                />
               </div>
             </Panel>
           </div>

@@ -1,0 +1,126 @@
+/* Kira chat: GitHub-sanitized Markdown + GFM tables (scoped under .kira-rich-message) */
+
+.kira-rich-message .kira-html-table-root {
+  display: block;
+  margin: 0.5em 0;
+  max-width: 100%;
+}
+
+.kira-rich-message {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.kira-rich-message .kira-md-root {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: top;
+}
+
+.kira-rich-message .kira-md-root > *:first-child {
+  margin-top: 0;
+}
+
+.kira-rich-message .kira-md-root > *:last-child {
+  margin-bottom: 0;
+}
+
+.kira-rich-message .kira-md-root p {
+  margin: 0.35em 0;
+}
+
+.kira-rich-message .kira-md-root ul,
+.kira-rich-message .kira-md-root ol {
+  margin: 0.35em 0;
+  padding-left: 1.35rem;
+}
+
+.kira-rich-message .kira-md-root h1,
+.kira-rich-message .kira-md-root h2,
+.kira-rich-message .kira-md-root h3,
+.kira-rich-message .kira-md-root h4,
+.kira-rich-message .kira-md-root h5,
+.kira-rich-message .kira-md-root h6 {
+  margin: 0.5em 0 0.25em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.kira-rich-message .kira-md-root pre {
+  margin: 0.5em 0;
+  padding: 0.5rem 0.65rem;
+  overflow-x: auto;
+  border-radius: var(--border-radius, 6px);
+  font-size: 0.85em;
+  line-height: 1.45;
+  background: var(--surface-ground, #f4f4f5);
+  border: 1px solid var(--surface-border, #e5e7eb);
+}
+
+.kira-rich-message .kira-md-root :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.9em;
+  background: var(--surface-ground, #f4f4f5);
+  border: 1px solid var(--surface-border, #e5e7eb);
+}
+
+.kira-rich-message .kira-md-table-wrap {
+  display: block;
+  max-width: 100%;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.kira-rich-message .kira-md-table-wrap table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875em;
+  line-height: 1.35;
+}
+
+.kira-rich-message .kira-md-table-wrap th,
+.kira-rich-message .kira-md-table-wrap td {
+  border: 1px solid var(--surface-border, #dee2e6);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.kira-rich-message .kira-md-table-wrap th {
+  font-weight: 600;
+  background: var(--surface-100, #f8f9fa);
+}
+
+/* Final-proposal highlight ([[fazit]] ... [[/fazit]] token) */
+.kira-rich-message .kira-fazit {
+  display: block;
+  margin: 0.6em 0 0.25em;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--primary-color, #6366f1);
+  border-radius: var(--border-radius, 6px);
+  background: color-mix(
+    in srgb,
+    var(--primary-color, #6366f1) 8%,
+    transparent
+  );
+  color: var(--primary-color, #6366f1);
+  font-weight: 700;
+}
+
+.kira-rich-message .kira-fazit .kira-md-root,
+.kira-rich-message .kira-fazit .kira-md-root p {
+  color: inherit;
+  font-weight: inherit;
+}
+
+.kira-rich-message .kira-fazit .kira-md-root > *:first-child {
+  margin-top: 0;
+}
+
+.kira-rich-message .kira-fazit .kira-md-root > *:last-child {
+  margin-bottom: 0;
+}

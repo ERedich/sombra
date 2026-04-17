@@ -19,15 +19,21 @@ import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../../layout/kiraRowDraft'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../../table-wizard'
 import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import { formatDateTime } from '../../utils/dateTime'
+import type { MwLayoutJsonCostcenter } from '@sombra/shared'
+import { useMwFormLayout } from '../../mw-templates/useMwFormLayout'
+import { ccFieldStyle } from './costcenterMwLayout'
 
 export type Costcenter = {
   id: string
@@ -73,6 +79,7 @@ function siteColumnBody(row: Costcenter, dash: string) {
 
 export default function CostcentersAppPage() {
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const costcenterIdParam = searchParams.get('costcenterId')?.trim() ?? ''
@@ -90,6 +97,9 @@ export default function CostcentersAppPage() {
   const [selected, setSelected] = useState<Costcenter | null>(null)
   const [search, setSearch] = useState('')
   const emDash = t('common.em_dash')
+
+  const { layout: ccMwLayoutRaw } = useMwFormLayout('costcenter', dialogOpen)
+  const ccMwLayout = ccMwLayoutRaw as MwLayoutJsonCostcenter
 
   const tableColumnDefs = useMemo((): ColumnRegistryEntry<Costcenter>[] => {
     return [
@@ -329,30 +339,45 @@ export default function CostcentersAppPage() {
   const isAdmin = getStoredUser()?.role === 'admin'
   const auditResourceIdForMenu = costcenterIdParam || selected?.id || ''
 
-  const crudContextMenuItems = buildCrudContextMenuModel(
-    {
-      onCreate: openCreate,
-      onEdit: () => {
-        if (selected) openEdit(selected)
+  const crudContextMenuItems = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selected,
+      getDraft: () =>
+        selected
+          ? formatKiraRowDraft(t('costcenters.title'), {
+              id: selected.id,
+              key: selected.key,
+              name: selected.name,
+            })
+          : '',
+    }),
+    { separator: true },
+    ...buildCrudContextMenuModel(
+      {
+        onCreate: openCreate,
+        onEdit: () => {
+          if (selected) openEdit(selected)
+        },
+        onDelete: () => {
+          if (selected) confirmDelete(selected)
+        },
+        disableEdit: !selected,
+        disableDelete: !selected,
       },
-      onDelete: () => {
-        if (selected) confirmDelete(selected)
+      t,
+      {
+        audit: selected ? rowAuditSnapshot(selected) : undefined,
+        auditHistory: {
+          visible: isAdmin === true && !!auditResourceIdForMenu,
+          onNavigate: () =>
+            navigate(
+              `/audit-log?resource_type=costcenter&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
+            ),
+        },
       },
-      disableEdit: !selected,
-      disableDelete: !selected,
-    },
-    t,
-    {
-      audit: selected ? rowAuditSnapshot(selected) : undefined,
-      auditHistory: {
-        visible: isAdmin === true && !!auditResourceIdForMenu,
-        onNavigate: () =>
-          navigate(
-            `/audit-log?resource_type=costcenter&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
-          ),
-      },
-    },
-  )
+    ),
+  ]
 
   const costcentersCardHeader = (
     <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">
@@ -505,8 +530,11 @@ export default function CostcentersAppPage() {
           </div>
         }
       >
-        <div className="flex flex-column gap-3 pt-2">
-          <div className="flex flex-column gap-2">
+        <div className="grid pt-2 gap-3">
+          <div
+            className="col-12 flex flex-column gap-2"
+            style={ccFieldStyle('key', ccMwLayout)}
+          >
             <label htmlFor="costcenter-key" className="text-sm font-medium">
               {t('common.col_key')}
             </label>
@@ -519,7 +547,10 @@ export default function CostcentersAppPage() {
               autoComplete="off"
             />
           </div>
-          <div className="flex flex-column gap-2">
+          <div
+            className="col-12 flex flex-column gap-2"
+            style={ccFieldStyle('name', ccMwLayout)}
+          >
             <label htmlFor="costcenter-name" className="text-sm font-medium">
               {t('common.col_name')}
             </label>

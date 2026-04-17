@@ -20,10 +20,13 @@ import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../../layout/kiraRowDraft'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../../table-wizard'
@@ -107,6 +110,7 @@ function typeColourBody(row: WorkType) {
 
 export default function WorkTypesAppPage() {
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const workTypeIdParam = searchParams.get('workTypeId')?.trim() ?? ''
@@ -370,30 +374,45 @@ export default function WorkTypesAppPage() {
   const isAdmin = getStoredUser()?.role === 'admin'
   const auditResourceIdForMenu = workTypeIdParam || selected?.id || ''
 
-  const crudContextMenuItems = buildCrudContextMenuModel(
-    {
-      onCreate: openCreate,
-      onEdit: () => {
-        if (selected) openEdit(selected)
+  const crudContextMenuItems = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selected,
+      getDraft: () =>
+        selected
+          ? formatKiraRowDraft(t('work_types.title'), {
+              id: selected.id,
+              key: selected.key,
+              name: selected.name,
+            })
+          : '',
+    }),
+    { separator: true },
+    ...buildCrudContextMenuModel(
+      {
+        onCreate: openCreate,
+        onEdit: () => {
+          if (selected) openEdit(selected)
+        },
+        onDelete: () => {
+          if (selected) confirmDelete(selected)
+        },
+        disableEdit: !selected,
+        disableDelete: !selected,
       },
-      onDelete: () => {
-        if (selected) confirmDelete(selected)
+      t,
+      {
+        audit: selected ? rowAuditSnapshot(selected) : undefined,
+        auditHistory: {
+          visible: isAdmin === true && !!auditResourceIdForMenu,
+          onNavigate: () =>
+            navigate(
+              `/audit-log?resource_type=work_type&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
+            ),
+        },
       },
-      disableEdit: !selected,
-      disableDelete: !selected,
-    },
-    t,
-    {
-      audit: selected ? rowAuditSnapshot(selected) : undefined,
-      auditHistory: {
-        visible: isAdmin === true && !!auditResourceIdForMenu,
-        onNavigate: () =>
-          navigate(
-            `/audit-log?resource_type=work_type&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
-          ),
-      },
-    },
-  )
+    ),
+  ]
 
   const workTypesCardHeader = (
     <div className="app-card-hero flex align-items-start justify-content-between gap-3 p-4 md:p-5 w-full flex-wrap">

@@ -21,10 +21,13 @@ import { getStoredUser } from '../auth'
 import { useRegisterCreateShortcut } from '../layout/AppCreateShortcut'
 import { AppShell } from '../layout/AppShell'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../layout/kiraRowDraft'
 import { useRegisterAppToolbarSearch } from '../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../table-wizard'
 import { useTableWizard, useTableWizardToastEffect } from '../table-wizard'
@@ -115,6 +118,7 @@ function inferFieldErrorsFromApiMessage(
 
 export default function UsersPage() {
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const userIdParam = searchParams.get('userId')?.trim() ?? ''
@@ -484,34 +488,49 @@ export default function UsersPage() {
 
   const auditResourceIdForMenu = userIdParam || selectedUser?.id || ''
 
-  const crudContextMenuItems = buildCrudContextMenuModel(
-    {
-      onCreate: openCreate,
-      onEdit: () => {
-        if (selectedUser && !isBootstrapAdminUser(selectedUser)) {
-          openEdit(selectedUser)
-        }
+  const crudContextMenuItems = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selectedUser,
+      getDraft: () =>
+        selectedUser
+          ? formatKiraRowDraft(t('users.title'), {
+              id: selectedUser.id,
+              name: selectedUser.name,
+              login_name: selectedUser.login_name,
+            })
+          : '',
+    }),
+    { separator: true },
+    ...buildCrudContextMenuModel(
+      {
+        onCreate: openCreate,
+        onEdit: () => {
+          if (selectedUser && !isBootstrapAdminUser(selectedUser)) {
+            openEdit(selectedUser)
+          }
+        },
+        onDelete: () => {
+          if (selectedUser && !isBootstrapAdminUser(selectedUser)) {
+            confirmDelete(selectedUser)
+          }
+        },
+        disableEdit: !selectedUser || isBootstrapAdminUser(selectedUser),
+        disableDelete: !selectedUser || isBootstrapAdminUser(selectedUser),
       },
-      onDelete: () => {
-        if (selectedUser && !isBootstrapAdminUser(selectedUser)) {
-          confirmDelete(selectedUser)
-        }
+      t,
+      {
+        audit: selectedUser ? rowAuditSnapshot(selectedUser) : undefined,
+        auditHistory: {
+          visible: isAdmin === true && !!auditResourceIdForMenu,
+          onNavigate: () =>
+            navigate(
+              `/audit-log?resource_type=user&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
+            ),
+        },
       },
-      disableEdit: !selectedUser || isBootstrapAdminUser(selectedUser),
-      disableDelete: !selectedUser || isBootstrapAdminUser(selectedUser),
-    },
-    t,
-    {
-      audit: selectedUser ? rowAuditSnapshot(selectedUser) : undefined,
-      auditHistory: {
-        visible: isAdmin === true && !!auditResourceIdForMenu,
-        onNavigate: () =>
-          navigate(
-            `/audit-log?resource_type=user&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
-          ),
-      },
-    },
-  )
+    ),
+  ]
 
   const workingSiteBody = useCallback(
     (row: AppUser) => {

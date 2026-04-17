@@ -1,7 +1,16 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, StyleSheet } from 'react-native';
 import { Audio } from 'expo-av';
+import type { Href } from 'expo-router';
 import { useRouter } from 'expo-router';
+
+import {
+  buildMobileHref,
+  entityLinkKindToApp,
+  parseDoubleAsteriskBold,
+  parseKiraEntitySegments,
+  type ClientAction,
+} from '@sombra/shared';
 
 import { Text, View } from '@/components/Themed';
 import { useAuth } from '@/context/AuthContext';
@@ -9,6 +18,7 @@ import { ApiError } from '@/lib/api';
 import {
   createAsset,
   createWorkOrder,
+  createWorkPlan,
   postAiCopilotTurn,
   postAiTranscribe,
   type CopilotTurnResult,
@@ -37,7 +47,9 @@ function strings(de: boolean) {
     record: de ? 'Aufnehmen' : 'Record',
     stop: de ? 'Stopp & Transkript' : 'Stop & transcribe',
     confirmWo: de ? 'Arbeitsauftrag anlegen' : 'Create work order',
+    confirmWp: de ? 'Arbeitsplan anlegen' : 'Create work plan',
     confirmAsset: de ? 'Objekt anlegen' : 'Create asset',
+    wpSaved: de ? 'Arbeitsplan angelegt.' : 'Work plan created.',
     cancel: de ? 'Verwerfen' : 'Discard',
     busy: de ? 'Bitte warten…' : 'Please wait…',
     micDenied: de
@@ -46,7 +58,96 @@ function strings(de: boolean) {
     txFail: de ? 'Transkription fehlgeschlagen' : 'Transcription failed',
     copilotFail: de ? 'Copilot-Anfrage fehlgeschlagen' : 'Copilot request failed',
     saveFail: de ? 'Speichern fehlgeschlagen' : 'Save failed',
+    linkAsset: de ? 'Objekt öffnen' : 'Open asset',
+    linkWorkgroup: de ? 'Arbeitsgruppe (nur Web)' : 'Workgroup (web only)',
+    linkWo: de ? 'Arbeitsauftrag öffnen' : 'Open work order',
+    wgMobileUnavailable: de
+      ? 'Arbeitsgruppen sind in der mobilen App nicht verlinkt.'
+      : 'Workgroups are not linked in the mobile app.',
   };
+}
+
+function applyMobileClientActions(
+  actions: ClientAction[] | undefined,
+  push: (href: Href) => void,
+) {
+  if (!actions?.length) return;
+  for (const action of actions) {
+    if (action.type === 'shell' && action.action === 'open_kira') {
+      push('/copilot' as Href);
+      continue;
+    }
+    if (action.type === 'navigate') {
+      const href = buildMobileHref(action.app, action.entityId);
+      if (href) push(href as Href);
+    }
+  }
+}
+
+function CopilotRichText({
+  content,
+  S,
+  userStyle,
+  isUser,
+}: {
+  content: string;
+  S: ReturnType<typeof strings>;
+  userStyle?: object;
+  isUser: boolean;
+}) {
+  const router = useRouter();
+  const segments = useMemo(() => parseKiraEntitySegments(content), [content]);
+
+  return (
+    <Text selectable style={userStyle}>
+      {segments.map((s, i) => {
+        if (s.kind === 'text') {
+          const bits = parseDoubleAsteriskBold(s.value);
+          return (
+            <Text key={i} style={userStyle}>
+              {bits.map((b, j) =>
+                b.kind === 'bold' ? (
+                  <Text key={j} style={styles.boldWeight}>
+                    {b.value}
+                  </Text>
+                ) : (
+                  <Text key={j}>{b.value}</Text>
+                ),
+              )}
+            </Text>
+          );
+        }
+        const app = entityLinkKindToApp(s.entity);
+        const href = buildMobileHref(app, s.id);
+        const label =
+          s.entity === 'asset'
+            ? S.linkAsset
+            : s.entity === 'workgroup'
+              ? S.linkWorkgroup
+              : S.linkWo;
+        if (!href) {
+          return (
+            <Text
+              key={i}
+              onPress={() => {
+                Alert.alert('Kira', S.wgMobileUnavailable);
+              }}
+              style={isUser ? styles.linkMutedOnUser : styles.linkMuted}>
+              {label}
+            </Text>
+          );
+        }
+        return (
+          <Text
+            key={i}
+            onPress={() => router.push(href as Href)}
+            style={isUser ? styles.linkOnUser : styles.link}>
+            {label}
+          </Text>
+        );
+      })}
+    </Text>
+  );
 }
 
 export default function CopilotScreen() {
@@ -68,15 +169,17 @@ export default function CopilotScreen() {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
 
   const listData: ChatRow[] = useMemo(() => {
-    const rows: ChatRow[] = messages.map((m) => ({
+    const msgRows: ChatRow[] = messages.map((m) => ({
       kind: 'msg' as const,
       role: m.role,
       content: m.content,
     }));
-    for (const item of pending) {
-      rows.push({ kind: 'confirm', item });
-    }
-    return rows;
+    const rev = [...msgRows].reverse();
+    const conf: ChatRow[] = pending.map((item) => ({
+      kind: 'confirm' as const,
+      item,
+    }));
+    return [...conf, ...rev];
   }, [messages, pending]);
 
   const send = useCallback(async () => {
@@ -91,6 +194,7 @@ export default function CopilotScreen() {
       const res = await postAiCopilotTurn({ messages: nextMsgs });
       setMessages([...nextMsgs, res.message]);
       setPending(res.confirmable);
+      applyMobileClientActions(res.client_actions, (h) => router.push(h));
     } catch (e) {
       setMessages(prior);
       setInput(text);
@@ -101,7 +205,7 @@ export default function CopilotScreen() {
     } finally {
       setBusy(false);
     }
-  }, [input, siteId, messages, S.copilotFail]);
+  }, [input, siteId, messages, S.copilotFail, router]);
 
   const startRec = useCallback(async () => {
     try {
@@ -157,6 +261,10 @@ export default function CopilotScreen() {
           await createWorkOrder(item.payload);
           setPending((p) => p.filter((x) => x.id !== item.id));
           router.push('/work-orders');
+        } else if (item.type === 'create_work_plan') {
+          await createWorkPlan(item.payload);
+          setPending((p) => p.filter((x) => x.id !== item.id));
+          Alert.alert('OK', S.wpSaved);
         } else {
           await createAsset(item.payload);
           setPending((p) => p.filter((x) => x.id !== item.id));
@@ -171,7 +279,7 @@ export default function CopilotScreen() {
         setBusy(false);
       }
     },
-    [router, S.saveFail],
+    [router, S],
   );
 
   const onDiscard = useCallback((id: string) => {
@@ -202,12 +310,14 @@ export default function CopilotScreen() {
                   styles.bubble,
                   row.role === 'user' ? styles.bubbleUser : styles.bubbleAsst,
                 ]}>
-                <Text
-                  style={
+                <CopilotRichText
+                  content={row.content}
+                  S={S}
+                  isUser={row.role === 'user'}
+                  userStyle={
                     row.role === 'user' ? styles.bubbleUserText : undefined
-                  }>
-                  {row.content}
-                </Text>
+                  }
+                />
               </RNView>
             );
           }
@@ -217,7 +327,9 @@ export default function CopilotScreen() {
               <Text style={styles.cardTitle}>
                 {row.item.type === 'create_work_order'
                   ? S.confirmWo
-                  : S.confirmAsset}
+                  : row.item.type === 'create_work_plan'
+                    ? S.confirmWp
+                    : S.confirmAsset}
               </Text>
               <Text selectable style={styles.cardBody}>
                 {pl}
@@ -235,7 +347,9 @@ export default function CopilotScreen() {
                   <Text style={styles.btnPrimaryText}>
                     {row.item.type === 'create_work_order'
                       ? S.confirmWo
-                      : S.confirmAsset}
+                      : row.item.type === 'create_work_plan'
+                        ? S.confirmWp
+                        : S.confirmAsset}
                   </Text>
                 </RNPressable>
               </RNView>
@@ -298,6 +412,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(128,128,128,0.2)',
   },
   bubbleUserText: { color: '#fff' },
+  boldWeight: { fontWeight: '700' },
   card: {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(128,128,128,0.45)',
@@ -359,4 +474,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   btnRecText: { color: '#fff', fontWeight: '600' },
+  link: {
+    color: '#2563eb',
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
+  linkMuted: {
+    color: '#64748b',
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
+  linkOnUser: {
+    color: '#dbeafe',
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
+  linkMutedOnUser: {
+    color: '#cbd5e1',
+    textDecorationLine: 'underline',
+    fontWeight: '600',
+  },
 });

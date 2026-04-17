@@ -19,10 +19,13 @@ import { Toast } from 'primereact/toast'
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../../layout/kiraRowDraft'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../../table-wizard'
@@ -38,6 +41,7 @@ type TemplateRow = TemplateEntity & { site_label: string }
 
 export default function TemplateAppPage() {
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const toast = useRef<Toast>(null)
   const crudContextMenuRef = useRef<ContextMenu>(null)
   const toolbarSearchRef = useRegisterAppToolbarSearch()
@@ -233,31 +237,46 @@ export default function TemplateAppPage() {
     showSuccess(t('template.deleted'))
   }
 
-  const crudContextMenuItems = buildCrudContextMenuModel(
-    {
-      onCreate: openCreate,
-      onEdit: () => {
-        if (selected) openEdit(selected)
+  const crudContextMenuItems = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selected,
+      getDraft: () =>
+        selected
+          ? formatKiraRowDraft(t('template.title'), {
+              id: selected.id,
+              key: selected.key,
+              name: selected.name,
+            })
+          : '',
+    }),
+    { separator: true },
+    ...buildCrudContextMenuModel(
+      {
+        onCreate: openCreate,
+        onEdit: () => {
+          if (selected) openEdit(selected)
+        },
+        onDelete: () => {
+          if (selected) confirmDelete(selected)
+        },
+        disableCreate: !getStoredUser()?.working_site_id,
+        disableEdit: !selected,
+        disableDelete: !selected,
       },
-      onDelete: () => {
-        if (selected) confirmDelete(selected)
+      t,
+      {
+        audit: selected
+          ? rowAuditSnapshot({
+              created_at: selected.created_at,
+              updated_at: selected.updated_at,
+              created_by_login_name: null,
+              updated_by_login_name: null,
+            })
+          : undefined,
       },
-      disableCreate: !getStoredUser()?.working_site_id,
-      disableEdit: !selected,
-      disableDelete: !selected,
-    },
-    t,
-    {
-      audit: selected
-        ? rowAuditSnapshot({
-            created_at: selected.created_at,
-            updated_at: selected.updated_at,
-            created_by_login_name: null,
-            updated_by_login_name: null,
-          })
-        : undefined,
-    },
-  )
+    ),
+  ]
 
   const templateCardSubtitle = getStoredUser()?.working_site_id
     ? t('template.subtitle_ok')

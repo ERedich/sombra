@@ -1,3 +1,4 @@
+import type { ClientAction } from '@sombra/shared';
 import { cmmsPaths } from '@sombra/shared';
 
 import { ApiError, fetchWithAuth } from './api';
@@ -176,8 +177,7 @@ export type AiSuggestWoValidated = {
   work_type_id: string | null;
   workgroup_id: string | null;
   category_id: string | null;
-  worktime: number | null;
-  duration: number | null;
+  planned_duration: number | null;
   plan_start: string | null;
 };
 
@@ -230,8 +230,10 @@ export type CopilotTurnResult = {
   message: { role: 'assistant'; content: string };
   confirmable: Array<
     | { id: string; type: 'create_work_order'; payload: Record<string, unknown> }
+    | { id: string; type: 'create_work_plan'; payload: Record<string, unknown> }
     | { id: string; type: 'create_asset'; payload: Record<string, unknown> }
   >;
+  client_actions?: ClientAction[];
 };
 
 export async function postAiCopilotTurn(body: {
@@ -323,6 +325,15 @@ export async function createWorkOrder(body: Record<string, unknown>): Promise<{
   work_order: WorkOrderDetail;
 }> {
   return authJson(cmmsPaths.workOrders, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createWorkPlan(body: Record<string, unknown>): Promise<{
+  work_plan: unknown;
+}> {
+  return authJson(cmmsPaths.workPlans, {
     method: 'POST',
     body: JSON.stringify(body),
   });

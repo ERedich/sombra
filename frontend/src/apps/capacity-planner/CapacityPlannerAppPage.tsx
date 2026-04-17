@@ -120,7 +120,7 @@ type SnapshotWorkOrder = {
   short_text: string
   plan_start: string | null
   plan_end: string | null
-  duration: string
+  planned_duration: string
   status: string
   workgroup_id: string
   asset_key: string
@@ -2030,7 +2030,7 @@ export default function CapacityPlannerAppPage() {
                   <span className="text-color-secondary">
                     {t('capacity_planner.modal_wo_duration')}:
                   </span>{' '}
-                  {modalCtx.workOrder.duration} h
+                  {modalCtx.workOrder.planned_duration} h
                 </div>
               </div>
             </Card>

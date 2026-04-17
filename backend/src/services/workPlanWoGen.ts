@@ -22,12 +22,11 @@ type WorkPlanGenRow = {
   asset_id: string
   costcenter_id: string | null
   instruction_text: string
-  worktime: string
   interval_count: number
   interval_time_type: IntervalTimeType
   next_due_at: Date
   lead_time_days: number
-  duration_hours: string
+  planned_duration: string
 }
 
 type WorkOrderTableRow = {
@@ -40,12 +39,11 @@ type WorkOrderTableRow = {
   instruction_text: string
   plan_start: Date | null
   plan_end: Date | null
-  worktime: string
   work_type_id: string
   status: string
   work_plan_id: string | null
   work_plan_key: string | null
-  duration: string
+  planned_duration: string
   category_id: string | null
   workgroup_id: string
   created_at: Date
@@ -62,13 +60,12 @@ type WorkPlanTableRow = {
   asset_id: string
   costcenter_id: string | null
   instruction_text: string
-  worktime: string
   interval_count: number
   interval_time_type: string
   due_date: Date
   next_due_at: Date
   lead_time_days: number
-  duration_hours: string
+  planned_duration: string
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -85,8 +82,8 @@ function rowToWpAudit(row: WorkPlanTableRow): Record<string, unknown> {
 
 const LIST_WO_SQL = `
 SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
-       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.work_type_id, w.status,
-       w.work_plan_id, w.work_plan_key, w.duration, w.category_id, w.workgroup_id,
+       w.instruction_text, w.plan_start, w.plan_end, w.work_type_id, w.status,
+       w.work_plan_id, w.work_plan_key, w.planned_duration, w.category_id, w.workgroup_id,
        w.created_at, w.updated_at, w.created_by, w.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        a.key AS asset_key, a.name AS asset_name,
@@ -156,9 +153,9 @@ export async function runWorkPlanGenerator(
       await client.query('BEGIN')
       const sel = await client.query<WorkPlanGenRow>(
         `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id,
-                instruction_text, worktime::text,
+                instruction_text, planned_duration::text,
                 interval_count, interval_time_type::text,
-                next_due_at, lead_time_days, duration_hours::text
+                next_due_at, lead_time_days
          FROM work_plans
          WHERE next_due_at IS NOT NULL
            AND ${DUE_SQL}
@@ -172,10 +169,10 @@ export async function runWorkPlanGenerator(
         break
       }
 
-      const durationNum = Number(wp.duration_hours)
+      const durationNum = Number(wp.planned_duration)
       if (!Number.isFinite(durationNum) || durationNum < 0) {
         await client.query('ROLLBACK')
-        throw new Error('Invalid duration_hours on work plan.')
+        throw new Error('Invalid planned_duration on work plan.')
       }
 
       const intervalType = wp.interval_time_type
@@ -195,19 +192,19 @@ export async function runWorkPlanGenerator(
         const ins = await client.query<{ id: string }>(
           `INSERT INTO work_orders (
              site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-             plan_start, plan_end, worktime, work_type_id, status,
-             work_plan_id, work_plan_key, duration,
+             plan_start, plan_end, work_type_id, status,
+             work_plan_id, work_plan_key, planned_duration,
              workgroup_id,
              created_by
            )
            VALUES (
              $1, nextval('work_order_wo_key_seq'), $2, $3, $4, $5,
-             $6, $7, $8::numeric,
+             $6, $7,
              (SELECT id FROM work_types WHERE site_id = $1 AND key = 'PM' LIMIT 1),
              'open',
-             $9, $10, $11::numeric,
+             $8, $9, $10::numeric,
              (SELECT id FROM workgroups WHERE site_id = $1 AND key = '_DEFAULT' LIMIT 1),
-             $12
+             $11
            )
            RETURNING id`,
           [
@@ -218,10 +215,9 @@ export async function runWorkPlanGenerator(
             wp.instruction_text,
             planStart,
             planEnd,
-            wp.worktime,
             wp.id,
             wp.plan_key,
-            wp.duration_hours,
+            durationNum,
             actor.userId,
           ],
         )
@@ -241,8 +237,8 @@ export async function runWorkPlanGenerator(
 
         const tableRow = await client.query<WorkOrderTableRow>(
           `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                  plan_start, plan_end, worktime, work_type_id, status,
-                  work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                  plan_start, plan_end, work_type_id, status,
+                  work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                   created_at, updated_at, created_by, updated_by
            FROM work_orders WHERE id = $1`,
           [woId],
@@ -273,9 +269,9 @@ export async function runWorkPlanGenerator(
 
         const beforeWpRes = await client.query<WorkPlanTableRow>(
           `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id,
-                  instruction_text, worktime::text,
+                  instruction_text, planned_duration::text,
                   interval_count, interval_time_type::text,
-                  due_date, next_due_at, lead_time_days, duration_hours::text,
+                  due_date, next_due_at, lead_time_days,
                   created_at, updated_at, created_by, updated_by
            FROM work_plans WHERE id = $1`,
           [wp.id],
@@ -295,9 +291,9 @@ export async function runWorkPlanGenerator(
              updated_by = $2
            WHERE id = $3
            RETURNING id, site_id, plan_key, short_text, asset_id, costcenter_id,
-                     instruction_text, worktime::text,
+                     instruction_text, planned_duration::text,
                      interval_count, interval_time_type::text,
-                     due_date, next_due_at, lead_time_days, duration_hours::text,
+                     due_date, next_due_at, lead_time_days,
                      created_at, updated_at, created_by, updated_by`,
           [advanced, actor.userId, wp.id],
         )

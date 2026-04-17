@@ -11,7 +11,6 @@ export type WorkOrder = {
   instruction_text: string
   plan_start: string | null
   plan_end: string | null
-  worktime: string
   work_type_id: string
   work_type_key: string
   work_type_name: string
@@ -28,7 +27,7 @@ export type WorkOrder = {
   work_plan_interval_count?: number | null
   work_plan_interval_time_type?: string | null
   work_plan_next_due_at?: string | null
-  duration?: string
+  planned_duration?: string
   created_at: string
   updated_at: string
   created_by: string | null

@@ -36,6 +36,7 @@ import {
   shiftHoursOnAssignmentDay,
   woOverlapsAnyShiftFirstSegmentUtc,
 } from '../services/capacityPlanning.js'
+import { scheduleNotificationEmailRules } from '../notifications/notificationEmailRules.js'
 import {
   buildWorkOrderEmployeeAssignedNotifications,
   buildWorkOrderEmployeeDeassignedNotifications,
@@ -46,6 +47,7 @@ import {
   buildWorkOrderPutOnHoldNotification,
   buildWorkOrderStartedNotification,
   createNotificationsForSubscribers,
+  type NotificationDraft,
 } from '../notifications/workOrderNotifications.js'
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -75,12 +77,11 @@ type WorkOrderTableRow = {
   instruction_text: string
   plan_start: Date | null
   plan_end: Date | null
-  worktime: string
   work_type_id: string
   status: string
   work_plan_id: string | null
   work_plan_key: string | null
-  duration: string
+  planned_duration: string
   category_id: string | null
   workgroup_id: string
   hold_reason: string | null
@@ -179,11 +180,6 @@ function parseAssetId(body: unknown): string | undefined {
   if (v === undefined) return undefined
   if (typeof v !== 'string') return undefined
   return v
-}
-
-function parseWorktime(body: unknown): unknown {
-  if (typeof body !== 'object' || body === null) return undefined
-  return (body as { worktime?: unknown }).worktime
 }
 
 const WORK_ORDER_STATUS_VALUES = [
@@ -452,10 +448,10 @@ function parseCategoryId(body: unknown): string | null | undefined | 'invalid' {
   return s
 }
 
-/** Duration in hours; omitted → undefined; invalid → undefined (caller validates). */
-function parseDurationHours(body: unknown): number | undefined {
+/** Planned duration in hours; omitted → undefined; invalid → undefined (caller validates). */
+function parsePlannedDurationHours(body: unknown): number | undefined {
   if (typeof body !== 'object' || body === null) return undefined
-  const v = (body as { duration?: unknown }).duration
+  const v = (body as { planned_duration?: unknown }).planned_duration
   if (v === undefined) return undefined
   if (v === null) return 0
   const n =
@@ -992,9 +988,9 @@ router.put('/:id/employees', async (req, res) => {
 
     const beforeRowR = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1081,9 +1077,9 @@ router.put('/:id/employees', async (req, res) => {
            updated_by = $2
        WHERE id = $3
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                 plan_start, plan_end, worktime, work_type_id, status,
+                 plan_start, plan_end, work_type_id, status,
                  hold_reason,
-                 work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                 work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                  created_at, updated_at, created_by, updated_by`,
       [nextStatus, auth.id, id],
     )
@@ -1180,6 +1176,12 @@ router.put('/:id/employees', async (req, res) => {
     const employees = await fetchWorkOrderEmployees(client, afterTable.id)
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: afterTable.site_id,
+      workOrderId: afterTable.id,
+      woKey: afterTable.wo_key,
+      drafts: notificationDrafts,
+    })
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
@@ -1243,9 +1245,9 @@ router.put('/:id/capacity-allocation', async (req, res) => {
 
     const woR = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1430,7 +1432,7 @@ router.put('/:id/capacity-allocation', async (req, res) => {
     }
 
     // Planned capacity per employee/day is bounded by shift/SPC (and PHR), not by
-    // work_orders.duration — duration is a separate planning field for the WO.
+    // work_orders.planned_duration — separate from calendar plan_end when LEDD is off.
 
     const hadEmployeeR = await client.query(
       `SELECT 1 FROM work_order_employees
@@ -1468,9 +1470,9 @@ router.put('/:id/capacity-allocation', async (req, res) => {
              updated_by = $2
          WHERE id = $1
          RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                   plan_start, plan_end, worktime, work_type_id, status,
+                   plan_start, plan_end, work_type_id, status,
                    hold_reason,
-                   work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                   work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                    created_at, updated_at, created_by, updated_by`,
         [id, auth.id],
       )
@@ -1482,9 +1484,9 @@ router.put('/:id/capacity-allocation', async (req, res) => {
       )
       const again = await client.query<WorkOrderTableRow>(
         `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                plan_start, plan_end, worktime, work_type_id, status,
+                plan_start, plan_end, work_type_id, status,
                 hold_reason,
-                work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                 created_at, updated_at, created_by, updated_by
          FROM work_orders
          WHERE id = $1`,
@@ -1561,19 +1563,18 @@ router.put('/:id/capacity-allocation', async (req, res) => {
       )
       const empRow = addedEmployeesR.rows[0]
       if (empRow) {
+        const assignDrafts = buildWorkOrderEmployeeAssignedNotifications({
+          actorUserId: auth.id,
+          actorName: auth.name,
+          workOrderId: afterTable.id,
+          workOrderKey: afterTable.wo_key,
+          employees: [{ id: empRow.id, key: empRow.key, name: empRow.name }],
+        })
         notificationsToBroadcast = await createNotificationsForSubscribers(
           client,
           {
             workOrderId: afterTable.id,
-            drafts: buildWorkOrderEmployeeAssignedNotifications({
-              actorUserId: auth.id,
-              actorName: auth.name,
-              workOrderId: afterTable.id,
-              workOrderKey: afterTable.wo_key,
-              employees: [
-                { id: empRow.id, key: empRow.key, name: empRow.name },
-              ],
-            }),
+            drafts: assignDrafts,
           },
         )
       }
@@ -1582,6 +1583,30 @@ router.put('/:id/capacity-allocation', async (req, res) => {
     await client.query('COMMIT')
     const workOrder = await fetchWorkOrderDetailForResponse(pool, id)
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    if (notificationsToBroadcast.length > 0) {
+      const siteId = workOrder?.site_id
+      const woKey = workOrder?.wo_key
+      if (siteId && typeof woKey === 'number') {
+        const draftsFromStored: NotificationDraft[] = []
+        const seen = new Set<string>()
+        for (const n of notificationsToBroadcast) {
+          const key = `${n.kind}:${JSON.stringify(n.payload_json)}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          draftsFromStored.push({
+            kind: n.kind as NotificationDraft['kind'],
+            message: n.message,
+            payloadJson: n.payload_json,
+          })
+        }
+        scheduleNotificationEmailRules(pool, {
+          siteId,
+          workOrderId: id,
+          woKey,
+          drafts: draftsFromStored,
+        })
+      }
+    }
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
@@ -1654,9 +1679,9 @@ router.post('/:id/actions/start', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1773,9 +1798,9 @@ router.post('/:id/actions/start', async (req, res) => {
          updated_by = $3
        WHERE id = $4
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                 plan_start, plan_end, worktime, work_type_id, status,
+                 plan_start, plan_end, work_type_id, status,
                  hold_reason,
-                 work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                 work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                  created_at, updated_at, created_by, updated_by`,
       [afterStatus, nextHoldReason, auth.id, id],
     )
@@ -1808,22 +1833,29 @@ router.post('/:id/actions/start', async (req, res) => {
       httpMethod: req.method,
       path: auditPath,
     })
+    const startedDrafts: NotificationDraft[] = [
+      buildWorkOrderStartedNotification({
+        actorUserId: auth.id,
+        actorName: auth.name,
+        workOrderId: afterTable.id,
+        workOrderKey: afterTable.wo_key,
+        beforeStatus: beforeRow.status,
+        afterStatus,
+      }),
+    ]
     notificationsToBroadcast = await createNotificationsForSubscribers(client, {
       workOrderId: afterTable.id,
-      drafts: [
-        buildWorkOrderStartedNotification({
-          actorUserId: auth.id,
-          actorName: auth.name,
-          workOrderId: afterTable.id,
-          workOrderKey: afterTable.wo_key,
-          beforeStatus: beforeRow.status,
-          afterStatus,
-        }),
-      ],
+      drafts: startedDrafts,
     })
     const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: afterTable.site_id,
+      workOrderId: afterTable.id,
+      woKey: afterTable.wo_key,
+      drafts: startedDrafts,
+    })
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
@@ -1863,9 +1895,9 @@ router.post('/:id/actions/hold', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1894,9 +1926,9 @@ router.post('/:id/actions/hold', async (req, res) => {
          updated_by = $2
        WHERE id = $3
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                 plan_start, plan_end, worktime, work_type_id, status,
+                 plan_start, plan_end, work_type_id, status,
                  hold_reason,
-                 work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                 work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                  created_at, updated_at, created_by, updated_by`,
       [reason, auth.id, id],
     )
@@ -1929,21 +1961,28 @@ router.post('/:id/actions/hold', async (req, res) => {
       httpMethod: req.method,
       path: auditPath,
     })
+    const holdDrafts: NotificationDraft[] = [
+      buildWorkOrderPutOnHoldNotification({
+        actorUserId: auth.id,
+        actorName: auth.name,
+        workOrderId: afterTable.id,
+        workOrderKey: afterTable.wo_key,
+        reason,
+      }),
+    ]
     notificationsToBroadcast = await createNotificationsForSubscribers(client, {
       workOrderId: afterTable.id,
-      drafts: [
-        buildWorkOrderPutOnHoldNotification({
-          actorUserId: auth.id,
-          actorName: auth.name,
-          workOrderId: afterTable.id,
-          workOrderKey: afterTable.wo_key,
-          reason,
-        }),
-      ],
+      drafts: holdDrafts,
     })
     const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: afterTable.site_id,
+      workOrderId: afterTable.id,
+      woKey: afterTable.wo_key,
+      drafts: holdDrafts,
+    })
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
@@ -1976,12 +2015,13 @@ router.post('/:id/actions/feedback', async (req, res) => {
     let notificationsToBroadcast: Awaited<
       ReturnType<typeof createNotificationsForSubscribers>
     > = []
+    let emailRuleDrafts: NotificationDraft[] = []
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -2045,9 +2085,9 @@ router.post('/:id/actions/feedback', async (req, res) => {
            updated_by = $2
          WHERE id = $3
          RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                   plan_start, plan_end, worktime, work_type_id, status,
+                   plan_start, plan_end, work_type_id, status,
                    hold_reason,
-                   work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                   work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                    created_at, updated_at, created_by, updated_by`,
         [hold_reason!, auth.id, id],
       )
@@ -2075,17 +2115,19 @@ router.post('/:id/actions/feedback', async (req, res) => {
         httpMethod: req.method,
         path: auditPath,
       })
+      const feedbackHoldDrafts: NotificationDraft[] = [
+        buildWorkOrderPutOnHoldNotification({
+          actorUserId: auth.id,
+          actorName: auth.name,
+          workOrderId: afterTable.id,
+          workOrderKey: afterTable.wo_key,
+          reason: hold_reason!,
+        }),
+      ]
+      emailRuleDrafts = feedbackHoldDrafts
       notificationsToBroadcast = await createNotificationsForSubscribers(client, {
         workOrderId: afterTable.id,
-        drafts: [
-          buildWorkOrderPutOnHoldNotification({
-            actorUserId: auth.id,
-            actorName: auth.name,
-            workOrderId: afterTable.id,
-            workOrderKey: afterTable.wo_key,
-            reason: hold_reason!,
-          }),
-        ],
+        drafts: feedbackHoldDrafts,
       })
     } else if (target_status === 'done') {
       const requireTimeForDone =
@@ -2116,9 +2158,9 @@ router.post('/:id/actions/feedback', async (req, res) => {
            updated_by = $1
          WHERE id = $2
          RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                   plan_start, plan_end, worktime, work_type_id, status,
+                   plan_start, plan_end, work_type_id, status,
                    hold_reason,
-                   work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                   work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                    created_at, updated_at, created_by, updated_by`,
         [auth.id, id],
       )
@@ -2153,6 +2195,7 @@ router.post('/:id/actions/feedback', async (req, res) => {
         workOrderKey: afterTable.wo_key,
         changes,
       })
+      emailRuleDrafts = notificationDrafts
       notificationsToBroadcast = await createNotificationsForSubscribers(client, {
         workOrderId: afterTable.id,
         drafts: notificationDrafts,
@@ -2161,6 +2204,12 @@ router.post('/:id/actions/feedback', async (req, res) => {
     const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: afterTable.site_id,
+      workOrderId: afterTable.id,
+      woKey: afterTable.wo_key,
+      drafts: emailRuleDrafts,
+    })
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
@@ -2178,7 +2227,6 @@ router.post('/', async (req, res) => {
     typeof req.body?.short_text === 'string' ? req.body.short_text.trim() : ''
   const instructionText = parseInstructionText(req.body)
   const assetIdRaw = parseAssetId(req.body)
-  const worktimeRaw = parseWorktime(req.body)
 
   if (!shortText) {
     res.status(400).json({ error: 'Short text is required.' })
@@ -2201,29 +2249,23 @@ router.post('/', async (req, res) => {
     res.status(400).json({ error: 'A valid asset_id is required.' })
     return
   }
-  if (worktimeRaw === undefined || worktimeRaw === null) {
-    res.status(400).json({ error: 'Worktime is required.' })
-    return
-  }
-  const worktimeNum =
-    typeof worktimeRaw === 'number'
-      ? worktimeRaw
-      : typeof worktimeRaw === 'string'
-        ? Number(worktimeRaw)
-        : NaN
-  if (!Number.isFinite(worktimeNum) || worktimeNum < 0) {
-    res.status(400).json({ error: 'Worktime must be a non-negative number.' })
-    return
-  }
 
   const planStart = parseOptionalInstant(req.body, 'plan_start')
   if (planStart === undefined && req.body?.plan_start !== undefined) {
     res.status(400).json({ error: 'Invalid plan_start.' })
     return
   }
-  const durParsed = parseDurationHours(req.body)
-  if (durParsed === undefined && req.body?.duration !== undefined) {
-    res.status(400).json({ error: 'duration must be a non-negative number (hours).' })
+  const durParsed = parsePlannedDurationHours(req.body)
+  if (
+    durParsed === undefined &&
+    req.body &&
+    typeof req.body === 'object' &&
+    'planned_duration' in req.body &&
+    (req.body as Record<string, unknown>).planned_duration !== undefined
+  ) {
+    res
+      .status(400)
+      .json({ error: 'planned_duration must be a non-negative number (hours).' })
     return
   }
   const durationHours = durParsed ?? 0
@@ -2366,15 +2408,15 @@ router.post('/', async (req, res) => {
     const r = await client.query<{ id: string }>(
       `INSERT INTO work_orders (
          site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-         plan_start, plan_end, worktime, work_type_id, status,
-         work_plan_id, work_plan_key, duration,
+         plan_start, plan_end, work_type_id, status,
+         work_plan_id, work_plan_key, planned_duration,
          category_id, workgroup_id, created_by
        )
        VALUES (
          $1, nextval('work_order_wo_key_seq'), $2, $3, $4, $5,
-         $6, $7, $8, $9, 'open',
-         NULL, NULL, $10::numeric,
-         $11, $12, $13
+         $6, $7, $8, 'open',
+         NULL, NULL, $9::numeric,
+         $10, $11, $12
        )
        RETURNING id`,
       [
@@ -2385,7 +2427,6 @@ router.post('/', async (req, res) => {
         instructionTrimmed,
         ps,
         pe,
-        worktimeNum,
         workTypeIdParsed,
         durationHours,
         nextCategoryId,
@@ -2402,9 +2443,9 @@ router.post('/', async (req, res) => {
 
     const tableRow = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders WHERE id = $1`,
       [insertedId],
@@ -2456,10 +2497,9 @@ router.patch('/:id', async (req, res) => {
   const shortTextOpt = parseShortText(req.body)
   const instructionTextOpt = parseInstructionText(req.body)
   const assetIdOpt = parseAssetId(req.body)
-  const worktimeOpt = parseWorktime(req.body)
   const planStartOpt = parseOptionalInstant(req.body, 'plan_start')
   const planEndOpt = parseOptionalInstant(req.body, 'plan_end')
-  const durationOpt = parseDurationHours(req.body)
+  const plannedDurationOpt = parsePlannedDurationHours(req.body)
   const workTypeIdOpt = parseWorkTypeId(req.body)
   const categoryIdOpt = parseCategoryId(req.body)
   const workgroupIdOpt = parseWorkgroupId(req.body)
@@ -2484,8 +2524,16 @@ router.patch('/:id', async (req, res) => {
     res.status(400).json({ error: 'workgroup_id is required (a valid UUID).' })
     return
   }
-  if (durationOpt === undefined && req.body?.duration !== undefined) {
-    res.status(400).json({ error: 'duration must be a non-negative number (hours).' })
+  if (
+    plannedDurationOpt === undefined &&
+    req.body &&
+    typeof req.body === 'object' &&
+    'planned_duration' in req.body &&
+    (req.body as Record<string, unknown>).planned_duration !== undefined
+  ) {
+    res
+      .status(400)
+      .json({ error: 'planned_duration must be a non-negative number (hours).' })
     return
   }
 
@@ -2510,18 +2558,6 @@ router.patch('/:id', async (req, res) => {
     res.status(400).json({ error: 'Invalid asset_id.' })
     return
   }
-  if (worktimeOpt !== undefined) {
-    const worktimeNum =
-      typeof worktimeOpt === 'number'
-        ? worktimeOpt
-        : typeof worktimeOpt === 'string'
-          ? Number(worktimeOpt)
-          : NaN
-    if (!Number.isFinite(worktimeNum) || worktimeNum < 0) {
-      res.status(400).json({ error: 'Worktime must be a non-negative number.' })
-      return
-    }
-  }
   if (planStartOpt === undefined && req.body?.plan_start !== undefined) {
     res.status(400).json({ error: 'Invalid plan_start.' })
     return
@@ -2541,9 +2577,9 @@ router.patch('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -2581,30 +2617,9 @@ router.patch('/:id', async (req, res) => {
       return
     }
 
-    const assignedEmployeeIdsR = await client.query<{ employee_id: string }>(
-      `SELECT employee_id
-       FROM work_order_employees
-       WHERE work_order_id = $1`,
-      [id],
-    )
-    const assignedEmployeeIds = assignedEmployeeIdsR.rows.map((row) => row.employee_id)
-    if (assignedEmployeeIds.length > 0) {
-      const allowedMemberR = await client.query<{ employee_id: string }>(
-        `SELECT employee_id
-         FROM workgroup_employees
-         WHERE workgroup_id = $1
-           AND employee_id = ANY($2::uuid[])`,
-        [nextWorkgroupId, assignedEmployeeIds],
-      )
-      if (allowedMemberR.rows.length !== assignedEmployeeIds.length) {
-        await client.query('ROLLBACK')
-        res.status(400).json({
-          error:
-            'Cannot change workgroup while assigned employees are not members of the target workgroup.',
-        })
-        return
-      }
-    }
+    // Employee ↔ workgroup rules (assignee must belong to the WO's workgroup)
+    // are enforced on `PUT /:id/employees`, not here — e.g. plan date moves must
+    // not require workgroup_employees rows for existing assignees.
 
     const pmId = beforeRow.work_plan_id
       ? await getPmWorkTypeIdForSite(client, beforeRow.site_id)
@@ -2635,8 +2650,7 @@ router.patch('/:id', async (req, res) => {
     let nextAssetId = beforeRow.asset_id
     let nextCostcenterId = beforeRow.costcenter_id
     let nextPlanStart = beforeRow.plan_start
-    let nextWorktime = beforeRow.worktime
-    let nextDuration = Number(beforeRow.duration)
+    let nextPlannedDuration = Number(beforeRow.planned_duration)
     let nextWorkTypeId = beforeRow.work_type_id
     let nextStatus = beforeRow.status
 
@@ -2699,20 +2713,11 @@ router.patch('/:id', async (req, res) => {
       nextAssetId = assetIdOpt
       nextCostcenterId = asset.costcenter_id
     }
-    if (worktimeOpt !== undefined) {
-      const worktimeNum =
-        typeof worktimeOpt === 'number'
-          ? worktimeOpt
-          : typeof worktimeOpt === 'string'
-            ? Number(worktimeOpt)
-            : NaN
-      nextWorktime = String(worktimeNum)
-    }
     if (planStartOpt !== undefined) {
       nextPlanStart = planStartOpt
     }
-    if (durationOpt !== undefined) {
-      nextDuration = durationOpt
+    if (plannedDurationOpt !== undefined) {
+      nextPlannedDuration = plannedDurationOpt
     }
     if (statusOpt !== undefined) {
       nextStatus = statusOpt
@@ -2737,7 +2742,7 @@ router.patch('/:id', async (req, res) => {
       nextPlanEnd =
         nextPlanStart === null
           ? null
-          : planEndFromStartAndDurationHours(nextPlanStart, nextDuration)
+          : planEndFromStartAndDurationHours(nextPlanStart, nextPlannedDuration)
     } else if (nextPlanStart === null) {
       nextPlanEnd = null
     } else {
@@ -2767,19 +2772,18 @@ router.patch('/:id', async (req, res) => {
          costcenter_id = $4,
          plan_start = $5,
          plan_end = $6,
-         worktime = $7,
-         work_type_id = $8,
-         category_id = $9,
-         duration = $10::numeric,
-         workgroup_id = $11,
-         status = $12,
+         work_type_id = $7,
+         category_id = $8,
+         planned_duration = $9::numeric,
+         workgroup_id = $10,
+         status = $11,
          updated_at = now(),
-         updated_by = $13
-       WHERE id = $14
+         updated_by = $12
+       WHERE id = $13
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-                 plan_start, plan_end, worktime, work_type_id, status,
+                 plan_start, plan_end, work_type_id, status,
                  hold_reason,
-                 work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+                 work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
                  created_at, updated_at, created_by, updated_by`,
       [
         nextShort,
@@ -2788,10 +2792,9 @@ router.patch('/:id', async (req, res) => {
         nextCostcenterId,
         nextPlanStart,
         nextPlanEnd,
-        nextWorktime,
         nextWorkTypeId,
         nextCategoryId,
-        nextDuration,
+        nextPlannedDuration,
         nextWorkgroupId,
         nextStatus,
         auth.id,
@@ -2844,6 +2847,12 @@ router.patch('/:id', async (req, res) => {
     const workOrder = await fetchWorkOrderDetailForResponse(client, afterTable.id)
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: afterTable.site_id,
+      workOrderId: afterTable.id,
+      woKey: afterTable.wo_key,
+      drafts: notificationDrafts,
+    })
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
@@ -2933,21 +2942,28 @@ router.post('/:id/work-instructions', async (req, res) => {
       httpMethod: req.method,
       path: auditPath,
     })
+    const wiCreatedDrafts: NotificationDraft[] = [
+      buildWorkInstructionCreatedNotification({
+        actorUserId: auth.id,
+        actorName: auth.name,
+        workOrderId: id,
+        workOrderKey: row.wo_key,
+        workInstructionId: wi.id,
+        sortNr: wi.sort_nr,
+      }),
+    ]
     notificationsToBroadcast = await createNotificationsForSubscribers(client, {
       workOrderId: id,
-      drafts: [
-        buildWorkInstructionCreatedNotification({
-          actorUserId: auth.id,
-          actorName: auth.name,
-          workOrderId: id,
-          workOrderKey: row.wo_key,
-          workInstructionId: wi.id,
-          sortNr: wi.sort_nr,
-        }),
-      ],
+      drafts: wiCreatedDrafts,
     })
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: row.site_id,
+      workOrderId: id,
+      woKey: row.wo_key,
+      drafts: wiCreatedDrafts,
+    })
     res.status(201).json({ work_instruction: wi })
   } catch (e) {
     await client.query('ROLLBACK')
@@ -3092,19 +3108,26 @@ router.patch('/:id/work-instructions/:wiId', async (req, res) => {
       httpMethod: req.method,
       path: auditPath,
     })
+    const wiUpdateDrafts = buildWorkInstructionUpdatedNotifications({
+      actorUserId: auth.id,
+      actorName: auth.name,
+      workOrderId: id,
+      workOrderKey: ok.wo_key,
+      workInstructionId: wiId,
+      changes,
+    })
     notificationsToBroadcast = await createNotificationsForSubscribers(client, {
       workOrderId: id,
-      drafts: buildWorkInstructionUpdatedNotifications({
-        actorUserId: auth.id,
-        actorName: auth.name,
-        workOrderId: id,
-        workOrderKey: ok.wo_key,
-        workInstructionId: wiId,
-        changes,
-      }),
+      drafts: wiUpdateDrafts,
     })
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: ok.site_id,
+      workOrderId: id,
+      woKey: ok.wo_key,
+      drafts: wiUpdateDrafts,
+    })
     res.json({ work_instruction: after })
   } catch (e) {
     await client.query('ROLLBACK')
@@ -3177,21 +3200,28 @@ router.delete('/:id/work-instructions/:wiId', async (req, res) => {
       httpMethod: req.method,
       path: auditPath,
     })
+    const wiDeletedDrafts: NotificationDraft[] = [
+      buildWorkInstructionDeletedNotification({
+        actorUserId: auth.id,
+        actorName: auth.name,
+        workOrderId: id,
+        workOrderKey: row.wo_key,
+        workInstructionId: wiId,
+        sortNr: row.sort_nr,
+      }),
+    ]
     notificationsToBroadcast = await createNotificationsForSubscribers(client, {
       workOrderId: id,
-      drafts: [
-        buildWorkInstructionDeletedNotification({
-          actorUserId: auth.id,
-          actorName: auth.name,
-          workOrderId: id,
-          workOrderKey: row.wo_key,
-          workInstructionId: wiId,
-          sortNr: row.sort_nr,
-        }),
-      ],
+      drafts: wiDeletedDrafts,
     })
     await client.query('COMMIT')
     broadcastWorkOrderNotifications(notificationsToBroadcast)
+    scheduleNotificationEmailRules(pool, {
+      siteId: row.site_id,
+      workOrderId: id,
+      woKey: row.wo_key,
+      drafts: wiDeletedDrafts,
+    })
     res.status(204).send()
   } catch (e) {
     await client.query('ROLLBACK')
@@ -3218,9 +3248,9 @@ router.delete('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkOrderTableRow>(
       `SELECT id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
-              plan_start, plan_end, worktime, work_type_id, status,
+              plan_start, plan_end, work_type_id, status,
               hold_reason,
-              work_plan_id, work_plan_key, duration, category_id, workgroup_id,
+              work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1

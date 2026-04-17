@@ -24,10 +24,13 @@ import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../../layout/kiraRowDraft'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../../table-wizard'
@@ -57,13 +60,12 @@ export type WorkPlan = {
   asset_id: string
   costcenter_id: string | null
   instruction_text: string
-  worktime: string
   interval_count: number
   interval_time_type: string
   due_date: string
   next_due_at: string
   lead_time_days: number
-  duration_hours: string
+  planned_duration: string
   created_at: string
   updated_at: string
   created_by: string | null
@@ -96,11 +98,6 @@ type WorkPlansListResponse = { work_plans: WorkPlan[] }
 type CategoriesListResponse = { categories: Category[] }
 type WorkPlanResponse = { work_plan: WorkPlan }
 type GenerateDueResponse = { generated: number; plans_advanced: number }
-
-function parseWorktimeNum(w: string): number {
-  const n = Number(w)
-  return Number.isFinite(n) ? n : 0
-}
 
 /** Matches backend `WORK_PLAN_GEN_MS` (5 min); UI-only debug countdown. */
 const WORK_PLAN_CRON_INTERVAL_MS = 5 * 60 * 1000
@@ -138,6 +135,7 @@ function siteColumnBody(row: WorkPlan, dash: string) {
 
 export default function WorkPlanningAppPage() {
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const workPlanIdParam = searchParams.get('workPlanId')
@@ -156,13 +154,14 @@ export default function WorkPlanningAppPage() {
   const [formShortText, setFormShortText] = useState('')
   const [formAssetId, setFormAssetId] = useState<string | null>(null)
   const [formInstruction, setFormInstruction] = useState('')
-  const [formWorktime, setFormWorktime] = useState<number | null>(null)
   const [formDueDate, setFormDueDate] = useState<Date | null>(null)
   const [formIntervalCount, setFormIntervalCount] = useState<number | null>(1)
   const [formIntervalType, setFormIntervalType] =
     useState<IntervalTimeType>('month')
   const [formLeadDays, setFormLeadDays] = useState<number | null>(0)
-  const [formDurationHours, setFormDurationHours] = useState<number | null>(0)
+  const [formPlannedDurationHours, setFormPlannedDurationHours] = useState<
+    number | null
+  >(0)
   const [pickedAsset, setPickedAsset] = useState<Asset | null>(null)
   const [formCategoryId, setFormCategoryId] = useState<string | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
@@ -363,12 +362,11 @@ export default function WorkPlanningAppPage() {
     setFormAssetId(null)
     setPickedAsset(null)
     setFormInstruction('')
-    setFormWorktime(null)
     setFormDueDate(null)
     setFormIntervalCount(1)
     setFormIntervalType('month')
     setFormLeadDays(0)
-    setFormDurationHours(0)
+    setFormPlannedDurationHours(0)
     setFormCategoryId(null)
     setAssetPickerOpen(false)
     setDialogTab(0)
@@ -385,7 +383,6 @@ export default function WorkPlanningAppPage() {
     setFormAssetId(row.asset_id)
     setPickedAsset(null)
     setFormInstruction(row.instruction_text)
-    setFormWorktime(parseWorktimeNum(row.worktime))
     setFormDueDate(row.due_date ? new Date(row.due_date) : null)
     setFormIntervalCount(row.interval_count)
     setFormIntervalType(
@@ -394,7 +391,7 @@ export default function WorkPlanningAppPage() {
         : 'month') as IntervalTimeType,
     )
     setFormLeadDays(row.lead_time_days)
-    setFormDurationHours(Number(row.duration_hours))
+    setFormPlannedDurationHours(Number(row.planned_duration))
     setFormCategoryId(row.category_id ?? null)
     setAssetPickerOpen(false)
     setDialogTab(0)
@@ -523,8 +520,8 @@ export default function WorkPlanningAppPage() {
         sortable: true,
       },
       {
-        field: 'duration_hours',
-        headerKey: 'wp.field_duration_hours',
+        field: 'planned_duration',
+        headerKey: 'wp.field_planned_duration_hours',
         sortable: true,
       },
     )
@@ -564,14 +561,6 @@ export default function WorkPlanningAppPage() {
       showError(t('wo.err_asset'))
       return
     }
-    if (
-      formWorktime == null ||
-      formWorktime < 0 ||
-      !Number.isFinite(formWorktime)
-    ) {
-      showError(t('wo.err_worktime'))
-      return
-    }
     if (!formDueDate) {
       showError(t('wp.err_due_required'))
       return
@@ -593,11 +582,11 @@ export default function WorkPlanningAppPage() {
       return
     }
     if (
-      formDurationHours == null ||
-      !Number.isFinite(formDurationHours) ||
-      formDurationHours < 0
+      formPlannedDurationHours == null ||
+      !Number.isFinite(formPlannedDurationHours) ||
+      formPlannedDurationHours < 0
     ) {
-      showError(t('wp.err_duration'))
+      showError(t('wp.err_planned_duration'))
       return
     }
 
@@ -606,12 +595,11 @@ export default function WorkPlanningAppPage() {
       short_text: shortText.slice(0, 200),
       asset_id: formAssetId,
       instruction_text: instruction,
-      worktime: formWorktime,
       interval_count: formIntervalCount,
       interval_time_type: formIntervalType,
       due_date: formDueDate.toISOString(),
       lead_time_days: formLeadDays,
-      duration_hours: formDurationHours,
+      planned_duration: formPlannedDurationHours,
       category_id: formCategoryId,
     }
     if (!editingId) {
@@ -713,30 +701,45 @@ export default function WorkPlanningAppPage() {
 
   const auditResourceIdForMenu = selected?.id ?? ''
 
-  const crudContextMenuItems = buildCrudContextMenuModel(
-    {
-      onCreate: openCreate,
-      onEdit: () => {
-        if (selected) openEdit(selected)
+  const crudContextMenuItems = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selected,
+      getDraft: () =>
+        selected
+          ? formatKiraRowDraft(t('wp.title'), {
+              id: selected.id,
+              key: selected.plan_key,
+              name: selected.short_text,
+            })
+          : '',
+    }),
+    { separator: true },
+    ...buildCrudContextMenuModel(
+      {
+        onCreate: openCreate,
+        onEdit: () => {
+          if (selected) openEdit(selected)
+        },
+        onDelete: () => {
+          if (selected) confirmDelete(selected)
+        },
+        disableEdit: !selected,
+        disableDelete: !selected,
       },
-      onDelete: () => {
-        if (selected) confirmDelete(selected)
+      t,
+      {
+        audit: selected ? rowAuditSnapshot(selected) : undefined,
+        auditHistory: {
+          visible: isAdmin === true && !!auditResourceIdForMenu,
+          onNavigate: () =>
+            navigate(
+              `/audit-log?resource_type=work_plan&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
+            ),
+        },
       },
-      disableEdit: !selected,
-      disableDelete: !selected,
-    },
-    t,
-    {
-      audit: selected ? rowAuditSnapshot(selected) : undefined,
-      auditHistory: {
-        visible: isAdmin === true && !!auditResourceIdForMenu,
-        onNavigate: () =>
-          navigate(
-            `/audit-log?resource_type=work_plan&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
-          ),
-      },
-    },
-  )
+    ),
+  ]
 
   const nextDueReadOnly =
     editingId && editingPlan?.next_due_at
@@ -1028,22 +1031,6 @@ export default function WorkPlanningAppPage() {
                   disabled={saving}
                 />
               </div>
-              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
-                <label htmlFor="wp-worktime" className="text-sm font-medium">
-                  {t('wo.label_worktime_hours')}
-                </label>
-                <InputNumber
-                  id="wp-worktime"
-                  value={formWorktime}
-                  onValueChange={(e) => setFormWorktime(e.value ?? null)}
-                  min={0}
-                  minFractionDigits={0}
-                  maxFractionDigits={2}
-                  className="w-full"
-                  inputClassName="w-full min-w-0"
-                  disabled={saving}
-                />
-              </div>
               <div className="col-12 flex flex-column gap-2">
                 <label htmlFor="wp-instruction" className="text-sm font-medium">
                   {t('common.col_instruction')}
@@ -1149,13 +1136,13 @@ export default function WorkPlanningAppPage() {
                 </div>
                 <div className="col-12 md:col-6 flex flex-column gap-2">
                   <label htmlFor="wp-dur" className="text-sm font-medium">
-                    {t('wo.field_duration_hours')}
+                    {t('wp.field_planned_duration_hours')}
                   </label>
                   <InputNumber
                     id="wp-dur"
-                    value={formDurationHours}
+                    value={formPlannedDurationHours}
                     onValueChange={(e) =>
-                      setFormDurationHours(e.value ?? null)
+                      setFormPlannedDurationHours(e.value ?? null)
                     }
                     min={0}
                     minFractionDigits={0}

@@ -30,10 +30,13 @@ import { ApiError, apiBlob, apiFetch, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../../layout/kiraRowDraft'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import type { ColumnRegistryEntry } from '../../table-wizard'
@@ -101,6 +104,7 @@ type AssetClassificationsListResponse = {
 
 export default function AssetManagementAppPage() {
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const assetIdParam = searchParams.get('assetId')?.trim() ?? ''
@@ -721,30 +725,45 @@ export default function AssetManagementAppPage() {
   const isAdmin = getStoredUser()?.role === 'admin'
   const auditResourceIdForMenu = assetIdParam || selected?.id || ''
 
-  const crudContextMenuItems = buildCrudContextMenuModel(
-    {
-      onCreate: openCreate,
-      onEdit: () => {
-        if (selected) void openEdit(selected)
+  const crudContextMenuItems = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selected,
+      getDraft: () =>
+        selected
+          ? formatKiraRowDraft(t('assets.title'), {
+              id: selected.id,
+              key: selected.key,
+              name: selected.name,
+            })
+          : '',
+    }),
+    { separator: true },
+    ...buildCrudContextMenuModel(
+      {
+        onCreate: openCreate,
+        onEdit: () => {
+          if (selected) void openEdit(selected)
+        },
+        onDelete: () => {
+          if (selected) confirmDelete(selected)
+        },
+        disableEdit: !selected,
+        disableDelete: !selected,
       },
-      onDelete: () => {
-        if (selected) confirmDelete(selected)
+      t,
+      {
+        audit: selected ? rowAuditSnapshot(selected) : undefined,
+        auditHistory: {
+          visible: isAdmin === true && !!auditResourceIdForMenu,
+          onNavigate: () =>
+            navigate(
+              `/audit-log?resource_type=asset&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
+            ),
+        },
       },
-      disableEdit: !selected,
-      disableDelete: !selected,
-    },
-    t,
-    {
-      audit: selected ? rowAuditSnapshot(selected) : undefined,
-      auditHistory: {
-        visible: isAdmin === true && !!auditResourceIdForMenu,
-        onNavigate: () =>
-          navigate(
-            `/audit-log?resource_type=asset&resource_id=${encodeURIComponent(auditResourceIdForMenu)}`,
-          ),
-      },
-    },
-  )
+    ),
+  ]
 
   const assetFormDialogProps: AssetFormDialogBodyProps = {
     onSubmitForm: () => void saveAsset(),

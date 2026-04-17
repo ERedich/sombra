@@ -44,10 +44,11 @@ import {
   WO_FEEDBACK_DONE_REQUIRES_TIME_CODE,
   WO_STATUS_I18N_KEYS,
   feedbackTabIndexForRow,
-  formStatusTag,
-  parseWorktimeNum,
   workOrderHasLinkedPlan,
 } from './workOrderFormShared'
+import type { MwLayoutJsonWorkOrder } from '@sombra/shared'
+import { useMwFormLayout } from '../../mw-templates/useMwFormLayout'
+import { mwFieldStyle, tabFieldOrderMap } from './workOrderMwLayout'
 
 type WorkOrderResponse = { work_order: WorkOrder }
 type WorkTypesListResponse = { work_types: WorkType[] }
@@ -106,8 +107,9 @@ export function WorkOrderFormDialog({
   const [formInstruction, setFormInstruction] = useState('')
   const [formPlanStart, setFormPlanStart] = useState<Date | null>(null)
   const [formPlanEnd, setFormPlanEnd] = useState<Date | null>(null)
-  const [formDurationHours, setFormDurationHours] = useState<number | null>(0)
-  const [formWorktime, setFormWorktime] = useState<number | null>(null)
+  const [formPlannedDurationHours, setFormPlannedDurationHours] = useState<
+    number | null
+  >(0)
   const [formWorkTypeId, setFormWorkTypeId] = useState<string | null>(null)
   const [formCategoryId, setFormCategoryId] = useState<string | null>(null)
   const [formWorkgroupId, setFormWorkgroupId] = useState<string | null>(null)
@@ -332,8 +334,7 @@ export function WorkOrderFormDialog({
     setFormInstruction('')
     setFormPlanStart(null)
     setFormPlanEnd(null)
-    setFormDurationHours(0)
-    setFormWorktime(null)
+    setFormPlannedDurationHours(0)
     setFormWorkTypeId(null)
     setFormCategoryId(null)
     setFormWorkgroupId(null)
@@ -361,8 +362,7 @@ export function WorkOrderFormDialog({
     setFormInstruction(r.instruction_text)
     setFormPlanStart(r.plan_start ? new Date(r.plan_start) : null)
     setFormPlanEnd(r.plan_end ? new Date(r.plan_end) : null)
-    setFormDurationHours(Number(r.duration ?? '0'))
-    setFormWorktime(parseWorktimeNum(r.worktime))
+    setFormPlannedDurationHours(Number(r.planned_duration ?? '0'))
     setFormWorkTypeId(r.work_type_id)
     setFormCategoryId(r.category_id ?? null)
     setFormWorkgroupId(r.workgroup_id)
@@ -390,8 +390,7 @@ export function WorkOrderFormDialog({
     setFormInstruction('')
     setFormPlanStart(null)
     setFormPlanEnd(null)
-    setFormDurationHours(0)
-    setFormWorktime(null)
+    setFormPlannedDurationHours(0)
     const ws = getStoredUser()?.working_site_id
     const list = ws ? workTypes.filter((wt) => wt.site_id === ws) : []
     const def = list.find((w) => w.key === 'CM')?.id ?? list[0]?.id ?? null
@@ -599,11 +598,8 @@ export function WorkOrderFormDialog({
       if (v.work_type_id) setFormWorkTypeId(v.work_type_id)
       if (v.workgroup_id) setFormWorkgroupId(v.workgroup_id)
       setFormCategoryId(v.category_id ?? null)
-      if (v.worktime != null && Number.isFinite(v.worktime)) {
-        setFormWorktime(v.worktime)
-      }
-      if (v.duration != null && Number.isFinite(v.duration)) {
-        setFormDurationHours(v.duration)
+      if (v.planned_duration != null && Number.isFinite(v.planned_duration)) {
+        setFormPlannedDurationHours(v.planned_duration)
       }
       if (v.plan_start) {
         const d = new Date(v.plan_start)
@@ -651,11 +647,11 @@ export function WorkOrderFormDialog({
   }, [pickedAsset, editingWo, emDash])
 
   const planEndPreview = useMemo(() => {
-    if (!formPlanStart || formDurationHours == null) return null
+    if (!formPlanStart || formPlannedDurationHours == null) return null
     return new Date(
-      formPlanStart.getTime() + formDurationHours * 3600000,
+      formPlanStart.getTime() + formPlannedDurationHours * 3600000,
     )
-  }, [formPlanStart, formDurationHours])
+  }, [formPlanStart, formPlannedDurationHours])
 
   const planEndDisplayLocked = planEndPreview
     ? formatDateTime(planEndPreview.toISOString())
@@ -959,16 +955,12 @@ export function WorkOrderFormDialog({
       showError(t('wo.err_asset'))
       return { ok: false }
     }
-    if (formWorktime == null || formWorktime < 0 || !Number.isFinite(formWorktime)) {
-      showError(t('wo.err_worktime'))
-      return { ok: false }
-    }
     if (
-      formDurationHours == null ||
-      !Number.isFinite(formDurationHours) ||
-      formDurationHours < 0
+      formPlannedDurationHours == null ||
+      !Number.isFinite(formPlannedDurationHours) ||
+      formPlannedDurationHours < 0
     ) {
-      showError(t('wp.err_duration'))
+      showError(t('wo.err_planned_duration'))
       return { ok: false }
     }
 
@@ -998,10 +990,9 @@ export function WorkOrderFormDialog({
       short_text: shortText.slice(0, 200),
       asset_id: formAssetId,
       instruction_text: instruction,
-      worktime: formWorktime,
       work_type_id: resolvedWorkTypeId,
       plan_start: formPlanStart ? formPlanStart.toISOString() : null,
-      duration: formDurationHours,
+      planned_duration: formPlannedDurationHours,
       category_id: formCategoryId,
       workgroup_id: formWorkgroupId,
     }
@@ -1072,6 +1063,59 @@ export function WorkOrderFormDialog({
     await submitFeedbackForm(saveResult.workOrder)
   }
 
+  const { workOrderDialogTitle, workOrderDialogDockTitle } = useMemo(() => {
+    const base = editingId ? t('wo.dialog_edit') : t('wo.dialog_new')
+    const sk = WO_STATUS_I18N_KEYS[formStatus]
+    const statusLabel = sk ? t(sk) : formStatus
+    const statusColour =
+      woStatusMergedColours[formStatus as WorkOrderStatusColourKey] ??
+      woStatusMergedColours.open
+    const title = (
+      <div className="flex align-items-center gap-2 min-w-0">
+        <span className="font-semibold truncate min-w-0">{base}</span>
+        <span
+          className="flex-shrink-0 text-color-secondary align-self-center"
+          aria-hidden="true"
+        >
+          ·
+        </span>
+        <span
+          className="font-semibold white-space-nowrap flex-shrink-0"
+          style={{ color: statusColour }}
+        >
+          {statusLabel}
+        </span>
+      </div>
+    )
+    return {
+      workOrderDialogTitle: title,
+      workOrderDialogDockTitle: `${base} \u00b7 ${statusLabel}`,
+    }
+  }, [editingId, formStatus, t, woStatusMergedColours])
+
+  const { layout: mwLayoutRaw } = useMwFormLayout('work_order', session != null)
+  const mwLayoutWo = mwLayoutRaw as MwLayoutJsonWorkOrder
+  const generalOrderMap = useMemo(
+    () => tabFieldOrderMap(mwLayoutWo, 'general'),
+    [mwLayoutWo],
+  )
+  const instructionsOrderMap = useMemo(
+    () => tabFieldOrderMap(mwLayoutWo, 'instructions'),
+    [mwLayoutWo],
+  )
+  const workPlanOrderMap = useMemo(
+    () => tabFieldOrderMap(mwLayoutWo, 'work_plan'),
+    [mwLayoutWo],
+  )
+  const planningOrderMap = useMemo(
+    () => tabFieldOrderMap(mwLayoutWo, 'planning'),
+    [mwLayoutWo],
+  )
+  const feedbackOrderMap = useMemo(
+    () => tabFieldOrderMap(mwLayoutWo, 'feedback'),
+    [mwLayoutWo],
+  )
+
   if (!session) return null
 
   const showFormBody =
@@ -1099,7 +1143,8 @@ export function WorkOrderFormDialog({
         }}
       />
       <AppCrudDialog
-        title={editingId ? t('wo.dialog_edit') : t('wo.dialog_new')}
+        title={workOrderDialogTitle}
+        dockTitle={workOrderDialogDockTitle}
         minimizedDockPlacement="top-right"
         restoreOnChangeToken={session}
         visible={dialogOpen}
@@ -1167,7 +1212,10 @@ export function WorkOrderFormDialog({
           <TabPanel header={t('wo.tab_general')}>
             <div className="app-modal-tab-content grid pt-2 gap-3">
               {!editingId ? (
-                <div className="col-12">
+                <div
+                  className="col-12"
+                  style={mwFieldStyle('voice_assist', generalOrderMap)}
+                >
                   <VoiceAssistPanel
                     kind="work_order"
                     disabled={saving}
@@ -1199,7 +1247,10 @@ export function WorkOrderFormDialog({
                 </div>
               ) : null}
               {editingId ? (
-                <div className="col-12 sm:col-4 lg:col-2 flex flex-column gap-2">
+                <div
+                  className="col-12 sm:col-4 lg:col-2 flex flex-column gap-2"
+                  style={mwFieldStyle('wo_key', generalOrderMap)}
+                >
                   <span className="text-sm font-medium">{t('wo.col_key')}</span>
                   <InputText
                     value={String(detailWorkOrder?.wo_key ?? '')}
@@ -1214,6 +1265,7 @@ export function WorkOrderFormDialog({
                     ? 'col-12 sm:col-8 lg:col-10 flex flex-column gap-2'
                     : 'col-12 flex flex-column gap-2'
                 }
+                style={mwFieldStyle('short_text', generalOrderMap)}
               >
                 <label htmlFor="wo-short" className="text-sm font-medium">
                   {t('wo.col_short_text')}
@@ -1228,58 +1280,63 @@ export function WorkOrderFormDialog({
                   autoComplete="off"
                 />
               </div>
-              <div className="col-12">
-                <div className="flex flex-column md:flex-row md:align-items-start gap-3">
-                  <div className="flex flex-column gap-2 flex-1 min-w-0 w-full md:w-auto">
-                    <label htmlFor="wo-asset" className="text-sm font-medium">
-                      {t('wo.col_asset')}
-                    </label>
-                    <SelItemField
-                      id="wo-asset"
-                      valueLabel={assetDisplayLabel}
-                      placeholder={t('wo.placeholder_select_asset')}
-                      disabled={saving}
-                      sidebarVisible={assetPickerOpen}
-                      onSidebarHide={() => setAssetPickerOpen(false)}
-                      onOpenSidebar={() => setAssetPickerOpen(true)}
-                      triggerAriaLabel={t('wo.trigger_choose_asset')}
-                      showClear={!!formAssetId}
-                      onClear={() => {
-                        setFormAssetId(null)
-                        setPickedAsset(null)
+              <div
+                className="col-12 md:col-6 flex flex-column gap-2 flex-1 min-w-0"
+                style={mwFieldStyle('asset', generalOrderMap)}
+              >
+                <label htmlFor="wo-asset" className="text-sm font-medium">
+                  {t('wo.col_asset')}
+                </label>
+                <SelItemField
+                  id="wo-asset"
+                  valueLabel={assetDisplayLabel}
+                  placeholder={t('wo.placeholder_select_asset')}
+                  disabled={saving}
+                  sidebarVisible={assetPickerOpen}
+                  onSidebarHide={() => setAssetPickerOpen(false)}
+                  onOpenSidebar={() => setAssetPickerOpen(true)}
+                  triggerAriaLabel={t('wo.trigger_choose_asset')}
+                  showClear={!!formAssetId}
+                  onClear={() => {
+                    setFormAssetId(null)
+                    setPickedAsset(null)
+                  }}
+                  sidebarHeader={t('wo.sidebar_select_asset')}
+                >
+                  {assetPickerOpen ? (
+                    <AssetPickerSidebarContent
+                      onHide={() => setAssetPickerOpen(false)}
+                      onSelect={(asset) => {
+                        setFormAssetId(asset.id)
+                        setPickedAsset(asset)
+                        setAssetPickerOpen(false)
                       }}
-                      sidebarHeader={t('wo.sidebar_select_asset')}
-                    >
-                      {assetPickerOpen ? (
-                        <AssetPickerSidebarContent
-                          onHide={() => setAssetPickerOpen(false)}
-                          onSelect={(asset) => {
-                            setFormAssetId(asset.id)
-                            setPickedAsset(asset)
-                            setAssetPickerOpen(false)
-                          }}
-                          onError={showError}
-                        />
-                      ) : null}
-                    </SelItemField>
-                  </div>
-                  <div className="flex flex-column gap-2 flex-1 min-w-0 w-full md:w-auto">
-                    <span className="text-sm font-medium">
-                      {t('wo.col_cost_center')}
-                    </span>
-                    <InputText
-                      value={costCenterHint}
-                      className="w-full"
-                      disabled
+                      onError={showError}
                     />
-                    <span className="text-xs text-color-secondary">
-                      {t('wo.cost_center_from_asset')}
-                    </span>
-                  </div>
-                </div>
+                  ) : null}
+                </SelItemField>
+              </div>
+              <div
+                className="col-12 md:col-6 flex flex-column gap-2 flex-1 min-w-0"
+                style={mwFieldStyle('cost_center_hint', generalOrderMap)}
+              >
+                <span className="text-sm font-medium">
+                  {t('wo.col_cost_center')}
+                </span>
+                <InputText
+                  value={costCenterHint}
+                  className="w-full"
+                  disabled
+                />
+                <span className="text-xs text-color-secondary">
+                  {t('wo.cost_center_from_asset')}
+                </span>
               </div>
               {editingId && editingWo && workOrderHasLinkedPlan(editingWo) ? (
-                <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 xl:col-4 flex flex-column gap-2"
+                  style={mwFieldStyle('work_plan_key_readonly', generalOrderMap)}
+                >
                   <span className="text-sm font-medium">
                     {t('wo.field_work_plan')}
                   </span>
@@ -1290,7 +1347,10 @@ export function WorkOrderFormDialog({
                   />
                 </div>
               ) : null}
-              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
+              <div
+                className="col-12 md:col-6 xl:col-4 flex flex-column gap-2"
+                style={mwFieldStyle('work_type', generalOrderMap)}
+              >
                 <label htmlFor="wo-type" className="text-sm font-medium">
                   {t('wo.field_wo_type')}
                 </label>
@@ -1311,7 +1371,10 @@ export function WorkOrderFormDialog({
                   }
                 />
               </div>
-              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
+              <div
+                className="col-12 md:col-6 xl:col-4 flex flex-column gap-2"
+                style={mwFieldStyle('category', generalOrderMap)}
+              >
                 <label htmlFor="wo-category" className="text-sm font-medium">
                   {t('wo.field_category')}
                 </label>
@@ -1328,30 +1391,10 @@ export function WorkOrderFormDialog({
                   disabled={saving}
                 />
               </div>
-              <div className="col-12 md:col-6 xl:col-4 flex flex-column gap-2">
-                <label htmlFor="wo-worktime" className="text-sm font-medium">
-                  {t('wo.label_worktime_hours')}
-                </label>
-                <InputNumber
-                  id="wo-worktime"
-                  value={formWorktime}
-                  onValueChange={(e) => setFormWorktime(e.value ?? null)}
-                  min={0}
-                  minFractionDigits={0}
-                  maxFractionDigits={2}
-                  className="w-full"
-                  inputClassName="w-full min-w-0"
-                  disabled={saving}
-                />
-              </div>
-              <div className="col-12 md:col-12 xl:col-4 flex flex-column gap-2">
-                <span className="text-sm font-medium">{t('wo.col_status')}</span>
-                {formStatusTag(formStatus, t, woStatusMergedColours)}
-                <span className="text-xs text-color-secondary">
-                  {t('wo.status_not_editable')}
-                </span>
-              </div>
-              <div className="col-12 flex flex-column gap-2">
+              <div
+                className="col-12 flex flex-column gap-2"
+                style={mwFieldStyle('instruction', generalOrderMap)}
+              >
                 <label htmlFor="wo-instruction" className="text-sm font-medium">
                   {t('common.col_instruction')}
                 </label>
@@ -1369,20 +1412,25 @@ export function WorkOrderFormDialog({
             </div>
           </TabPanel>
           <TabPanel header={t('wo.tab_instructions')}>
-            <WorkInstructionsTab
-              variant="wo"
-              parentId={editingId}
-              rows={formWorkInstructions}
-              setRows={setFormWorkInstructions}
-              disabled={saving}
-              reportError={showError}
-              t={t}
-            />
+            <div style={mwFieldStyle('work_instructions', instructionsOrderMap)}>
+              <WorkInstructionsTab
+                variant="wo"
+                parentId={editingId}
+                rows={formWorkInstructions}
+                setRows={setFormWorkInstructions}
+                disabled={saving}
+                reportError={showError}
+                t={t}
+              />
+            </div>
           </TabPanel>
           {linkedToWorkPlan ? (
             <TabPanel header={t('wo.tab_work_plan')}>
               <div className="app-modal-tab-content grid pt-2 gap-3">
-                <div className="col-12 md:col-6 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 flex flex-column gap-2"
+                  style={mwFieldStyle('work_plan_interval_count', workPlanOrderMap)}
+                >
                   <span className="text-sm font-medium">
                     {t('wp.field_interval_count')}
                   </span>
@@ -1392,7 +1440,10 @@ export function WorkOrderFormDialog({
                     disabled
                   />
                 </div>
-                <div className="col-12 md:col-6 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 flex flex-column gap-2"
+                  style={mwFieldStyle('work_plan_interval_type', workPlanOrderMap)}
+                >
                   <span className="text-sm font-medium">
                     {t('wp.field_interval_type')}
                   </span>
@@ -1402,7 +1453,10 @@ export function WorkOrderFormDialog({
                     disabled
                   />
                 </div>
-                <div className="col-12 md:col-6 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 flex flex-column gap-2"
+                  style={mwFieldStyle('work_plan_next_due', workPlanOrderMap)}
+                >
                   <span className="text-sm font-medium">
                     {t('wp.field_next_due')}
                   </span>
@@ -1412,7 +1466,10 @@ export function WorkOrderFormDialog({
                     disabled
                   />
                 </div>
-                <div className="col-12 flex flex-column gap-2">
+                <div
+                  className="col-12 flex flex-column gap-2"
+                  style={mwFieldStyle('work_plan_open_button', workPlanOrderMap)}
+                >
                   <Button
                     type="button"
                     label={t('wo.open_wp')}
@@ -1434,7 +1491,10 @@ export function WorkOrderFormDialog({
           <TabPanel header={t('wo.tab_planning')}>
             <div className="app-modal-tab-content flex flex-column gap-3 pt-2">
               <div className="grid">
-                <div className="col-12 md:col-6 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 flex flex-column gap-2"
+                  style={mwFieldStyle('workgroup', planningOrderMap)}
+                >
                   <label
                     htmlFor="wo-workgroup"
                     className="text-sm font-medium"
@@ -1451,7 +1511,10 @@ export function WorkOrderFormDialog({
                     placeholder={t('wo.field_workgroup')}
                   />
                 </div>
-                <div className="col-12 md:col-6 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 flex flex-column gap-2"
+                  style={mwFieldStyle('plan_start', planningOrderMap)}
+                >
                   <label
                     htmlFor="wo-plan-start"
                     className="text-sm font-medium"
@@ -1476,18 +1539,21 @@ export function WorkOrderFormDialog({
                     minDate={planStartCalendarMinDate}
                   />
                 </div>
-                <div className="col-12 md:col-6 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 flex flex-column gap-2"
+                  style={mwFieldStyle('planned_duration', planningOrderMap)}
+                >
                   <label
-                    htmlFor="wo-duration"
+                    htmlFor="wo-planned-duration"
                     className="text-sm font-medium"
                   >
-                    {t('wo.field_duration_hours')}
+                    {t('wo.field_planned_duration_hours')}
                   </label>
                   <InputNumber
-                    id="wo-duration"
-                    value={formDurationHours}
+                    id="wo-planned-duration"
+                    value={formPlannedDurationHours}
                     onValueChange={(e) =>
-                      setFormDurationHours(e.value ?? null)
+                      setFormPlannedDurationHours(e.value ?? null)
                     }
                     min={0}
                     minFractionDigits={0}
@@ -1497,7 +1563,10 @@ export function WorkOrderFormDialog({
                     disabled={saving}
                   />
                 </div>
-                <div className="col-12 md:col-6 flex flex-column gap-2">
+                <div
+                  className="col-12 md:col-6 flex flex-column gap-2"
+                  style={mwFieldStyle('plan_end', planningOrderMap)}
+                >
                   <label
                     htmlFor="wo-plan-end"
                     className="text-sm font-medium"
@@ -1514,7 +1583,7 @@ export function WorkOrderFormDialog({
                       />
                       <span className="text-xs text-color-secondary">
                         {t('wo.col_plan_start')} +{' '}
-                        {t('wo.field_duration_hours')}
+                        {t('wo.field_planned_duration_hours')}
                       </span>
                     </>
                   ) : (
@@ -1552,7 +1621,10 @@ export function WorkOrderFormDialog({
                         currentEmployeeId,
                       ) ||
                         !woStartRequiresAssignment) ? (
-                        <div className="col-12 md:col-6 flex flex-column gap-2">
+                        <div
+                          className="col-12 md:col-6 flex flex-column gap-2"
+                          style={mwFieldStyle('feedback_self', feedbackOrderMap)}
+                        >
                           <span className="text-sm font-medium">
                             {t('wo.feedback_self_section')}
                           </span>
@@ -1580,7 +1652,10 @@ export function WorkOrderFormDialog({
                           />
                         </div>
                       ) : null}
-                      <div className="col-12 md:col-6 flex flex-column gap-2">
+                      <div
+                        className="col-12 md:col-6 flex flex-column gap-2"
+                        style={mwFieldStyle('feedback_extra', feedbackOrderMap)}
+                      >
                         <label className="text-sm font-medium">
                           {t('wo.feedback_additional_employees')}
                         </label>
@@ -1653,7 +1728,13 @@ export function WorkOrderFormDialog({
                           </div>
                         ))}
                       </div>
-                      <div className="col-12 md:col-6 flex flex-column gap-2">
+                      <div
+                        className="col-12 md:col-6 flex flex-column gap-2"
+                        style={mwFieldStyle(
+                          'feedback_target_status',
+                          feedbackOrderMap,
+                        )}
+                      >
                         <label className="text-sm font-medium">
                           {t('wo.feedback_target_status')}
                         </label>
@@ -1686,7 +1767,13 @@ export function WorkOrderFormDialog({
                         />
                       </div>
                       {fbTargetStatus === 'on_hold' ? (
-                        <div className="col-12 flex flex-column gap-2">
+                        <div
+                          className="col-12 flex flex-column gap-2"
+                          style={mwFieldStyle(
+                            'feedback_hold_reason',
+                            feedbackOrderMap,
+                          )}
+                        >
                           <label className="text-sm font-medium">
                             {t('wo.hold_reason_label')}
                           </label>
@@ -1699,60 +1786,70 @@ export function WorkOrderFormDialog({
                           />
                         </div>
                       ) : null}
+                    <div
+                      className="col-12"
+                      style={mwFieldStyle('feedback_submit', feedbackOrderMap)}
+                    >
+                      <Button
+                        type="button"
+                        label={t('wo.feedback_submit')}
+                        icon="pi pi-check"
+                        onClick={() => void submitFeedbackForm()}
+                        loading={fbSaving}
+                      />
                     </div>
-                    <Button
-                      type="button"
-                      label={t('wo.feedback_submit')}
-                      icon="pi pi-check"
-                      onClick={() => void submitFeedbackForm()}
-                      loading={fbSaving}
-                    />
-                <h3 className="text-sm font-medium mt-3 mb-0">
-                  {t('transactions.title')}
-                </h3>
-                {woTxLoading ? (
-                  <p className="text-sm text-color-secondary m-0">
-                    {t('common.loading')}
-                  </p>
-                ) : (
-                  <DataTable
-                    value={woTxList}
-                    dataKey="id"
-                    size="small"
-                    emptyMessage={emDash}
-                  >
-                    <Column
-                      field="created_at"
-                      header={t('transactions.col_created_at')}
-                      body={(r: WoTransactionRow) =>
-                        formatDateTime(r.created_at)
-                      }
-                    />
-                    <Column
-                      field="employee_key"
-                      header={t('transactions.col_employee')}
-                      body={(r: WoTransactionRow) =>
-                        `${r.employee_key} ${emDash} ${r.employee_name}`
-                      }
-                    />
-                    <Column
-                      field="hours"
-                      header={t('transactions.col_hours')}
-                    />
-                    <Column
-                      field="feedback_text"
-                      header={t('transactions.col_feedback')}
-                      style={{ maxWidth: '24rem' }}
-                    />
-                    <Column
-                      field="created_by_login_name"
-                      header={t('common.col_created_by')}
-                      body={(r: WoTransactionRow) =>
-                        r.created_by_login_name ?? emDash
-                      }
-                    />
-                  </DataTable>
-                )}
+                    <div
+                      className="col-12"
+                      style={mwFieldStyle('transactions', feedbackOrderMap)}
+                    >
+                      <h3 className="text-sm font-medium mt-3 mb-0">
+                        {t('transactions.title')}
+                      </h3>
+                      {woTxLoading ? (
+                        <p className="text-sm text-color-secondary m-0">
+                          {t('common.loading')}
+                        </p>
+                      ) : (
+                        <DataTable
+                          value={woTxList}
+                          dataKey="id"
+                          size="small"
+                          emptyMessage={emDash}
+                        >
+                          <Column
+                            field="created_at"
+                            header={t('transactions.col_created_at')}
+                            body={(r: WoTransactionRow) =>
+                              formatDateTime(r.created_at)
+                            }
+                          />
+                          <Column
+                            field="employee_key"
+                            header={t('transactions.col_employee')}
+                            body={(r: WoTransactionRow) =>
+                              `${r.employee_key} ${emDash} ${r.employee_name}`
+                            }
+                          />
+                          <Column
+                            field="hours"
+                            header={t('transactions.col_hours')}
+                          />
+                          <Column
+                            field="feedback_text"
+                            header={t('transactions.col_feedback')}
+                            style={{ maxWidth: '24rem' }}
+                          />
+                          <Column
+                            field="created_by_login_name"
+                            header={t('common.col_created_by')}
+                            body={(r: WoTransactionRow) =>
+                              r.created_by_login_name ?? emDash
+                            }
+                          />
+                        </DataTable>
+                      )}
+                    </div>
+                    </div>
               </div>
             </TabPanel>
           ) : null}

@@ -1,11 +1,35 @@
 import type { TFunction } from 'i18next'
 import type { MenuItem } from 'primereact/menuitem'
+import type { KiraOpenOptions } from './KiraAssistantProvider'
 import { formatDateTime } from '../utils/dateTime'
 
 /** PrimeIcons — aligned with CRUD toolbar buttons across the app. */
 export const CRUD_CONTEXT_ICON_CREATE = 'pi pi-plus'
 export const CRUD_CONTEXT_ICON_EDIT = 'pi pi-pencil'
 export const CRUD_CONTEXT_ICON_DELETE = 'pi pi-trash'
+
+/** Same icon as shell / quick access Kira entry. */
+export const KIRA_CONTEXT_MENU_ICON = 'pi pi-sparkles'
+
+/**
+ * First item for row context menus: open Kira with a pre-filled draft.
+ * Callers should build `[askKira, { separator: true }, ...rest]`.
+ */
+export function buildAskKiraMenuItem(
+  t: TFunction,
+  o: {
+    openKira: (opts?: KiraOpenOptions) => void
+    disabled?: boolean
+    getDraft: () => string
+  },
+): MenuItem {
+  return {
+    label: t('kira.ask_kira'),
+    icon: KIRA_CONTEXT_MENU_ICON,
+    disabled: o.disabled === true,
+    command: () => o.openKira({ draft: o.getDraft() }),
+  }
+}
 
 export type CrudContextMenuOptions = {
   onCreate: () => void

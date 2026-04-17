@@ -33,8 +33,7 @@ export type AiWorkOrderDraft = {
   work_type_id: string | null
   workgroup_id: string | null
   category_id: string | null
-  worktime: number | null
-  duration: number | null
+  planned_duration: number | null
   plan_start: string | null
 }
 

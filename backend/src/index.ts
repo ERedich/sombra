@@ -25,8 +25,10 @@ import workOrdersRouter from './routes/work-orders.js'
 import capacityPlannerRouter from './routes/capacity-planner.js'
 import workPlansRouter, { generatorActorSystem } from './routes/work-plans.js'
 import tableLayoutsRouter from './routes/table-layouts.js'
+import mwFormTemplatesRouter from './routes/mw-form-templates.js'
 import searchPresetsRouter from './routes/search-presets.js'
 import notificationsRouter from './routes/notifications.js'
+import notificationEmailRulesRouter from './routes/notification-email-rules.js'
 import transactionsRouter from './routes/transactions.js'
 import appParametersRouter from './routes/app-parameters.js'
 import dashboardRouter from './routes/dashboard.js'
@@ -90,8 +92,10 @@ app.use('/api/work-orders', workOrdersRouter)
 app.use('/api/capacity-planner', capacityPlannerRouter)
 app.use('/api/work-plans', workPlansRouter)
 app.use('/api/table-layouts', tableLayoutsRouter)
+app.use('/api/mw-form-templates', mwFormTemplatesRouter)
 app.use('/api/search-presets', searchPresetsRouter)
 app.use('/api/notifications', notificationsRouter)
+app.use('/api/notification-email-rules', notificationEmailRulesRouter)
 app.use('/api/transactions', transactionsRouter)
 app.use('/api/app-parameters', appParametersRouter)
 app.use('/api/dashboard', dashboardRouter)

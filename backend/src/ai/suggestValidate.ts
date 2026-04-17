@@ -165,22 +165,18 @@ export async function validateAndResolveWorkOrderDraft(
     category_id = null
   }
 
-  let worktime: number | null =
-    typeof raw.worktime === 'number' &&
-    Number.isFinite(raw.worktime) &&
-    raw.worktime >= 0
-      ? raw.worktime
+  const rawPlanned =
+    (raw as { planned_duration?: unknown }).planned_duration ??
+    (raw as { duration?: unknown }).duration
+  let planned_duration: number | null =
+    typeof rawPlanned === 'number' &&
+    Number.isFinite(rawPlanned) &&
+    rawPlanned >= 0
+      ? rawPlanned
       : null
-  if (worktime === null) {
-    unresolved.push('worktime')
+  if (planned_duration === null) {
+    unresolved.push('planned_duration')
   }
-
-  let duration: number | null =
-    typeof raw.duration === 'number' &&
-    Number.isFinite(raw.duration) &&
-    raw.duration >= 0
-      ? raw.duration
-      : 0
 
   let plan_start: string | null = null
   if (typeof raw.plan_start === 'string' && raw.plan_start.trim()) {
@@ -207,8 +203,7 @@ export async function validateAndResolveWorkOrderDraft(
     work_type_id,
     workgroup_id,
     category_id,
-    worktime,
-    duration,
+    planned_duration,
     plan_start,
   }
 

@@ -11,6 +11,7 @@ import type {
   AiRefItem,
   AiSuggestContext,
 } from '../ai/suggestTypes.js'
+import { loadUserDbWorkingSiteId } from '../auth/siteScope.js'
 import { requireAuth } from '../middleware/auth.js'
 import { pool } from '../db.js'
 
@@ -34,6 +35,15 @@ function workingSiteIdOr403(
     return null
   }
   return siteId
+}
+
+/** Working plant for AI tools: DB `users.working_site_id` (matches `/me` + UI), not JWT-only. */
+async function aiWorkingSiteIdOr403(
+  res: import('express').Response,
+  userId: string,
+): Promise<string | null> {
+  const ws = await loadUserDbWorkingSiteId(pool, userId)
+  return workingSiteIdOr403(res, ws)
 }
 
 /** Simple per-user sliding window rate limit (in-memory). */
@@ -103,7 +113,7 @@ router.post('/copilot/turn', async (req, res) => {
     return
   }
 
-  const siteId = workingSiteIdOr403(res, auth.working_site_id)
+  const siteId = await aiWorkingSiteIdOr403(res, auth.id)
   if (!siteId) return
 
   if (!env.OPENAI_API_KEY?.trim()) {
@@ -122,6 +132,10 @@ router.post('/copilot/turn', async (req, res) => {
       pool,
       siteId,
       locale,
+      isAdmin: auth.role === 'admin',
+      userId: auth.id,
+      userLoginName: auth.login_name,
+      userDisplayName: auth.name,
       messages: req.body?.messages,
     })
     req.log?.info?.(
@@ -129,6 +143,7 @@ router.post('/copilot/turn', async (req, res) => {
         aiCopilotMs: Date.now() - t0,
         userId: auth.id,
         confirmableCount: result.confirmable.length,
+        clientActionCount: result.client_actions.length,
       },
       'ai_copilot_turn_ok',
     )
@@ -156,7 +171,7 @@ router.post('/suggest', async (req, res) => {
     return
   }
 
-  const siteId = workingSiteIdOr403(res, auth.working_site_id)
+  const siteId = await aiWorkingSiteIdOr403(res, auth.id)
   if (!siteId) return
 
   const kind = req.body?.kind
@@ -238,7 +253,7 @@ router.post('/transcribe', upload.single('audio'), async (req, res) => {
     return
   }
 
-  const siteOk = workingSiteIdOr403(res, auth.working_site_id)
+  const siteOk = await aiWorkingSiteIdOr403(res, auth.id)
   if (!siteOk) return
 
   if (!env.OPENAI_API_KEY?.trim()) {

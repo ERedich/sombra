@@ -34,10 +34,9 @@ const WO_FIELD_LABELS: Record<string, string> = {
   costcenter_id: 'Cost Center',
   plan_start: 'Plan Start',
   plan_end: 'Plan End',
-  worktime: 'Worktime',
   work_type_id: 'Work Type',
   status: 'Status',
-  duration: 'Duration',
+  planned_duration: 'Planned duration',
   category_id: 'Category',
   workgroup_id: 'Workgroup',
 }

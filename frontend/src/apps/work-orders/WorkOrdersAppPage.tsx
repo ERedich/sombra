@@ -36,10 +36,13 @@ import {
 import { getStoredUser } from '../../auth'
 import { useRegisterCreateShortcut } from '../../layout/AppCreateShortcut'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../../layout/kiraRowDraft'
 import { AppShell } from '../../layout/AppShell'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import {
@@ -66,7 +69,7 @@ import type { Workgroup } from '../workgroups/WorkgroupsAppPage'
 import { useWorkOrderMw } from '../../layout/WorkOrderMwProvider'
 import type { WoMwEvent } from '../../layout/workOrderMwTypes'
 import type { WorkOrder } from './workOrderTypes'
-import { feedbackTabIndexForRow, parseWorktimeNum } from './workOrderFormShared'
+import { feedbackTabIndexForRow } from './workOrderFormShared'
 
 export type { WorkOrder } from './workOrderTypes'
 
@@ -373,7 +376,6 @@ function siteColumnBody(row: WorkOrder, tr: TFunction) {
 }
 
 function rowMatchesGlobalSearch(w: WorkOrder, q: string, t: TFunction): boolean {
-  const wt = parseWorktimeNum(w.worktime).toString()
   return (
     String(w.wo_key).includes(q) ||
     w.short_text.toLowerCase().includes(q) ||
@@ -393,8 +395,7 @@ function rowMatchesGlobalSearch(w: WorkOrder, q: string, t: TFunction): boolean 
     (w.plan_start?.toLowerCase().includes(q) ?? false) ||
     (w.plan_end?.toLowerCase().includes(q) ?? false) ||
     (w.work_plan_key?.toLowerCase().includes(q) ?? false) ||
-    String(w.duration ?? '').includes(q) ||
-    wt.includes(q) ||
+    String(w.planned_duration ?? '').includes(q) ||
     (w.created_by_login_name?.toLowerCase().includes(q) ?? false) ||
     (w.updated_by_login_name?.toLowerCase().includes(q) ?? false) ||
     w.site_key.toLowerCase().includes(q) ||
@@ -422,6 +423,7 @@ export function WorkOrdersPage({
 
   const emDash = t('common.em_dash')
 
+  const { openKira } = useKiraAssistant()
   const toast = useRef<Toast>(null)
   const crudContextMenuRef = useRef<ContextMenu>(null)
   const toolbarSearchRef = useRegisterAppToolbarSearch()
@@ -934,13 +936,13 @@ export function WorkOrdersPage({
         },
       },
       {
-        field: 'worktime',
-        headerKey: 'wo.col_worktime_h',
+        field: 'planned_duration',
+        headerKey: 'wo.field_planned_duration_hours',
         sortable: true,
-        body: (row) => parseWorktimeNum(row.worktime),
+        body: (row) => Number(row.planned_duration ?? '0'),
         search: {
           inputType: 'number',
-          getSearchValue: (row) => parseWorktimeNum(row.worktime),
+          getSearchValue: (row) => Number(row.planned_duration ?? '0'),
         },
       },
       {
@@ -1543,12 +1545,11 @@ export function WorkOrdersPage({
         short_text: `Dummy WO ${ts}`.slice(0, 200),
         instruction_text: 'Dummy work order created from maintenance.',
         asset_id: pickedAssetForDummy.id,
-        worktime: 1,
         work_type_id: workTypeId,
         workgroup_id: workgroupId,
         category_id: categoriesForSite[0]?.id ?? null,
         plan_start: now.toISOString(),
-        duration: 1,
+        planned_duration: 1,
       }
 
       const data = await apiJson<WorkOrderResponse>('/api/work-orders', {
@@ -1854,6 +1855,23 @@ export function WorkOrdersPage({
   }
 
   const crudContextMenuItems: MenuItem[] = [
+    buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !selected || selectedIsDeleting,
+      getDraft: () => {
+        const w = selected
+        if (!w) return ''
+        return formatKiraRowDraft(
+          isMonitoring ? t('monitoring.title') : t('work_orders.title'),
+          {
+            id: w.id,
+            key: String(w.wo_key),
+            name: w.short_text,
+          },
+        )
+      },
+    }),
+    { separator: true },
     ...buildCrudContextMenuModel(
       {
         onCreate: openCreate,

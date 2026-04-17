@@ -8,6 +8,25 @@ export type UserSiteScope = {
 
 type Db = Pool | PoolClient
 
+/**
+ * Current `users.working_site_id` from the database.
+ * Use for server-side row scope when the client may have refreshed `cmms_user`
+ * via `GET /api/auth/me` without replacing the JWT (token claims can lag).
+ */
+export async function loadUserDbWorkingSiteId(
+  db: Db,
+  userId: string,
+): Promise<string | null> {
+  const r = await db.query<{ working_site_id: string | null }>(
+    `SELECT working_site_id FROM users WHERE id = $1`,
+    [userId],
+  )
+  const ws = r.rows[0]?.working_site_id
+  if (typeof ws !== 'string') return null
+  const t = ws.trim()
+  return t.length > 0 ? t : null
+}
+
 export async function loadUserSiteScope(
   db: Db,
   userId: string,

@@ -25,10 +25,13 @@ import { ApiError, apiJson } from '../../api'
 import { getStoredUser } from '../../auth'
 import { AppShell } from '../../layout/AppShell'
 import {
+  buildAskKiraMenuItem,
   buildCrudContextMenuModel,
   CRUD_CONTEXT_MENU_PROPS,
   rowAuditSnapshot,
 } from '../../layout/crudContextMenuItems'
+import { useKiraAssistant } from '../../layout/KiraAssistantProvider'
+import { formatKiraRowDraft } from '../../layout/kiraRowDraft'
 import { useRegisterAppToolbarSearch } from '../../layout/AppToolbarSearchFocus'
 import { AssetEditDialog } from '../asset-management/AssetEditDialog'
 import type { Asset } from '../asset-management/assetTypes'
@@ -155,6 +158,7 @@ function treeContainsKey(nodes: TreeNode[], key: string): boolean {
 export default function TreeStructureAppPage() {
   const navigate = useNavigate()
   const { t } = useTranslation()
+  const { openKira } = useKiraAssistant()
   const toolbarSearchRef = useRegisterAppToolbarSearch()
   const crudContextMenuRef = useRef<ContextMenu>(null)
   const [contextMenuAssetId, setContextMenuAssetId] = useState<string | null>(
@@ -264,29 +268,45 @@ export default function TreeStructureAppPage() {
       ? assets.find((x) => x.id === contextMenuAssetId)
       : undefined
     const isAdmin = getStoredUser()?.role === 'admin'
-    return buildCrudContextMenuModel(
-      {
-        onCreate: () => navigate('/assets'),
-        onEdit: () => {
-          if (asset) setEditAsset(asset)
+    const askKira = buildAskKiraMenuItem(t, {
+      openKira,
+      disabled: !asset,
+      getDraft: () =>
+        asset
+          ? formatKiraRowDraft(t('tree.title'), {
+              id: asset.id,
+              key: asset.key,
+              name: asset.name,
+            })
+          : '',
+    })
+    return [
+      askKira,
+      { separator: true },
+      ...buildCrudContextMenuModel(
+        {
+          onCreate: () => navigate('/assets'),
+          onEdit: () => {
+            if (asset) setEditAsset(asset)
+          },
+          onDelete: () => {},
+          disableDelete: true,
+          disableEdit: !asset,
         },
-        onDelete: () => {},
-        disableDelete: true,
-        disableEdit: !asset,
-      },
-      t,
-      {
-        audit: asset ? rowAuditSnapshot(asset) : undefined,
-        auditHistory: {
-          visible: isAdmin === true && !!contextMenuAssetId,
-          onNavigate: () =>
-            navigate(
-              `/audit-log?resource_type=asset&resource_id=${encodeURIComponent(contextMenuAssetId!)}`,
-            ),
+        t,
+        {
+          audit: asset ? rowAuditSnapshot(asset) : undefined,
+          auditHistory: {
+            visible: isAdmin === true && !!contextMenuAssetId,
+            onNavigate: () =>
+              navigate(
+                `/audit-log?resource_type=asset&resource_id=${encodeURIComponent(contextMenuAssetId!)}`,
+              ),
+          },
         },
-      },
-    )
-  }, [contextMenuAssetId, assets, navigate, t])
+      ),
+    ]
+  }, [contextMenuAssetId, assets, navigate, t, openKira])
 
   const handleAssetSaved = useCallback((updated: Asset) => {
     setAssets((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))

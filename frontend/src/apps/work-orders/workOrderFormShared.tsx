@@ -16,15 +16,6 @@ export const WO_STATUS_I18N_KEYS: Record<string, string> = {
   closed: 'wo.status_closed',
 }
 
-export function parseWorktimeNum(w: string): number {
-  const n = Number(w)
-  return Number.isFinite(n) ? n : 0
-}
-
-export function sortedWorkOrders(rows: WorkOrder[]): WorkOrder[] {
-  return [...rows].sort((a, b) => b.wo_key - a.wo_key)
-}
-
 export function workOrderHasLinkedPlan(
   row: Pick<WorkOrder, 'work_plan_id' | 'work_plan_key'>,
 ): boolean {

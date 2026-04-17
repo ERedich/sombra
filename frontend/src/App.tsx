@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useLayoutEffect } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { refreshStoredAuthUser } from './api'
-import { getToken } from './auth'
+import { getStoredUser, getToken } from './auth'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import SitesPage from './pages/SitesPage'
@@ -12,6 +12,7 @@ import WorkOrdersAppPage from './apps/work-orders/WorkOrdersAppPage'
 import MonitoringAppPage from './apps/monitoring/MonitoringAppPage'
 import TransactionsAppPage from './apps/transactions/TransactionsAppPage'
 import WorkPlanningAppPage from './apps/work-planning/WorkPlanningAppPage'
+import MonthSchedulerAppPage from './apps/month-scheduler/MonthSchedulerAppPage'
 import AssetManagementAppPage from './apps/asset-management/AssetManagementAppPage'
 import TreeStructureAppPage from './apps/tree-structure/TreeStructureAppPage'
 import AssetClassificationsAppPage from './apps/asset-classifications/AssetClassificationsAppPage'
@@ -20,20 +21,28 @@ import WorkTypesAppPage from './apps/work-types/WorkTypesAppPage'
 import ShiftsAppPage from './apps/shifts/ShiftsAppPage'
 import ShiftPlannerAppPage from './apps/shift-planner/ShiftPlannerAppPage'
 import CapacityPlannerAppPage from './apps/capacity-planner/CapacityPlannerAppPage'
-import ScheduleAppPage from './apps/schedule/ScheduleAppPage'
 import CategoriesAppPage from './apps/categories/CategoriesAppPage'
 import EmployeesAppPage from './apps/employees/EmployeesAppPage'
 import WorkgroupsAppPage from './apps/workgroups/WorkgroupsAppPage'
 import UserGroupsAppPage from './apps/user-groups/UserGroupsAppPage'
 import TemplateAppPage from './apps/template-app/TemplateAppPage'
+import MwTemplateEditorAppPage from './apps/mw-template-editor/MwTemplateEditorAppPage'
 import HotkeysAppPage from './apps/hotkeys/HotkeysAppPage'
 import TranslationsAppPage from './apps/translations/TranslationsAppPage'
 import AppParametersAppPage from './apps/app-parameters/AppParametersAppPage'
+import NotificationEmailRulesAppPage from './apps/notification-email-rules/NotificationEmailRulesAppPage'
 import { useKiraAssistant } from './layout/KiraAssistantProvider'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   if (!getToken()) {
     return <Navigate to="/login" replace />
+  }
+  return children
+}
+
+function AdminRoute({ children }: { children: ReactNode }) {
+  if (getStoredUser()?.role !== 'admin') {
+    return <Navigate to="/" replace />
   }
   return children
 }
@@ -95,6 +104,16 @@ export default function App() {
         }
       />
       <Route
+        path="/mw-template-editor"
+        element={
+          <ProtectedRoute>
+            <AdminRoute>
+              <MwTemplateEditorAppPage />
+            </AdminRoute>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/hotkeys"
         element={
           <ProtectedRoute>
@@ -139,14 +158,6 @@ export default function App() {
         element={
           <ProtectedRoute>
             <CapacityPlannerAppPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/schedule"
-        element={
-          <ProtectedRoute>
-            <ScheduleAppPage />
           </ProtectedRoute>
         }
       />
@@ -223,6 +234,14 @@ export default function App() {
         }
       />
       <Route
+        path="/month-scheduler"
+        element={
+          <ProtectedRoute>
+            <MonthSchedulerAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/tree-structure"
         element={
           <ProtectedRoute>
@@ -243,6 +262,16 @@ export default function App() {
         element={
           <ProtectedRoute>
             <AuditLogAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/notification-email-rules"
+        element={
+          <ProtectedRoute>
+            <AdminRoute>
+              <NotificationEmailRulesAppPage />
+            </AdminRoute>
           </ProtectedRoute>
         }
       />

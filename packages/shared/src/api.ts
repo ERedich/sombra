@@ -10,6 +10,7 @@ export const authPaths = {
 
 export const cmmsPaths = {
   workOrders: `${API_PREFIX}/work-orders`,
+  workPlans: `${API_PREFIX}/work-plans`,
   workOrder: (id: string) =>
     `${API_PREFIX}/work-orders/${encodeURIComponent(id)}`,
   workOrderEmployees: (id: string) =>

@@ -86,4 +86,18 @@ export const env = {
   GENERATE_DUE_TIMEZONE: process.env.GENERATE_DUE_TIMEZONE ?? 'Europe/Berlin',
   /** Optional UUID for audit `created_by` on scheduled runs; null uses SQL NULL. */
   GENERATE_DUE_ACTOR_USER_ID: process.env.GENERATE_DUE_ACTOR_USER_ID?.trim() || null,
+
+  /** When true, site notification email rules may send outbound SMTP mail. */
+  MAIL_ENABLED: boolEnv('MAIL_ENABLED', false),
+  SMTP_HOST: process.env.SMTP_HOST?.trim() || '',
+  SMTP_PORT: Math.min(
+    65535,
+    Math.max(1, Number(process.env.SMTP_PORT ?? '587') || 587),
+  ),
+  SMTP_SECURE: boolEnv('SMTP_SECURE', false),
+  SMTP_USER: process.env.SMTP_USER?.trim() || '',
+  /** SMTP password (optional for local sinks like Mailpit). */
+  SMTP_PASS: process.env.SMTP_PASS ?? '',
+  /** RFC5322 From, e.g. `CMMS <noreply@example.com>`. */
+  MAIL_FROM: process.env.MAIL_FROM?.trim() || '',
 }

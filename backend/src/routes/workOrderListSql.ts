@@ -1,9 +1,9 @@
 /** Shared SELECT for work order list/detail joins (sites, assets, types, …). */
 export const WORK_ORDERS_LIST_SQL = `
 SELECT w.id, w.site_id, w.wo_key, w.short_text, w.asset_id, w.costcenter_id,
-       w.instruction_text, w.plan_start, w.plan_end, w.worktime, w.work_type_id, w.status,
+       w.instruction_text, w.plan_start, w.plan_end, w.work_type_id, w.status,
        w.hold_reason,
-       w.work_plan_id, w.work_plan_key, w.duration, w.workgroup_id,
+       w.work_plan_id, w.work_plan_key, w.planned_duration, w.workgroup_id,
        w.created_at, w.updated_at, w.created_by, w.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        a.key AS asset_key, a.name AS asset_name,

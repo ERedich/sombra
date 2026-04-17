@@ -20,7 +20,7 @@ function buildUserPayload(
 ): string {
   const ctx = JSON.stringify(context)
   if (kind === 'work_order') {
-    return `Transcript (user spoke):\n"""${transcript}"""\n\nReference lists (JSON, ids are authoritative; only use ids from these lists or null):\n${ctx}\n\nReturn JSON with key "work_order" only. Shape:\n{"work_order":{"short_text":string|null,"instruction_text":string|null,"asset_id":uuid|null,"work_type_id":uuid|null,"workgroup_id":uuid|null,"category_id":uuid|null,"worktime":number|null,"duration":number|null,"plan_start":iso8601 string|null}}\nInfer worktime in hours if mentioned; duration in hours for planned work; plan_start as ISO if a date/time is given else null.`
+    return `Transcript (user spoke):\n"""${transcript}"""\n\nReference lists (JSON, ids are authoritative; only use ids from these lists or null):\n${ctx}\n\nReturn JSON with key "work_order" only. Shape:\n{"work_order":{"short_text":string|null,"instruction_text":string|null,"asset_id":uuid|null,"work_type_id":uuid|null,"workgroup_id":uuid|null,"category_id":uuid|null,"planned_duration":number|null,"plan_start":iso8601 string|null}}\nInfer planned_duration in hours if mentioned; plan_start as ISO if a date/time is given else null.`
   }
   return `Transcript (user spoke):\n"""${transcript}"""\n\nReference lists (JSON):\n${ctx}\n\nReturn JSON with key "asset" only. Shape:\n{"asset":{"key":string|null,"name":string|null,"asset_type":"location"|"building"|"group"|"maintenance_object"|null,"parent_asset_id":uuid|null,"costcenter_id":uuid|null,"asset_classification_id":uuid|null,"equipment_number":string|null,"serial_no":string|null,"build_year":number|null,"warranty_end":"YYYY-MM-DD"|null,"priority":1-5|null}}\nUse null when unknown. Key should be a short unique code if inferable (e.g. from equipment number), else null.`
 }
@@ -90,6 +90,17 @@ export async function openAiSuggestDraft(args: {
 
   if (args.kind === 'work_order') {
     const wo = (inner as LmWorkOrderOut).work_order ?? {}
+    const plannedRaw = (wo as { planned_duration?: unknown }).planned_duration
+    const legacyDur = (wo as { duration?: unknown }).duration
+    const legacyWt = (wo as { worktime?: unknown }).worktime
+    const planned_duration =
+      typeof plannedRaw === 'number'
+        ? plannedRaw
+        : typeof legacyDur === 'number'
+          ? legacyDur
+          : typeof legacyWt === 'number'
+            ? legacyWt
+            : null
     return {
       short_text: (wo.short_text as string) ?? null,
       instruction_text: (wo.instruction_text as string) ?? null,
@@ -97,8 +108,7 @@ export async function openAiSuggestDraft(args: {
       work_type_id: (wo.work_type_id as string) ?? null,
       workgroup_id: (wo.workgroup_id as string) ?? null,
       category_id: (wo.category_id as string) ?? null,
-      worktime: typeof wo.worktime === 'number' ? wo.worktime : null,
-      duration: typeof wo.duration === 'number' ? wo.duration : null,
+      planned_duration,
       plan_start: (wo.plan_start as string) ?? null,
     } satisfies AiWorkOrderDraft
   }

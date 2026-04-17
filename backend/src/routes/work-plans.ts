@@ -34,13 +34,12 @@ type WorkPlanTableRow = {
   asset_id: string
   costcenter_id: string | null
   instruction_text: string
-  worktime: string
   interval_count: number
   interval_time_type: string
   due_date: Date
   next_due_at: Date
   lead_time_days: number
-  duration_hours: string
+  planned_duration: string
   category_id: string | null
   created_at: Date
   updated_at: Date
@@ -93,8 +92,8 @@ function rowToAuditRecord(row: WorkPlanTableRow): Record<string, unknown> {
 
 const LIST_SQL = `
 SELECT p.id, p.site_id, p.plan_key, p.short_text, p.asset_id, p.costcenter_id,
-       p.instruction_text, p.worktime::text, p.interval_count, p.interval_time_type,
-       p.due_date, p.next_due_at, p.lead_time_days, p.duration_hours::text,
+       p.instruction_text, p.planned_duration::text, p.interval_count, p.interval_time_type,
+       p.due_date, p.next_due_at, p.lead_time_days,
        p.created_at, p.updated_at, p.created_by, p.updated_by,
        st.key AS site_key, st.name AS site_name, st.colour AS site_colour,
        a.key AS asset_key, a.name AS asset_name,
@@ -298,7 +297,6 @@ router.post('/', async (req, res) => {
       : ''
   const assetIdRaw =
     typeof req.body?.asset_id === 'string' ? req.body.asset_id : ''
-  const worktimeRaw = req.body?.worktime
 
   const intervalParsed = parseIntervalType(req.body?.interval_time_type)
   if (intervalParsed === 'invalid') {
@@ -342,7 +340,7 @@ router.post('/', async (req, res) => {
     return
   }
 
-  const durRaw = req.body?.duration_hours
+  const durRaw = req.body?.planned_duration
   const durNum =
     durRaw === undefined || durRaw === null
       ? 0
@@ -353,7 +351,7 @@ router.post('/', async (req, res) => {
           : NaN
   if (!Number.isFinite(durNum) || durNum < 0) {
     res.status(400).json({
-      error: 'duration_hours must be a non-negative number.',
+      error: 'planned_duration must be a non-negative number.',
     })
     return
   }
@@ -377,21 +375,6 @@ router.post('/', async (req, res) => {
     res.status(400).json({ error: 'A valid asset_id is required.' })
     return
   }
-  if (worktimeRaw === undefined || worktimeRaw === null) {
-    res.status(400).json({ error: 'Worktime is required.' })
-    return
-  }
-  const worktimeNum =
-    typeof worktimeRaw === 'number'
-      ? worktimeRaw
-      : typeof worktimeRaw === 'string'
-        ? Number(worktimeRaw)
-        : NaN
-  if (!Number.isFinite(worktimeNum) || worktimeNum < 0) {
-    res.status(400).json({ error: 'Worktime must be a non-negative number.' })
-    return
-  }
-
   const auth = req.authUser!
   const siteId = workingSiteIdOr403(res, auth)
   if (!siteId) return
@@ -439,14 +422,14 @@ router.post('/', async (req, res) => {
     const r = await client.query<{ id: string }>(
       `INSERT INTO work_plans (
          site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
-         worktime, interval_count, interval_time_type,
-         due_date, next_due_at, lead_time_days, duration_hours,
+         planned_duration, interval_count, interval_time_type,
+         due_date, next_due_at, lead_time_days,
          category_id, created_by
        )
        VALUES (
          $1, $2, $3, $4, $5, $6, $7::numeric,
-         $8, $9, $10, $10, $11, $12::numeric,
-         $13, $14
+         $8, $9, $10, $10, $11,
+         $12, $13
        )
        RETURNING id`,
       [
@@ -456,12 +439,11 @@ router.post('/', async (req, res) => {
         assetIdRaw,
         asset.costcenter_id,
         instructionTrimmed,
-        worktimeNum,
+        durNum,
         intervalCount,
         intervalParsed,
         dueParsed,
         leadNum,
-        durNum,
         nextCategoryId,
         auth.id,
       ],
@@ -477,8 +459,8 @@ router.post('/', async (req, res) => {
 
     const tableRow = await client.query<WorkPlanTableRow>(
       `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
-              worktime::text, interval_count, interval_time_type,
-              due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
+              planned_duration::text, interval_count, interval_time_type,
+              due_date, next_due_at, lead_time_days, category_id,
               created_at, updated_at, created_by, updated_by
        FROM work_plans WHERE id = $1`,
       [insertedId],
@@ -536,12 +518,11 @@ router.patch('/:id', async (req, res) => {
     !has('short_text') &&
     !has('instruction_text') &&
     !has('asset_id') &&
-    !has('worktime') &&
+    !has('planned_duration') &&
     !has('interval_count') &&
     !has('interval_time_type') &&
     !has('due_date') &&
     !has('lead_time_days') &&
-    !has('duration_hours') &&
     !has('category_id')
   ) {
     res.status(400).json({ error: 'No fields to update.' })
@@ -555,8 +536,8 @@ router.patch('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkPlanTableRow>(
       `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
-              worktime::text, interval_count, interval_time_type,
-              due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
+              planned_duration::text, interval_count, interval_time_type,
+              due_date, next_due_at, lead_time_days, category_id,
               created_at, updated_at, created_by, updated_by
        FROM work_plans
        WHERE id = $1
@@ -575,13 +556,12 @@ router.patch('/:id', async (req, res) => {
     let nextInstruction = beforeRow.instruction_text
     let nextAssetId = beforeRow.asset_id
     let nextCostcenterId = beforeRow.costcenter_id
-    let nextWorktime = Number(beforeRow.worktime)
+    let nextPlannedDuration = Number(beforeRow.planned_duration)
     let nextIntervalCount = beforeRow.interval_count
     let nextIntervalType = beforeRow.interval_time_type
     let nextDueDate = beforeRow.due_date
     let nextNextDue = beforeRow.next_due_at
     let nextLead = beforeRow.lead_time_days
-    let nextDur = Number(beforeRow.duration_hours)
     let nextCategoryId: string | null = beforeRow.category_id
 
     if (has('plan_key')) {
@@ -641,18 +621,17 @@ router.patch('/:id', async (req, res) => {
       nextAssetId = aid
       nextCostcenterId = asset.costcenter_id
     }
-    if (has('worktime')) {
-      const w = body.worktime
-      const worktimeNum =
-        typeof w === 'number' ? w : typeof w === 'string' ? Number(w) : NaN
-      if (!Number.isFinite(worktimeNum) || worktimeNum < 0) {
+    if (has('planned_duration')) {
+      const w = body.planned_duration
+      const n = typeof w === 'number' ? w : typeof w === 'string' ? Number(w) : NaN
+      if (!Number.isFinite(n) || n < 0) {
         await client.query('ROLLBACK')
         res.status(400).json({
-          error: 'Worktime must be a non-negative number.',
+          error: 'planned_duration must be a non-negative number.',
         })
         return
       }
-      nextWorktime = worktimeNum
+      nextPlannedDuration = n
     }
     if (has('interval_count')) {
       const ic = body.interval_count
@@ -700,20 +679,6 @@ router.patch('/:id', async (req, res) => {
       }
       nextLead = n
     }
-    if (has('duration_hours')) {
-      const d = body.duration_hours
-      const n =
-        typeof d === 'number' ? d : typeof d === 'string' ? Number(d) : NaN
-      if (!Number.isFinite(n) || n < 0) {
-        await client.query('ROLLBACK')
-        res.status(400).json({
-          error: 'duration_hours must be a non-negative number.',
-        })
-        return
-      }
-      nextDur = n
-    }
-
     if (has('category_id')) {
       const parsed = parseCategoryId(body)
       if (parsed === 'invalid') {
@@ -757,20 +722,19 @@ router.patch('/:id', async (req, res) => {
          instruction_text = $3,
          asset_id = $4,
          costcenter_id = $5,
-         worktime = $6::numeric,
+         planned_duration = $6::numeric,
          interval_count = $7,
          interval_time_type = $8,
          due_date = $9,
          next_due_at = $10,
          lead_time_days = $11,
-         duration_hours = $12::numeric,
-         category_id = $13,
+         category_id = $12,
          updated_at = now(),
-         updated_by = $14
-       WHERE id = $15
+         updated_by = $13
+       WHERE id = $14
        RETURNING id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
-                 worktime::text, interval_count, interval_time_type,
-                 due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
+                 planned_duration::text, interval_count, interval_time_type,
+                 due_date, next_due_at, lead_time_days, category_id,
                  created_at, updated_at, created_by, updated_by`,
       [
         nextPlanKey,
@@ -778,13 +742,12 @@ router.patch('/:id', async (req, res) => {
         nextInstruction,
         nextAssetId,
         nextCostcenterId,
-        nextWorktime,
+        nextPlannedDuration,
         nextIntervalCount,
         nextIntervalType,
         nextDueDate,
         nextNextDue,
         nextLead,
-        nextDur,
         nextCategoryId,
         auth.id,
         id,
@@ -1056,8 +1019,8 @@ router.delete('/:id', async (req, res) => {
     await client.query('BEGIN')
     const prev = await client.query<WorkPlanTableRow>(
       `SELECT id, site_id, plan_key, short_text, asset_id, costcenter_id, instruction_text,
-              worktime::text, interval_count, interval_time_type,
-              due_date, next_due_at, lead_time_days, duration_hours::text, category_id,
+              planned_duration::text, interval_count, interval_time_type,
+              due_date, next_due_at, lead_time_days, category_id,
               created_at, updated_at, created_by, updated_by
        FROM work_plans
        WHERE id = $1

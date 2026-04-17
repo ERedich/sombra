@@ -58,6 +58,12 @@ export const NAV_SECTIONS: NavSection[] = [
         shellAction: 'kira',
       },
       { path: '/template-app', labelKey: 'nav.template_app', icon: 'pi pi-book' },
+      {
+        path: '/mw-template-editor',
+        labelKey: 'nav.mw_template_editor',
+        icon: 'pi pi-objects-column',
+        adminOnly: true,
+      },
     ],
   },
   {
@@ -70,6 +76,12 @@ export const NAV_SECTIONS: NavSection[] = [
         path: '/audit-log',
         labelKey: 'nav.audit_log',
         icon: 'pi pi-history',
+        adminOnly: true,
+      },
+      {
+        path: '/notification-email-rules',
+        labelKey: 'nav.notification_email_rules',
+        icon: 'pi pi-envelope',
         adminOnly: true,
       },
       { path: '/shifts', labelKey: 'nav.shifts', icon: 'pi pi-clock' },
@@ -112,6 +124,11 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: 'pi pi-calendar-plus',
       },
       {
+        path: '/month-scheduler',
+        labelKey: 'nav.month_scheduler',
+        icon: 'pi pi-calendar',
+      },
+      {
         path: '/shift-planner',
         labelKey: 'nav.shift_planner',
         icon: 'pi pi-table',
@@ -120,11 +137,6 @@ export const NAV_SECTIONS: NavSection[] = [
         path: '/capacity-planner',
         labelKey: 'nav.capacity_planner',
         icon: 'pi pi-chart-bar',
-      },
-      {
-        path: '/schedule',
-        labelKey: 'nav.schedule',
-        icon: 'pi pi-calendar',
       },
     ],
   },
