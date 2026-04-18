@@ -29,12 +29,17 @@ export const COPILOT_PRODUCT_RULES: CopilotProductRule[] = [
   {
     id: 'kira_scheduling_tools_read_only',
     text:
-      'Scheduling tools (`get_scheduling_snapshot`, `analyze_scheduling_issues`, `list_shift_definitions`) only **read** shift templates, assignments, capacity allocations, and work order plan windows for the current working site. They never change the database.',
+      'Scheduling tools (`get_scheduling_snapshot`, `analyze_scheduling_issues`, `list_shift_definitions`) only **read** shift templates, assignments, capacity allocations, and work order plan windows for the current working site. They never change the database. **Exceptions:** `prepare_set_capacity_allocation` (Kapazität) and `prepare_create_shift_assignment` (Schichtzuweisung) register user-confirmable writes; the user must confirm in Kira before any database change.',
+  },
+  {
+    id: 'kira_shift_template_vs_assignment',
+    text:
+      '**Shifts (`shifts` table)** are **templates** per site: `key`, `name`, `time_start` / `time_end` (wall-clock times), and `available_weekdays` (ISO weekday numbers 1=Mon … 7=Sun) on which that shift may be planned. **Shift assignments (`shift_assignments`)** tie one **employee** to one **shift template** on one **calendar day** (`assignment_date` YYYY-MM-DD): that row is the plan that the employee is scheduled to work that day (times from the template or overrides; overnight shifts span into the next calendar day as one window). To **add** such a row from Kira, use `prepare_create_shift_assignment` with `shift_id`, `employee_id`, and `assignment_date` — the weekday of the date must be allowed by the template’s `available_weekdays`, and employee + shift must be on the working site.',
   },
   {
     id: 'kira_scheduling_analysis_advisory',
     text:
-      '`analyze_scheduling_issues` returns deterministic checks (e.g. planned hours vs shift length × SPC %, overlapping WO plan windows, allocation gaps). Interpretation, prioritization, and “postpone WO / add staffing” suggestions are **advisory**; the user must apply changes in the capacity planner, shift planner, or work order screens.',
+      '`analyze_scheduling_issues` returns deterministic checks (e.g. planned hours vs shift length × SPC %, overlapping WO plan windows, allocation gaps). Interpretation and prioritization are **advisory**. To **apply** capacity allocations in Kira, use `prepare_set_capacity_allocation` (confirmable). To **assign an employee to a shift** for a specific day, use `prepare_create_shift_assignment` (confirmable POST). Bulk or drag-drop work may still use the shift planner UI.',
   },
   {
     id: 'kira_tool_date_iso',

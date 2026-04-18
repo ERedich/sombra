@@ -114,7 +114,8 @@ const asideFixedStyle: CSSProperties = {
 export function AppShell({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
-  const { openKira } = useKiraAssistant()
+  const { openKira, kiraCopilotSending, kiraUnreadReplyDot } = useKiraAssistant()
+  const showKiraReadyDot = kiraUnreadReplyDot && !kiraCopilotSending
   const { shiftLoginRecognition } = useAppParameters()
   const location = useLocation()
   const { changeTheme } = useContext(PrimeReactContext)
@@ -395,6 +396,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <button
                     key={app.path}
                     type="button"
+                    disabled={kiraCopilotSending}
                     className={[
                       'app-sidebar-link',
                       'flex align-items-center gap-2 px-2 py-2 border-round text-sm no-underline transition-colors transition-duration-150',
@@ -406,7 +408,20 @@ export function AppShell({ children }: { children: ReactNode }) {
                       closeFlyout()
                     }}
                   >
-                    <i className={app.icon} aria-hidden />
+                    <span className="relative inline-flex align-items-center justify-content-center flex-shrink-0">
+                      <i
+                        className={
+                          kiraCopilotSending ? 'pi pi-spin pi-spinner' : app.icon
+                        }
+                        aria-hidden
+                      />
+                      {showKiraReadyDot ? (
+                        <span
+                          className="app-shell-kira-ready-dot app-shell-kira-ready-dot--navicon"
+                          aria-hidden
+                        />
+                      ) : null}
+                    </span>
                     <span>{t(app.labelKey)}</span>
                   </button>
                 ) : (
@@ -534,6 +549,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                                 key={app.path}
                                 type="button"
                                 tabIndex={isOpen ? undefined : -1}
+                                disabled={kiraCopilotSending}
                                 className={[
                                   'app-sidebar-link',
                                   'flex align-items-center gap-2 px-2 py-1 border-round text-sm no-underline transition-colors transition-duration-150',
@@ -542,7 +558,22 @@ export function AppShell({ children }: { children: ReactNode }) {
                                 ].join(' ')}
                                 onClick={() => openKira()}
                               >
-                                <i className={app.icon} aria-hidden />
+                                <span className="relative inline-flex align-items-center justify-content-center flex-shrink-0">
+                                  <i
+                                    className={
+                                      kiraCopilotSending
+                                        ? 'pi pi-spin pi-spinner'
+                                        : app.icon
+                                    }
+                                    aria-hidden
+                                  />
+                                  {showKiraReadyDot ? (
+                                    <span
+                                      className="app-shell-kira-ready-dot app-shell-kira-ready-dot--navicon"
+                                      aria-hidden
+                                    />
+                                  ) : null}
+                                </span>
                                 <span>{t(app.labelKey)}</span>
                               </button>
                             ) : (
@@ -614,15 +645,27 @@ export function AppShell({ children }: { children: ReactNode }) {
                 }}
                 aria-label={t('notifications.button_aria')}
               />
-              <Button
-                type="button"
-                icon="pi pi-sparkles"
-                rounded
-                text
-                severity="secondary"
-                onClick={() => openKira()}
-                aria-label={t('shell.kira_aria')}
-              />
+              <span
+                className="relative inline-flex"
+                title={
+                  showKiraReadyDot ? t('kira.response_ready_detail') : undefined
+                }
+              >
+                <Button
+                  type="button"
+                  icon="pi pi-sparkles"
+                  rounded
+                  text
+                  severity="secondary"
+                  loading={kiraCopilotSending}
+                  onClick={() => openKira()}
+                  aria-label={t('shell.kira_aria')}
+                  aria-busy={kiraCopilotSending}
+                />
+                {showKiraReadyDot ? (
+                  <span className="app-shell-kira-ready-dot" aria-hidden />
+                ) : null}
+              </span>
               <Button
                 type="button"
                 icon={darkMode ? 'pi pi-sun' : 'pi pi-moon'}

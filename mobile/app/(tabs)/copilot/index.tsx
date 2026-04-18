@@ -21,6 +21,8 @@ import {
   createWorkPlan,
   postAiCopilotTurn,
   postAiTranscribe,
+  putWorkOrderCapacityAllocation,
+  createShiftAssignment,
   type CopilotTurnResult,
 } from '@/lib/cmmsApi';
 import {
@@ -49,6 +51,10 @@ function strings(de: boolean) {
     confirmWo: de ? 'Arbeitsauftrag anlegen' : 'Create work order',
     confirmWp: de ? 'Arbeitsplan anlegen' : 'Create work plan',
     confirmAsset: de ? 'Objekt anlegen' : 'Create asset',
+    confirmCap: de ? 'Kapazität zuweisen' : 'Apply capacity allocation',
+    confirmShift: de ? 'Schicht zuweisen' : 'Assign shift',
+    capSaved: de ? 'Kapazitätszuweisung gespeichert.' : 'Capacity allocation updated.',
+    shiftSaved: de ? 'Schichtzuweisung gespeichert.' : 'Shift assignment saved.',
     wpSaved: de ? 'Arbeitsplan angelegt.' : 'Work plan created.',
     cancel: de ? 'Verwerfen' : 'Discard',
     busy: de ? 'Bitte warten…' : 'Please wait…',
@@ -265,6 +271,14 @@ export default function CopilotScreen() {
           await createWorkPlan(item.payload);
           setPending((p) => p.filter((x) => x.id !== item.id));
           Alert.alert('OK', S.wpSaved);
+        } else if (item.type === 'capacity_allocation') {
+          await putWorkOrderCapacityAllocation(item.work_order_id, item.payload);
+          setPending((p) => p.filter((x) => x.id !== item.id));
+          Alert.alert('OK', S.capSaved);
+        } else if (item.type === 'create_shift_assignment') {
+          await createShiftAssignment(item.payload);
+          setPending((p) => p.filter((x) => x.id !== item.id));
+          Alert.alert('OK', S.shiftSaved);
         } else {
           await createAsset(item.payload);
           setPending((p) => p.filter((x) => x.id !== item.id));
@@ -321,7 +335,11 @@ export default function CopilotScreen() {
               </RNView>
             );
           }
-          const pl = JSON.stringify(row.item.payload, null, 2);
+          const pl =
+            row.item.type === 'capacity_allocation' ||
+            row.item.type === 'create_shift_assignment'
+              ? JSON.stringify(row.item, null, 2)
+              : JSON.stringify(row.item.payload, null, 2);
           return (
             <RNView style={styles.card}>
               <Text style={styles.cardTitle}>
@@ -329,7 +347,11 @@ export default function CopilotScreen() {
                   ? S.confirmWo
                   : row.item.type === 'create_work_plan'
                     ? S.confirmWp
-                    : S.confirmAsset}
+                    : row.item.type === 'capacity_allocation'
+                      ? S.confirmCap
+                      : row.item.type === 'create_shift_assignment'
+                        ? S.confirmShift
+                        : S.confirmAsset}
               </Text>
               <Text selectable style={styles.cardBody}>
                 {pl}
@@ -349,7 +371,11 @@ export default function CopilotScreen() {
                       ? S.confirmWo
                       : row.item.type === 'create_work_plan'
                         ? S.confirmWp
-                        : S.confirmAsset}
+                        : row.item.type === 'capacity_allocation'
+                          ? S.confirmCap
+                          : row.item.type === 'create_shift_assignment'
+                            ? S.confirmShift
+                            : S.confirmAsset}
                   </Text>
                 </RNPressable>
               </RNView>

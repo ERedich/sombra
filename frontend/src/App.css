@@ -197,6 +197,27 @@ html.theme-transition-fallback #root {
   border-radius: 50%;
 }
 
+/* Kira: blue dot when a reply is ready (modal was closed while the request finished) */
+.app-shell-kira-ready-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--primary-color);
+  box-shadow: 0 0 0 2px var(--surface-card);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.app-shell-kira-ready-dot--navicon {
+  top: -3px;
+  right: -4px;
+  width: 0.45rem;
+  height: 0.45rem;
+}
+
 .app-sidebar-visually-hidden {
   position: absolute;
   width: 1px;

@@ -19,9 +19,7 @@ import { Card } from 'primereact/card'
 import { InputTextarea } from 'primereact/inputtextarea'
 import { Message } from 'primereact/message'
 import { Toast } from 'primereact/toast'
-import type { ClientAction } from '@sombra/shared'
-import { buildWebPath, cmmsPaths } from '@sombra/shared'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { cmmsPaths } from '@sombra/shared'
 import { apiJson, ApiError } from '../../api'
 import { getStoredUser } from '../../auth'
 import type {
@@ -73,57 +71,7 @@ function sttLangTag(locale: string): string {
   return 'en-US'
 }
 
-function searchParamsNormalizedEqual(a: string, b: string): boolean {
-  const na = a.startsWith('?') ? a.slice(1) : a
-  const nb = b.startsWith('?') ? b.slice(1) : b
-  const pa = new URLSearchParams(na)
-  const pb = new URLSearchParams(nb)
-  if (pa.toString() === pb.toString()) return true
-  const sa = [...pa.entries()].sort(([x], [y]) => x.localeCompare(y))
-  const sb = [...pb.entries()].sort(([x], [y]) => x.localeCompare(y))
-  return (
-    sa.length === sb.length &&
-    sa.every(([k, v], i) => k === sb[i]?.[0] && v === sb[i]?.[1])
-  )
-}
-
-function applyKiraClientActions(
-  actions: ClientAction[] | undefined,
-  opts: {
-    navigate: ReturnType<typeof useNavigate>
-    location: ReturnType<typeof useLocation>
-    openKira: () => void
-    closeKira: () => void
-  },
-) {
-  if (!actions?.length) return
-  for (const action of actions) {
-    if (action.type === 'shell' && action.action === 'open_kira') {
-      opts.openKira()
-      continue
-    }
-    if (action.type === 'navigate') {
-      const { pathname, search } = buildWebPath(action.app, action.entityId)
-      const samePath = opts.location.pathname === pathname
-      const sameSearch = searchParamsNormalizedEqual(
-        opts.location.search,
-        search,
-      )
-      if (!samePath || !sameSearch) {
-        opts.navigate({ pathname, search })
-      }
-      if (action.closeKira === true) opts.closeKira()
-    }
-  }
-}
-
 /* ── Types ───────────────────────────────────────────────────────── */
-
-type CopilotTurnResult = {
-  message: { role: 'assistant'; content: string }
-  confirmable: KiraConfirmable[]
-  client_actions?: ClientAction[]
-}
 
 type Row =
   | { kind: 'msg'; role: 'user' | 'assistant'; content: string; at: number }
@@ -146,9 +94,12 @@ export function KiraAssistantContent({
   setPending: Dispatch<SetStateAction<KiraConfirmable[]>>
 }) {
   const { t } = useTranslation()
-  const navigate = useNavigate()
-  const location = useLocation()
-  const { openKira, closeKira } = useKiraAssistant()
+  const {
+    openKira,
+    closeKira,
+    kiraCopilotSending,
+    sendKiraPrompt,
+  } = useKiraAssistant()
   const toast = useRef<Toast>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const convScrollRef = useRef<HTMLDivElement>(null)
@@ -158,7 +109,6 @@ export function KiraAssistantContent({
 
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null)
   const [input, setInput] = useState('')
-  const [sending, setSending] = useState(false)
 
   /* ── Speech recognition ─────────────────────────────────────── */
   const [listening, setListening] = useState(false)
@@ -207,16 +157,16 @@ export function KiraAssistantContent({
       kind: 'confirm' as const,
       item,
     }))
-    const thinking: Row[] = sending ? [{ kind: 'thinking' as const }] : []
+    const thinking: Row[] = kiraCopilotSending ? [{ kind: 'thinking' as const }] : []
     return [...conf, ...thinking, ...rev]
-  }, [messages, pending, sending])
+  }, [messages, pending, kiraCopilotSending])
 
   const hasConversation = displayRows.length > 0
 
   useLayoutEffect(() => {
     if (!hasConversation || !convScrollRef.current) return
     convScrollRef.current.scrollTop = 0
-  }, [hasConversation, messages.length, pending.length, sending])
+  }, [hasConversation, messages.length, pending.length, kiraCopilotSending])
 
   useEffect(() => {
     let cancelled = false
@@ -301,52 +251,24 @@ export function KiraAssistantContent({
 
   const send = useCallback(async () => {
     const text = input.trim()
-    if (!text || !siteId || sending) return
-    const prior = messages
-    const now = Date.now()
-    const nextMsgs: KiraChatMessage[] = [
-      ...prior,
-      { role: 'user', content: text, at: now },
-    ]
-    setMessages(nextMsgs)
+    if (!text || !siteId || kiraCopilotSending) return
     setInput('')
-    setSending(true)
     try {
-      const res = await apiJson<CopilotTurnResult>(cmmsPaths.aiCopilotTurn, {
-        method: 'POST',
-        body: JSON.stringify({
-          messages: nextMsgs.map(({ role, content }) => ({ role, content })),
-        }),
-      })
-      setMessages([
-        ...nextMsgs,
-        { ...res.message, at: Date.now() },
-      ])
-      setPending(res.confirmable)
-      applyKiraClientActions(res.client_actions, {
-        navigate,
-        location,
-        openKira,
-        closeKira,
-      })
+      await sendKiraPrompt(text)
     } catch (e) {
-      setMessages(prior)
       setInput(text)
-      const msg = e instanceof ApiError ? e.message : String(e)
-      showError(msg)
-    } finally {
-      setSending(false)
+      if (visible) {
+        const msg = e instanceof ApiError ? e.message : String(e)
+        showError(msg)
+      }
     }
   }, [
     input,
     siteId,
-    sending,
-    messages,
+    kiraCopilotSending,
+    sendKiraPrompt,
+    visible,
     showError,
-    navigate,
-    location,
-    openKira,
-    closeKira,
   ])
 
   const onConfirm = useCallback(
@@ -370,6 +292,18 @@ export function KiraAssistantContent({
             body: JSON.stringify(item.payload),
           })
           showSuccess(t('copilot.updated_wo'))
+        } else if (item.type === 'capacity_allocation') {
+          await apiJson(cmmsPaths.workOrderCapacityAllocation(item.work_order_id), {
+            method: 'PUT',
+            body: JSON.stringify(item.payload),
+          })
+          showSuccess(t('copilot.capacity_allocation_applied'))
+        } else if (item.type === 'create_shift_assignment') {
+          await apiJson(cmmsPaths.shiftAssignments, {
+            method: 'POST',
+            body: JSON.stringify(item.payload),
+          })
+          showSuccess(t('copilot.shift_assignment_created'))
         } else {
           await apiJson(cmmsPaths.assets, {
             method: 'POST',
@@ -430,7 +364,7 @@ export function KiraAssistantContent({
             rows={5}
             className="w-full m-0"
             placeholder={t('copilot.placeholder')}
-            disabled={!siteId || sending || aiConfigured === false}
+            disabled={!siteId || kiraCopilotSending || aiConfigured === false}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -447,7 +381,7 @@ export function KiraAssistantContent({
                   label={t('kira.listen')}
                   severity="secondary"
                   outlined
-                  disabled={!speechAvailable || !siteId || sending || aiConfigured === false}
+                  disabled={!speechAvailable || !siteId || kiraCopilotSending || aiConfigured === false}
                   onClick={startListen}
                 />
               ) : (
@@ -468,10 +402,10 @@ export function KiraAssistantContent({
             </div>
             <Button
               type="button"
-              label={sending ? t('copilot.sending') : t('copilot.send')}
+              label={kiraCopilotSending ? t('copilot.sending') : t('copilot.send')}
               icon="pi pi-send"
               disabled={
-                sending ||
+                kiraCopilotSending ||
                 !input.trim() ||
                 !siteId ||
                 aiConfigured === false
@@ -554,7 +488,14 @@ export function KiraAssistantContent({
                               wo_key: row.item.wo_key,
                               short_text: row.item.summary.short_text,
                             })
-                          : t('copilot.confirm_asset')}
+                          : row.item.type === 'create_shift_assignment'
+                            ? t('copilot.confirm_shift_assignment')
+                            : row.item.type === 'capacity_allocation'
+                              ? t('copilot.confirm_capacity_allocation', {
+                                  wo_key: row.item.wo_key,
+                                  short_text: row.item.short_text,
+                                })
+                              : t('copilot.confirm_asset')}
                   </div>
                   {row.item.type === 'update_work_order' ? (
                     <div className="flex flex-column gap-1 text-xs surface-ground border-round p-2">
@@ -576,6 +517,48 @@ export function KiraAssistantContent({
                           </div>
                         ),
                       )}
+                    </div>
+                  ) : row.item.type === 'create_shift_assignment' ? (
+                    <div className="flex flex-column gap-1 text-xs surface-ground border-round p-2">
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">shift:</span>
+                        <span>
+                          {row.item.summary.shift_key} — {row.item.summary.shift_name}{' '}
+                          ({row.item.summary.time_start}–{row.item.summary.time_end})
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">employee:</span>
+                        <span>
+                          {row.item.summary.employee_key} —{' '}
+                          {row.item.summary.employee_name}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">assignment_date:</span>
+                        <span>{row.item.summary.assignment_date}</span>
+                      </div>
+                    </div>
+                  ) : row.item.type === 'capacity_allocation' ? (
+                    <div className="flex flex-column gap-1 text-xs surface-ground border-round p-2">
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">employee:</span>
+                        <span>
+                          {row.item.summary.employee_key} —{' '}
+                          {row.item.summary.employee_name}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">allocation_date:</span>
+                        <span>{row.item.summary.allocation_date}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">planned_hours:</span>
+                        <span>{String(row.item.summary.planned_hours)}</span>
+                        <span className="text-color-secondary">
+                          ({row.item.summary.action})
+                        </span>
+                      </div>
                     </div>
                   ) : (
                     <pre className="text-xs overflow-auto max-h-8rem surface-ground border-round p-2 m-0">
@@ -604,7 +587,11 @@ export function KiraAssistantContent({
                             ? t('copilot.confirm_wp')
                             : row.item.type === 'update_work_order'
                               ? t('copilot.confirm_wo_update_btn')
-                              : t('copilot.confirm_asset')
+                              : row.item.type === 'create_shift_assignment'
+                                ? t('copilot.confirm_shift_assignment_btn')
+                                : row.item.type === 'capacity_allocation'
+                                  ? t('copilot.confirm_capacity_allocation_btn')
+                                  : t('copilot.confirm_asset')
                       }
                       size="small"
                       disabled={aiConfigured === false}

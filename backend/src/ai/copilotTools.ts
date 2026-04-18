@@ -43,6 +43,8 @@ import { analyzeSchedulingSnapshot } from './schedulingInsights.js'
 import { computeCapacityKpis } from './copilotCapacityKpis.js'
 import { findAssignableEmployees } from './copilotAssignableEmployees.js'
 import { validateWorkPlanCreateForCopilot } from './copilotWorkPlanPayload.js'
+import { validatePrepareSetCapacityAllocation } from './copilotCapacityAllocation.js'
+import { validatePrepareCreateShiftAssignment } from './copilotShiftAssignmentPrepare.js'
 import type { CopilotConfirmable } from './copilotTypes.js'
 
 export const COPILOT_TOOL_DEFINITIONS = [
@@ -454,6 +456,70 @@ export const COPILOT_TOOL_DEFINITIONS = [
               'New status: one of open | assigned | started | continued | on_hold | done | closed.',
           },
         },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'prepare_set_capacity_allocation',
+      description:
+        'Register a confirmable **capacity allocation** for the Kapazitätsplaner: assign planned hours of a work order (WO) to an employee on a specific **UTC calendar day** (`allocation_date` as YYYY-MM-DD), or clear that cell (`planned_hours: 0`). Same validation as PUT /api/work-orders/:id/capacity-allocation (WO plan window must cover the day; employee must have a shift that day; workgroup membership when the WO has a workgroup; SPC bucket when PHR is on). Call `get_work_order_details` and `find_assignable_employees` first when unsure. The user must tap **Confirm** in the Kira client to apply; Kira never writes allocations without confirmation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          work_order_id: {
+            type: 'string',
+            description: 'WO UUID on the working site (preferred).',
+          },
+          wo_key: {
+            type: 'integer',
+            description:
+              'Numeric wo_key on the working site. Provide either work_order_id or wo_key.',
+          },
+          employee_id: {
+            type: 'string',
+            description: 'Employee UUID on the working site (must match WO workgroup when set).',
+          },
+          allocation_date: {
+            type: 'string',
+            description: 'Calendar date YYYY-MM-DD (UTC), within the WO plan_start/plan_end range.',
+          },
+          planned_hours: {
+            type: 'number',
+            description:
+              'Planned hours for this WO/employee/day (>= 0). Use 0 to remove the allocation for that cell.',
+          },
+        },
+        required: ['employee_id', 'allocation_date', 'planned_hours'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'prepare_create_shift_assignment',
+      description:
+        'Register a confirmable **shift assignment** (Schichtzuweisung): put an employee on a **shift template** (`shift_id` from `list_shift_definitions`) for one **calendar day** (`assignment_date` YYYY-MM-DD, UTC date). A row in `shift_assignments` is the plan that the employee works that day during the shift\'s `[time_start, time_end]` (with overnight handling as in product rules). The weekday of `assignment_date` must be in that shift\'s `available_weekdays` (ISO Mon=1…Sun=7). Employee and shift must belong to the working site; duplicate slot (same shift+date+employee) is rejected. Use `get_scheduling_snapshot` to see existing assignments in a range. The user must **Confirm** in Kira; this calls POST /api/shift-assignments.',
+      parameters: {
+        type: 'object',
+        properties: {
+          shift_id: {
+            type: 'string',
+            description:
+              'Shift template UUID on the working site (from list_shift_definitions).',
+          },
+          employee_id: {
+            type: 'string',
+            description: 'Employee UUID on the working site.',
+          },
+          assignment_date: {
+            type: 'string',
+            description:
+              'Calendar date YYYY-MM-DD; must be a weekday on which this shift runs.',
+          },
+        },
+        required: ['shift_id', 'employee_id', 'assignment_date'],
       },
     },
   },
@@ -1493,6 +1559,69 @@ export async function executeCopilotTool(args: {
       case 'prepare_update_work_order': {
         const result = await preparePatchWorkOrder(ctx, o as Record<string, unknown>)
         return JSON.stringify(result)
+      }
+      case 'prepare_set_capacity_allocation': {
+        const v = await validatePrepareSetCapacityAllocation(
+          ctx.pool,
+          ctx.siteId,
+          o as Record<string, unknown>,
+        )
+        if (!v.ok) {
+          return JSON.stringify({ ok: false, error: v.error })
+        }
+        const id = randomUUID()
+        const c: CopilotConfirmable = {
+          id,
+          type: 'capacity_allocation',
+          work_order_id: v.work_order_id,
+          wo_key: v.wo_key,
+          short_text: v.short_text,
+          payload: v.payload,
+          summary: {
+            employee_key: v.employee_key,
+            employee_name: v.employee_name,
+            allocation_date: v.payload.allocation_date,
+            planned_hours: v.payload.planned_hours,
+            action: v.payload.planned_hours === 0 ? 'clear' : 'set',
+          },
+        }
+        ctx.confirmables.push(c)
+        return JSON.stringify({
+          ok: true,
+          confirmable_id: id,
+          message:
+            'Capacity allocation validated. The user must tap Confirm in the app to apply PUT /capacity-allocation.',
+          summary: c.summary,
+          work_order: {
+            wo_key: v.wo_key,
+            short_text: v.short_text,
+          },
+        })
+      }
+      case 'prepare_create_shift_assignment': {
+        const v = await validatePrepareCreateShiftAssignment(
+          ctx.pool,
+          ctx.siteId,
+          o as Record<string, unknown>,
+        )
+        if (!v.ok) {
+          return JSON.stringify({ ok: false, error: v.error })
+        }
+        const id = randomUUID()
+        const c: CopilotConfirmable = {
+          id,
+          type: 'create_shift_assignment',
+          payload: v.payload,
+          summary: v.summary,
+        }
+        ctx.confirmables.push(c)
+        return JSON.stringify({
+          ok: true,
+          confirmable_id: id,
+          message:
+            'Shift assignment validated. The user must tap Confirm in the app to POST /api/shift-assignments.',
+          summary: c.summary,
+        })
       }
       case 'prepare_create_work_plan': {
         const validated = await validateWorkPlanCreateForCopilot(

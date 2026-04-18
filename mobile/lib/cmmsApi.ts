@@ -232,6 +232,43 @@ export type CopilotTurnResult = {
     | { id: string; type: 'create_work_order'; payload: Record<string, unknown> }
     | { id: string; type: 'create_work_plan'; payload: Record<string, unknown> }
     | { id: string; type: 'create_asset'; payload: Record<string, unknown> }
+    | {
+        id: string;
+        type: 'capacity_allocation';
+        work_order_id: string;
+        wo_key: number;
+        short_text: string;
+        payload: {
+          employee_id: string;
+          allocation_date: string;
+          planned_hours: number;
+        };
+        summary: {
+          employee_key: string;
+          employee_name: string;
+          allocation_date: string;
+          planned_hours: number;
+          action: 'set' | 'clear';
+        };
+      }
+    | {
+        id: string;
+        type: 'create_shift_assignment';
+        payload: {
+          shift_id: string;
+          employee_id: string;
+          assignment_date: string;
+        };
+        summary: {
+          shift_key: string;
+          shift_name: string;
+          time_start: string;
+          time_end: string;
+          employee_key: string;
+          employee_name: string;
+          assignment_date: string;
+        };
+      }
   >;
   client_actions?: ClientAction[];
 };
@@ -343,6 +380,27 @@ export async function createAsset(body: Record<string, unknown>): Promise<{
   asset: AssetRow;
 }> {
   return authJson(cmmsPaths.assets, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function putWorkOrderCapacityAllocation(
+  workOrderId: string,
+  body: { employee_id: string; allocation_date: string; planned_hours: number },
+): Promise<{ work_order: WorkOrderDetail }> {
+  return authJson(cmmsPaths.workOrderCapacityAllocation(workOrderId), {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createShiftAssignment(body: {
+  shift_id: string;
+  employee_id: string;
+  assignment_date: string;
+}): Promise<{ shift_assignment: unknown }> {
+  return authJson(cmmsPaths.shiftAssignments, {
     method: 'POST',
     body: JSON.stringify(body),
   });
