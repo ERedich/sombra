@@ -350,6 +350,60 @@ export function validateGeneralCurrenciesPatch(
   return { ok: true, value: out }
 }
 
+/** DOCS: where document uploads are persisted (metadata always in Postgres). */
+export const GENERAL_DOCS_STORAGE_VALUES = ['database', 'application'] as const
+
+export type GeneralDocsStorageId = (typeof GENERAL_DOCS_STORAGE_VALUES)[number]
+
+export const DEFAULT_GENERAL_DOCS_STORAGE: GeneralDocsStorageId = 'database'
+
+export function isGeneralDocsStorageId(
+  value: unknown,
+): value is GeneralDocsStorageId {
+  return (
+    typeof value === 'string' &&
+    (GENERAL_DOCS_STORAGE_VALUES as readonly string[]).includes(value)
+  )
+}
+
+/** Max length accepted for the Application-side storage directory (app-server path). */
+export const GENERAL_DOCS_APPLICATION_PATH_MAX = 1024
+
+/**
+ * Validate the Application-side directory. The path is resolved on the API host at
+ * upload time; here we only reject obviously unsafe strings (null bytes, `..` segments).
+ */
+export function validateGeneralDocsApplicationPath(
+  value: unknown,
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof value !== 'string') {
+    return { ok: false, error: 'general.docs_application_path must be a string.' }
+  }
+  const trimmed = value.trim()
+  if (trimmed.length > GENERAL_DOCS_APPLICATION_PATH_MAX) {
+    return {
+      ok: false,
+      error: `general.docs_application_path must be at most ${GENERAL_DOCS_APPLICATION_PATH_MAX} characters.`,
+    }
+  }
+  if (trimmed.includes('\u0000')) {
+    return {
+      ok: false,
+      error: 'general.docs_application_path contains invalid characters.',
+    }
+  }
+  const segments = trimmed.split(/[\\/]/)
+  for (const segment of segments) {
+    if (segment === '..') {
+      return {
+        ok: false,
+        error: 'general.docs_application_path must not contain ".." segments.',
+      }
+    }
+  }
+  return { ok: true, value: trimmed }
+}
+
 export type GeneralAppSettings = {
   idle_session_timeout_minutes: number
   dtf: GeneralDtfId
@@ -359,6 +413,10 @@ export type GeneralAppSettings = {
   ask_for_site_change_on_login: boolean
   /** CURR: ordered list of selectable currency codes; first is default. */
   currencies: string[]
+  /** DOCS: document upload storage backend. */
+  docs_storage: GeneralDocsStorageId
+  /** DOCS: directory on the API server used when `docs_storage === 'application'`. */
+  docs_application_path: string
 }
 
 const DEFAULT_GENERAL: GeneralAppSettings = {
@@ -367,6 +425,8 @@ const DEFAULT_GENERAL: GeneralAppSettings = {
   fdw: DEFAULT_GENERAL_FDW,
   ask_for_site_change_on_login: false,
   currencies: [...DEFAULT_GENERAL_CURRENCIES],
+  docs_storage: DEFAULT_GENERAL_DOCS_STORAGE,
+  docs_application_path: '',
 }
 
 export function parseGeneralAppSettingsJson(
@@ -392,6 +452,15 @@ export function parseGeneralAppSettingsJson(
     base.ask_for_site_change_on_login = o.ask_for_site_change_on_login
   }
   base.currencies = normalizeGeneralCurrenciesList(o.currencies)
+  if (isGeneralDocsStorageId(o.docs_storage)) {
+    base.docs_storage = o.docs_storage
+  }
+  if (typeof o.docs_application_path === 'string') {
+    const trimmed = o.docs_application_path.trim()
+    if (trimmed.length <= GENERAL_DOCS_APPLICATION_PATH_MAX) {
+      base.docs_application_path = trimmed
+    }
+  }
   return base
 }
 

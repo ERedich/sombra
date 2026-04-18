@@ -11,6 +11,11 @@ import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
 import { AppCrudDialog } from '../../components/app-crud-dialog'
+import {
+  BulkDocumentsControl,
+  EntityDocumentsCell,
+  useDocumentsAssignments,
+} from '../../components/documents'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
 import { InputText } from 'primereact/inputtext'
@@ -95,6 +100,45 @@ export default function EmployeesAppPage() {
   const [search, setSearch] = useState('')
   const emDash = t('common.em_dash')
 
+  const filteredRows = useMemo(() => {
+    let list = rows
+    if (employeeIdParam) {
+      list = list.filter((c) => c.id === employeeIdParam)
+    }
+    const q = search.trim().toLowerCase()
+    if (!q) return list
+    return list.filter(
+      (c) =>
+        c.site_key.toLowerCase().includes(q) ||
+        c.site_name.toLowerCase().includes(q) ||
+        (c.site_colour?.toLowerCase().includes(q) ?? false) ||
+        c.key.toLowerCase().includes(q) ||
+        c.name.toLowerCase().includes(q) ||
+        c.created_at.toLowerCase().includes(q) ||
+        c.updated_at.toLowerCase().includes(q) ||
+        formatDateTime(c.created_at).toLowerCase().includes(q) ||
+        formatDateTime(c.updated_at).toLowerCase().includes(q) ||
+        (c.created_by_login_name?.toLowerCase().includes(q) ?? false) ||
+        (c.updated_by_login_name?.toLowerCase().includes(q) ?? false),
+    )
+  }, [rows, search, employeeIdParam])
+
+  const filteredIds = useMemo(
+    () => filteredRows.map((r) => r.id),
+    [filteredRows],
+  )
+  const employeeLabelById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const r of rows) map.set(r.id, `${r.key} — ${r.name}`)
+    return map
+  }, [rows])
+  const docsAssignments = useDocumentsAssignments('employee', filteredIds, {
+    toastRef: toast,
+    resolveEntityLabel: (id) => employeeLabelById.get(id) ?? id,
+  })
+  const { counts: documentCounts, openSingle: openDocumentsForEntity } =
+    docsAssignments
+
   const tableColumnDefs = useMemo((): ColumnRegistryEntry<Employee>[] => {
     return [
       {
@@ -107,6 +151,24 @@ export default function EmployeesAppPage() {
       },
       { field: 'key', headerKey: 'common.col_key', sortable: true },
       { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'document_count',
+        headerKey: 'documents.col_assignments',
+        sortable: true,
+        sortField: 'document_count',
+        body: (row) => (
+          <EntityDocumentsCell
+            entityType="employee"
+            entityId={row.id}
+            count={documentCounts.get(row.id) ?? 0}
+            onOpenDialog={openDocumentsForEntity}
+          />
+        ),
+        search: {
+          inputType: 'number',
+          getSearchValue: (row) => documentCounts.get(row.id) ?? 0,
+        },
+      },
       {
         field: 'created_at',
         headerKey: 'common.col_created_at',
@@ -134,7 +196,7 @@ export default function EmployeesAppPage() {
         body: (row) => row.updated_by_login_name ?? emDash,
       },
     ]
-  }, [emDash])
+  }, [documentCounts, emDash, openDocumentsForEntity])
 
   const cardSubTitle = useMemo(() => {
     if (employeeIdParam) {
@@ -150,29 +212,6 @@ export default function EmployeesAppPage() {
     }
     return t('employees.subtitle_default')
   }, [employeeIdParam, t])
-
-  const filteredRows = useMemo(() => {
-    let list = rows
-    if (employeeIdParam) {
-      list = list.filter((c) => c.id === employeeIdParam)
-    }
-    const q = search.trim().toLowerCase()
-    if (!q) return list
-    return list.filter(
-      (c) =>
-        c.site_key.toLowerCase().includes(q) ||
-        c.site_name.toLowerCase().includes(q) ||
-        (c.site_colour?.toLowerCase().includes(q) ?? false) ||
-        c.key.toLowerCase().includes(q) ||
-        c.name.toLowerCase().includes(q) ||
-        c.created_at.toLowerCase().includes(q) ||
-        c.updated_at.toLowerCase().includes(q) ||
-        formatDateTime(c.created_at).toLowerCase().includes(q) ||
-        formatDateTime(c.updated_at).toLowerCase().includes(q) ||
-        (c.created_by_login_name?.toLowerCase().includes(q) ?? false) ||
-        (c.updated_by_login_name?.toLowerCase().includes(q) ?? false),
-    )
-  }, [rows, search, employeeIdParam])
 
   const tw = useTableWizard<Employee>({
     appPath: '/employees',
@@ -388,6 +427,13 @@ export default function EmployeesAppPage() {
         </div>
       </div>
       <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        <BulkDocumentsControl
+          entityType="employee"
+          entityIds={filteredIds}
+          toastRef={toast}
+          resolveEntityLabel={(id) => employeeLabelById.get(id) ?? id}
+          onChanged={docsAssignments.refresh}
+        />
         {tw.heroTableWizard}
       </div>
     </div>
@@ -403,6 +449,7 @@ export default function EmployeesAppPage() {
       />
       <ConfirmDialog dismissableMask />
       {tw.wizardDialog}
+      {docsAssignments.singleDialog}
 
       <div className="p-4 app-page-mw-lg flex flex-column gap-3">
         <Card

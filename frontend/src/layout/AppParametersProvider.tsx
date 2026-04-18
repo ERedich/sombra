@@ -29,6 +29,22 @@ import {
 
 const IDLE_SESSION_MAX_MINUTES = 10080
 
+/** DOCS: where document uploads are persisted. */
+export const GENERAL_DOCS_STORAGE_IDS = ['database', 'application'] as const
+
+export type GeneralDocsStorageId = (typeof GENERAL_DOCS_STORAGE_IDS)[number]
+
+export const DEFAULT_GENERAL_DOCS_STORAGE: GeneralDocsStorageId = 'database'
+
+export function isGeneralDocsStorageId(
+  value: unknown,
+): value is GeneralDocsStorageId {
+  return (
+    typeof value === 'string' &&
+    (GENERAL_DOCS_STORAGE_IDS as readonly string[]).includes(value)
+  )
+}
+
 export type AppParametersGeneralSnapshot = {
   idle_session_timeout_minutes: number
   dtf: GeneralDtfId
@@ -36,6 +52,10 @@ export type AppParametersGeneralSnapshot = {
   ask_for_site_change_on_login: boolean
   /** CURR: ordered currency codes; first = default. */
   currencies: string[]
+  /** DOCS storage backend (`database` or `application`). */
+  docs_storage: GeneralDocsStorageId
+  /** Server-side directory used when `docs_storage === 'application'`. */
+  docs_application_path: string
 }
 
 type AppParametersApiResponse = {
@@ -48,6 +68,8 @@ type AppParametersApiResponse = {
     fdw?: string
     ask_for_site_change_on_login?: boolean
     currencies?: string[]
+    docs_storage?: string
+    docs_application_path?: string
   }
   shifts?: {
     shift_login_recognition?: boolean
@@ -104,6 +126,13 @@ function normalizeGeneral(
   const idleClamped = Math.min(Math.max(0, idle), IDLE_SESSION_MAX_MINUTES)
   const dtf = isGeneralDtfId(raw?.dtf) ? raw.dtf : DEFAULT_GENERAL_DTF
   const fdw = isGeneralFdwId(raw?.fdw) ? raw.fdw : DEFAULT_GENERAL_FDW
+  const docsStorage = isGeneralDocsStorageId(raw?.docs_storage)
+    ? raw.docs_storage
+    : DEFAULT_GENERAL_DOCS_STORAGE
+  const docsApplicationPath =
+    typeof raw?.docs_application_path === 'string'
+      ? raw.docs_application_path
+      : ''
   return {
     idle_session_timeout_minutes: idleClamped,
     dtf,
@@ -111,6 +140,8 @@ function normalizeGeneral(
     ask_for_site_change_on_login:
       raw?.ask_for_site_change_on_login === true,
     currencies: normalizeGeneralCurrenciesFromApi(raw?.currencies),
+    docs_storage: docsStorage,
+    docs_application_path: docsApplicationPath,
   }
 }
 
@@ -180,6 +211,8 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
     fdw: DEFAULT_GENERAL_FDW,
     ask_for_site_change_on_login: false,
     currencies: [...DEFAULT_GENERAL_CURRENCIES],
+    docs_storage: DEFAULT_GENERAL_DOCS_STORAGE,
+    docs_application_path: '',
   }))
   const [shiftsSnapshot, setShiftsSnapshot] = useState<AppParametersShiftsSnapshot>(
     () => normalizeShiftsSnapshot(undefined),
@@ -198,6 +231,8 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
           fdw: DEFAULT_GENERAL_FDW,
           ask_for_site_change_on_login: false,
           currencies: [...DEFAULT_GENERAL_CURRENCIES],
+          docs_storage: DEFAULT_GENERAL_DOCS_STORAGE,
+          docs_application_path: '',
         })
         setShiftsSnapshot(normalizeShiftsSnapshot(undefined))
         setPlannedHoursRestriction(true)
@@ -221,6 +256,8 @@ export function AppParametersProvider({ children }: { children: ReactNode }) {
           fdw: DEFAULT_GENERAL_FDW,
           ask_for_site_change_on_login: false,
           currencies: [...DEFAULT_GENERAL_CURRENCIES],
+          docs_storage: DEFAULT_GENERAL_DOCS_STORAGE,
+          docs_application_path: '',
         })
         setShiftsSnapshot(normalizeShiftsSnapshot(undefined))
         setPlannedHoursRestriction(true)

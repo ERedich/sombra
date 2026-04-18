@@ -13,6 +13,8 @@ export const cmmsPaths = {
   workPlans: `${API_PREFIX}/work-plans`,
   workOrder: (id: string) =>
     `${API_PREFIX}/work-orders/${encodeURIComponent(id)}`,
+  workOrderCapacityAllocation: (id: string) =>
+    `${API_PREFIX}/work-orders/${encodeURIComponent(id)}/capacity-allocation`,
   workOrderEmployees: (id: string) =>
     `${API_PREFIX}/work-orders/${encodeURIComponent(id)}/employees`,
   workOrderStart: (id: string) =>
@@ -36,4 +38,11 @@ export const cmmsPaths = {
   aiTranscribe: `${API_PREFIX}/ai/transcribe`,
   aiCopilotTurn: `${API_PREFIX}/ai/copilot/turn`,
   aiStatus: `${API_PREFIX}/ai/status`,
+  shiftAssignments: `${API_PREFIX}/shift-assignments`,
+  documents: `${API_PREFIX}/documents`,
+  documentsCounts: `${API_PREFIX}/documents/counts`,
+  document: (id: string) =>
+    `${API_PREFIX}/documents/${encodeURIComponent(id)}`,
+  documentFile: (id: string) =>
+    `${API_PREFIX}/documents/${encodeURIComponent(id)}/file`,
 } as const

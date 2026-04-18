@@ -23,8 +23,11 @@ import {
 } from '../../constants/woStatusColours'
 import { AppShell } from '../../layout/AppShell'
 import {
+  DEFAULT_GENERAL_DOCS_STORAGE,
+  isGeneralDocsStorageId,
   normalizeShiftsSnapshot,
   useAppParameters,
+  type GeneralDocsStorageId,
 } from '../../layout/AppParametersProvider'
 import {
   DEFAULT_GENERAL_DTF,
@@ -75,6 +78,8 @@ type AppParametersResponse = {
     fdw?: string
     ask_for_site_change_on_login?: boolean
     currencies?: string[]
+    docs_storage?: string
+    docs_application_path?: string
   }
   shifts?: {
     shift_login_recognition?: boolean
@@ -172,6 +177,14 @@ export default function AppParametersAppPage() {
     ...DEFAULT_GENERAL_CURRENCIES,
   ])
   const [currencyInputDraft, setCurrencyInputDraft] = useState('')
+  const [docsStorage, setDocsStorage] = useState<GeneralDocsStorageId>(
+    DEFAULT_GENERAL_DOCS_STORAGE,
+  )
+  const [baselineDocsStorage, setBaselineDocsStorage] =
+    useState<GeneralDocsStorageId>(DEFAULT_GENERAL_DOCS_STORAGE)
+  const [docsApplicationPath, setDocsApplicationPath] = useState('')
+  const [baselineDocsApplicationPath, setBaselineDocsApplicationPath] =
+    useState('')
   const [appParamsGeneralShowInfo, setAppParamsGeneralShowInfo] =
     useState(false)
   const [
@@ -220,7 +233,9 @@ export default function AppParametersAppPage() {
     dtf !== baselineDtf ||
     fdw !== baselineFdw ||
     askSiteChangeOnLogin !== baselineAskSiteChangeOnLogin ||
-    JSON.stringify(currencies) !== JSON.stringify(baselineCurrencies)
+    JSON.stringify(currencies) !== JSON.stringify(baselineCurrencies) ||
+    docsStorage !== baselineDocsStorage ||
+    docsApplicationPath.trim() !== baselineDocsApplicationPath.trim()
   const dspWeekdaysSorted = [...dspWeekdays].sort((a, b) => a - b)
   const baselineDspWeekdaysSorted = [...baselineDspWeekdays].sort(
     (a, b) => a - b,
@@ -367,6 +382,17 @@ export default function AppParametersAppPage() {
       )
       setCurrencies([...curNext])
       setBaselineCurrencies([...curNext])
+      const docsStorageNext = isGeneralDocsStorageId(data.general?.docs_storage)
+        ? data.general.docs_storage
+        : DEFAULT_GENERAL_DOCS_STORAGE
+      setDocsStorage(docsStorageNext)
+      setBaselineDocsStorage(docsStorageNext)
+      const docsPathNext =
+        typeof data.general?.docs_application_path === 'string'
+          ? data.general.docs_application_path
+          : ''
+      setDocsApplicationPath(docsPathNext)
+      setBaselineDocsApplicationPath(docsPathNext)
       const slr = data.shifts?.shift_login_recognition !== false
       setShiftSlr(slr)
       setBaselineShiftSlr(slr)
@@ -468,12 +494,22 @@ export default function AppParametersAppPage() {
           }
         }
         if (generalDirty) {
+          if (
+            docsStorage === 'application' &&
+            docsApplicationPath.trim() === ''
+          ) {
+            showError(t('app_params.general_docs_path_required'))
+            setSaving(false)
+            return
+          }
           body.general = {
             idle_session_timeout_minutes: idleSessionTimeoutMinutes,
             dtf,
             fdw,
             ask_for_site_change_on_login: askSiteChangeOnLogin,
             currencies,
+            docs_storage: docsStorage,
+            docs_application_path: docsApplicationPath.trim(),
           }
         }
         if (shiftsDirty) {
@@ -515,6 +551,13 @@ export default function AppParametersAppPage() {
             currencies: normalizeGeneralCurrenciesFromApi(
               data.general.currencies,
             ),
+            docs_storage: isGeneralDocsStorageId(data.general.docs_storage)
+              ? data.general.docs_storage
+              : DEFAULT_GENERAL_DOCS_STORAGE,
+            docs_application_path:
+              typeof data.general.docs_application_path === 'string'
+                ? data.general.docs_application_path
+                : '',
           })
         }
         setBaselineStartRequires(startRequiresAssignment)
@@ -530,6 +573,8 @@ export default function AppParametersAppPage() {
         setBaselineFdw(fdw)
         setBaselineAskSiteChangeOnLogin(askSiteChangeOnLogin)
         setBaselineCurrencies([...currencies])
+        setBaselineDocsStorage(docsStorage)
+        setBaselineDocsApplicationPath(docsApplicationPath.trim())
         if (shiftsDirty && data.shifts) {
           const snap = normalizeShiftsSnapshot(data.shifts)
           applyShiftParamsFromApi(snap)
@@ -585,6 +630,8 @@ export default function AppParametersAppPage() {
       fdw,
       askSiteChangeOnLogin,
       currencies,
+      docsStorage,
+      docsApplicationPath,
       woDirty,
       shiftsDirty,
       shiftSlr,
@@ -1608,6 +1655,75 @@ export default function AppParametersAppPage() {
                         }
                       />
                     </div>
+                  </div>
+
+                  <div className="flex flex-column gap-2">
+                    <h2 className="text-base font-semibold m-0">
+                      {t('app_params.general_docs_heading')}
+                    </h2>
+                    {appParamsGeneralShowInfo ? (
+                      <p className="text-sm text-color-secondary m-0 line-height-3">
+                        {t('app_params.general_docs_help')}
+                      </p>
+                    ) : null}
+                    <div
+                      className="flex flex-column gap-2"
+                      role="radiogroup"
+                      aria-label={t('app_params.general_docs_label')}
+                    >
+                      <div className="flex align-items-center gap-2">
+                        <RadioButton
+                          inputId="app_params_docs_storage_db"
+                          onChange={() => setDocsStorage('database')}
+                          checked={docsStorage === 'database'}
+                          disabled={loading || !isAdmin}
+                        />
+                        <label
+                          htmlFor="app_params_docs_storage_db"
+                          className="text-sm cursor-pointer"
+                        >
+                          {t('app_params.general_docs_storage_database')}
+                        </label>
+                      </div>
+                      <div className="flex align-items-center gap-2">
+                        <RadioButton
+                          inputId="app_params_docs_storage_app"
+                          onChange={() => setDocsStorage('application')}
+                          checked={docsStorage === 'application'}
+                          disabled={loading || !isAdmin}
+                        />
+                        <label
+                          htmlFor="app_params_docs_storage_app"
+                          className="text-sm cursor-pointer"
+                        >
+                          {t('app_params.general_docs_storage_application')}
+                        </label>
+                      </div>
+                    </div>
+                    {docsStorage === 'application' ? (
+                      <div className="flex flex-column gap-2 max-w-full">
+                        <label
+                          htmlFor="app_params_docs_application_path"
+                          className="text-sm font-medium"
+                        >
+                          {t('app_params.general_docs_path_label')}
+                        </label>
+                        <InputText
+                          id="app_params_docs_application_path"
+                          value={docsApplicationPath}
+                          onChange={(e) =>
+                            setDocsApplicationPath(e.target.value)
+                          }
+                          placeholder={t('app_params.general_docs_path_ph')}
+                          maxLength={1024}
+                          disabled={loading || !isAdmin}
+                          className="w-full"
+                        />
+                        <p className="text-xs text-color-secondary m-0">
+                          {t('app_params.general_docs_path_hint')}
+                        </p>
+                      </div>
+                    ) : null}
                   </div>
 
                   <div className="flex flex-column gap-2">

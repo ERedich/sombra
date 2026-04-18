@@ -20,6 +20,11 @@ import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
 import { AppCrudDialog } from '../../components/app-crud-dialog'
+import {
+  BulkDocumentsControl,
+  EntityDocumentsCell,
+  useDocumentsAssignments,
+} from '../../components/documents'
 import { Dropdown } from 'primereact/dropdown'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
@@ -691,6 +696,20 @@ export function WorkOrdersPage({
     return t('work_orders.subtitle_admin')
   }, [isMonitoring, workOrderIdParam, t])
 
+  const allWorkOrderIds = useMemo(() => rows.map((r) => r.id), [rows])
+  const workOrderLabelById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const r of rows) map.set(r.id, String(r.wo_key))
+    return map
+  }, [rows])
+  const docsAssignments = useDocumentsAssignments(
+    'work_order',
+    allWorkOrderIds,
+    { toastRef: toast },
+  )
+  const { counts: documentCounts, openSingle: openDocumentsForEntity } =
+    docsAssignments
+
   const tableColumnDefs = useMemo((): ColumnRegistryEntry<WorkOrder>[] => {
     const admin = getStoredUser()?.role === 'admin'
     const statusOptions = Object.entries(WO_STATUS_I18N_KEYS).map(([value, key]) => ({
@@ -913,6 +932,24 @@ export function WorkOrdersPage({
         },
       },
       {
+        field: 'document_count',
+        headerKey: 'documents.col_assignments',
+        sortable: true,
+        sortField: 'document_count',
+        body: (row) => (
+          <EntityDocumentsCell
+            entityType="work_order"
+            entityId={row.id}
+            count={documentCounts.get(row.id) ?? 0}
+            onOpenDialog={openDocumentsForEntity}
+          />
+        ),
+        search: {
+          inputType: 'number',
+          getSearchValue: (row) => documentCounts.get(row.id) ?? 0,
+        },
+      },
+      {
         field: 'plan_start',
         headerKey: 'wo.col_plan_start',
         sortable: true,
@@ -1033,6 +1070,8 @@ export function WorkOrdersPage({
     woStartRequiresAssignment,
     woAllowMultipleStarted,
     woStatusMergedColours,
+    documentCounts,
+    openDocumentsForEntity,
   ])
 
   const searchableColumns = useMemo(
@@ -1960,6 +1999,13 @@ export function WorkOrdersPage({
         </div>
       </div>
       <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        <BulkDocumentsControl
+          entityType="work_order"
+          entityIds={filteredRows.map((r) => r.id)}
+          toastRef={toast}
+          resolveEntityLabel={(id) => workOrderLabelById.get(id) ?? id}
+          onChanged={docsAssignments.refresh}
+        />
         {tw.heroTableWizard}
       </div>
     </div>
@@ -1975,6 +2021,7 @@ export function WorkOrdersPage({
         {...CRUD_CONTEXT_MENU_PROPS}
       />
       {tw.wizardDialog}
+      {docsAssignments.singleDialog}
       <SearchPanel
         visible={isMonitoring && searchPanelOpen}
         onHide={() => setSearchPanelOpen(false)}
@@ -2211,6 +2258,15 @@ export function WorkOrdersPage({
                     disabled={tableSearch.loading}
                   />
                 </div>
+                <BulkDocumentsControl
+                  entityType="work_order"
+                  entityIds={filteredRows.map((r) => r.id)}
+                  toastRef={toast}
+                  resolveEntityLabel={(id) =>
+                    workOrderLabelById.get(id) ?? id
+                  }
+                  onChanged={docsAssignments.refresh}
+                />
                 {tw.heroTableWizard}
               </div>
             </div>

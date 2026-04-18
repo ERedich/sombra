@@ -100,4 +100,10 @@ export const env = {
   SMTP_PASS: process.env.SMTP_PASS ?? '',
   /** RFC5322 From, e.g. `CMMS <noreply@example.com>`. */
   MAIL_FROM: process.env.MAIL_FROM?.trim() || '',
+
+  /** Max document upload size in MB (hard cap applied at the router). */
+  DOCS_MAX_UPLOAD_MB: Math.min(
+    500,
+    Math.max(1, Number(process.env.DOCS_MAX_UPLOAD_MB ?? '25') || 25),
+  ),
 }

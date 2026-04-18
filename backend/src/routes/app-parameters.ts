@@ -14,6 +14,7 @@ import {
   getShiftAppSettings,
   getWoAppSettings,
   IDLE_SESSION_TIMEOUT_MAX_MINUTES,
+  isGeneralDocsStorageId,
   isGeneralDtfId,
   isGeneralFdwId,
   isPgUndefinedRelationError,
@@ -25,7 +26,9 @@ import {
   RESERVED_DSP_SHIFT_NAME,
   SHIFTS_SETTINGS_KEY,
   validateGeneralCurrenciesPatch,
+  validateGeneralDocsApplicationPath,
   WO_SETTINGS_KEY,
+  type GeneralDocsStorageId,
 } from '../services/appSettings.js'
 
 const router = Router()
@@ -178,6 +181,8 @@ router.patch('/', requireAdmin, async (req, res) => {
   let patchFdw: string | undefined
   let patchAskForSiteChangeOnLogin: boolean | undefined
   let patchCurrencies: string[] | undefined
+  let patchDocsStorage: GeneralDocsStorageId | undefined
+  let patchDocsApplicationPath: string | undefined
   if (generalBody !== undefined) {
     if (typeof generalBody !== 'object' || generalBody === null) {
       res.status(400).json({ error: 'general must be an object.' })
@@ -235,6 +240,23 @@ router.patch('/', requireAdmin, async (req, res) => {
         return
       }
       patchCurrencies = cur.value
+    }
+    if (g.docs_storage !== undefined) {
+      if (!isGeneralDocsStorageId(g.docs_storage)) {
+        res.status(400).json({
+          error: 'general.docs_storage must be one of: database, application.',
+        })
+        return
+      }
+      patchDocsStorage = g.docs_storage
+    }
+    if (g.docs_application_path !== undefined) {
+      const parsed = validateGeneralDocsApplicationPath(g.docs_application_path)
+      if (!parsed.ok) {
+        res.status(400).json({ error: parsed.error })
+        return
+      }
+      patchDocsApplicationPath = parsed.value
     }
   }
 
@@ -343,7 +365,9 @@ router.patch('/', requireAdmin, async (req, res) => {
     patchDtf !== undefined ||
     patchFdw !== undefined ||
     patchAskForSiteChangeOnLogin !== undefined ||
-    patchCurrencies !== undefined
+    patchCurrencies !== undefined ||
+    patchDocsStorage !== undefined ||
+    patchDocsApplicationPath !== undefined
   const hasShiftsPatch =
     patchShiftLoginRecognition !== undefined ||
     patchShiftPlanningCapacityPct !== undefined ||
@@ -498,6 +522,28 @@ router.patch('/', requireAdmin, async (req, res) => {
       }
       if (patchCurrencies !== undefined) {
         baseG.currencies = patchCurrencies
+      }
+      if (patchDocsStorage !== undefined) {
+        baseG.docs_storage = patchDocsStorage
+      }
+      if (patchDocsApplicationPath !== undefined) {
+        baseG.docs_application_path = patchDocsApplicationPath
+      }
+      const effectiveDocsStorage =
+        typeof baseG.docs_storage === 'string'
+          ? baseG.docs_storage
+          : 'database'
+      const effectiveDocsPath =
+        typeof baseG.docs_application_path === 'string'
+          ? baseG.docs_application_path.trim()
+          : ''
+      if (effectiveDocsStorage === 'application' && effectiveDocsPath === '') {
+        await client.query('ROLLBACK')
+        res.status(400).json({
+          error:
+            'general.docs_application_path is required when docs_storage = "application".',
+        })
+        return
       }
       const valueJsonG = JSON.stringify(baseG)
       const updG = await client.query<AppSettingTableRow>(

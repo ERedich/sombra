@@ -16,6 +16,11 @@ import { ConfirmDialog, confirmDialog } from 'primereact/confirmdialog'
 import { ContextMenu } from 'primereact/contextmenu'
 import { DataTable } from 'primereact/datatable'
 import { AppCrudDialog } from '../../components/app-crud-dialog'
+import {
+  BulkDocumentsControl,
+  EntityDocumentsCell,
+  useDocumentsAssignments,
+} from '../../components/documents'
 import { Splitter, SplitterPanel } from 'primereact/splitter'
 import { IconField } from 'primereact/iconfield'
 import { InputIcon } from 'primereact/inputicon'
@@ -165,6 +170,59 @@ export default function AssetManagementAppPage() {
     return () => mq.removeEventListener('change', sync)
   }, [])
 
+  const filteredRows = useMemo(() => {
+    let list = rows
+    if (assetIdParam) {
+      list = list.filter((a) => a.id === assetIdParam)
+    }
+    const q = search.trim().toLowerCase()
+    if (!q) return list
+    return list.filter((a) => {
+      const hay = [
+        a.site_key,
+        a.site_name,
+        a.key,
+        a.name,
+        a.asset_classification_key ?? '',
+        a.asset_classification_name ?? '',
+        ASSET_TYPE_LABELS[a.asset_type],
+        a.parent_asset_key ?? '',
+        a.parent_asset_name ?? '',
+        a.costcenter_key ?? '',
+        a.equipment_number ?? '',
+        a.serial_no ?? '',
+        a.build_year != null ? String(a.build_year) : '',
+        a.warranty_end ?? '',
+        a.priority != null ? String(a.priority) : '',
+        a.created_at,
+        a.updated_at,
+        formatDateTime(a.created_at),
+        formatDateTime(a.updated_at),
+        a.created_by_login_name ?? '',
+        a.updated_by_login_name ?? '',
+      ]
+        .join(' ')
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [rows, search, assetIdParam])
+
+  const filteredIds = useMemo(
+    () => filteredRows.map((r) => r.id),
+    [filteredRows],
+  )
+  const assetLabelById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const r of rows) map.set(r.id, `${r.key} — ${r.name}`)
+    return map
+  }, [rows])
+  const docsAssignments = useDocumentsAssignments('asset', filteredIds, {
+    toastRef: toast,
+    resolveEntityLabel: (id) => assetLabelById.get(id) ?? id,
+  })
+  const { counts: documentCounts, openSingle: openDocumentsForEntity } =
+    docsAssignments
+
   const tableColumnDefs = useMemo((): ColumnRegistryEntry<Asset>[] => {
     return [
       {
@@ -188,6 +246,24 @@ export default function AssetManagementAppPage() {
       },
       { field: 'key', headerKey: 'common.col_key', sortable: true },
       { field: 'name', headerKey: 'common.col_name', sortable: true },
+      {
+        field: 'document_count',
+        headerKey: 'documents.col_assignments',
+        sortable: true,
+        sortField: 'document_count',
+        body: (row) => (
+          <EntityDocumentsCell
+            entityType="asset"
+            entityId={row.id}
+            count={documentCounts.get(row.id) ?? 0}
+            onOpenDialog={openDocumentsForEntity}
+          />
+        ),
+        search: {
+          inputType: 'number',
+          getSearchValue: (row) => documentCounts.get(row.id) ?? 0,
+        },
+      },
       {
         field: 'asset_classification_key',
         headerKey: 'common.col_classification',
@@ -280,7 +356,7 @@ export default function AssetManagementAppPage() {
         body: (row) => row.updated_by_login_name ?? emDash,
       },
     ]
-  }, [emDash, t])
+  }, [documentCounts, emDash, openDocumentsForEntity, t])
 
   /** Same value passed to DataTable scrollHeight and table wizard when columns are frozen. */
   const assetTableScrollHeight =
@@ -300,43 +376,6 @@ export default function AssetManagementAppPage() {
     }
     return t('assets.subtitle_default')
   }, [assetIdParam, t])
-
-  const filteredRows = useMemo(() => {
-    let list = rows
-    if (assetIdParam) {
-      list = list.filter((a) => a.id === assetIdParam)
-    }
-    const q = search.trim().toLowerCase()
-    if (!q) return list
-    return list.filter((a) => {
-      const hay = [
-        a.site_key,
-        a.site_name,
-        a.key,
-        a.name,
-        a.asset_classification_key ?? '',
-        a.asset_classification_name ?? '',
-        ASSET_TYPE_LABELS[a.asset_type],
-        a.parent_asset_key ?? '',
-        a.parent_asset_name ?? '',
-        a.costcenter_key ?? '',
-        a.equipment_number ?? '',
-        a.serial_no ?? '',
-        a.build_year != null ? String(a.build_year) : '',
-        a.warranty_end ?? '',
-        a.priority != null ? String(a.priority) : '',
-        a.created_at,
-        a.updated_at,
-        formatDateTime(a.created_at),
-        formatDateTime(a.updated_at),
-        a.created_by_login_name ?? '',
-        a.updated_by_login_name ?? '',
-      ]
-        .join(' ')
-        .toLowerCase()
-      return hay.includes(q)
-    })
-  }, [rows, search, assetIdParam])
 
   const tw = useTableWizard<Asset>({
     appPath: '/assets',
@@ -819,6 +858,13 @@ export default function AssetManagementAppPage() {
         </div>
       </div>
       <div className="flex align-items-center gap-2 flex-shrink-0 align-self-start">
+        <BulkDocumentsControl
+          entityType="asset"
+          entityIds={filteredIds}
+          toastRef={toast}
+          resolveEntityLabel={(id) => assetLabelById.get(id) ?? id}
+          onChanged={docsAssignments.refresh}
+        />
         {tw.heroTableWizard}
       </div>
     </div>
@@ -1016,6 +1062,7 @@ export default function AssetManagementAppPage() {
       />
       <ConfirmDialog dismissableMask />
       {tw.wizardDialog}
+      {docsAssignments.singleDialog}
 
       <div className={`${ASSET_PAGE_CONTAINER_CLASS} flex flex-column gap-3`}>
         <Card

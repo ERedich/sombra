@@ -32,6 +32,7 @@ import notificationEmailRulesRouter from './routes/notification-email-rules.js'
 import transactionsRouter from './routes/transactions.js'
 import appParametersRouter from './routes/app-parameters.js'
 import dashboardRouter from './routes/dashboard.js'
+import documentsRouter from './routes/documents.js'
 import { runWorkPlanGenerator } from './services/workPlanWoGen.js'
 import localesRouter from './routes/locales.js'
 import translationsRouter from './routes/translations.js'
@@ -99,6 +100,7 @@ app.use('/api/notification-email-rules', notificationEmailRulesRouter)
 app.use('/api/transactions', transactionsRouter)
 app.use('/api/app-parameters', appParametersRouter)
 app.use('/api/dashboard', dashboardRouter)
+app.use('/api/documents', documentsRouter)
 app.use('/api/ai', aiRouter)
 
 app.get('/api/health', async (_req, res) => {

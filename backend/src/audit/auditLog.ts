@@ -45,6 +45,10 @@ export function redactForAudit(
     const { thumbnail_data: _t, thumbnail_mime_type: _m, ...rest } = serialized
     return rest
   }
+  if (resourceType === 'document') {
+    const { file_data: _d, ...rest } = serialized
+    return rest
+  }
   return serialized
 }
 
