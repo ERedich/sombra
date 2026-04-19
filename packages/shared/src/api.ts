@@ -38,6 +38,8 @@ export const cmmsPaths = {
   aiTranscribe: `${API_PREFIX}/ai/transcribe`,
   aiCopilotTurn: `${API_PREFIX}/ai/copilot/turn`,
   aiStatus: `${API_PREFIX}/ai/status`,
+  aiSimilarWorkOrders: `${API_PREFIX}/ai/similar-work-orders`,
+  aiAtheneAsk: `${API_PREFIX}/ai/athene/ask`,
   shiftAssignments: `${API_PREFIX}/shift-assignments`,
   documents: `${API_PREFIX}/documents`,
   documentsCounts: `${API_PREFIX}/documents/counts`,
@@ -45,4 +47,19 @@ export const cmmsPaths = {
     `${API_PREFIX}/documents/${encodeURIComponent(id)}`,
   documentFile: (id: string) =>
     `${API_PREFIX}/documents/${encodeURIComponent(id)}/file`,
+  pcrProblems: `${API_PREFIX}/pcr-problems`,
+  pcrProblem: (id: string) =>
+    `${API_PREFIX}/pcr-problems/${encodeURIComponent(id)}`,
+  pcrCauses: (problemId?: string) =>
+    problemId
+      ? `${API_PREFIX}/pcr-causes?problem_id=${encodeURIComponent(problemId)}`
+      : `${API_PREFIX}/pcr-causes`,
+  pcrCause: (id: string) =>
+    `${API_PREFIX}/pcr-causes/${encodeURIComponent(id)}`,
+  pcrRemedies: (causeId?: string) =>
+    causeId
+      ? `${API_PREFIX}/pcr-remedies?cause_id=${encodeURIComponent(causeId)}`
+      : `${API_PREFIX}/pcr-remedies`,
+  pcrRemedy: (id: string) =>
+    `${API_PREFIX}/pcr-remedies/${encodeURIComponent(id)}`,
 } as const

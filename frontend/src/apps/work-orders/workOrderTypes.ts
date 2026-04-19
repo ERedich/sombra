@@ -53,4 +53,14 @@ export type WorkOrder = {
   work_instruction_count?: number
   work_instruction_done_count?: number
   hold_reason?: string | null
+  started_by_employee_id: string | null
+  started_by_employee_key: string | null
+  started_by_employee_name: string | null
+  continued_by_employee_id: string | null
+  continued_by_employee_key: string | null
+  continued_by_employee_name: string | null
+  done_at: string | null
+  done_by_employee_id: string | null
+  done_by_employee_key: string | null
+  done_by_employee_name: string | null
 }

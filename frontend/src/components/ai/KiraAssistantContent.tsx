@@ -304,6 +304,23 @@ export function KiraAssistantContent({
             body: JSON.stringify(item.payload),
           })
           showSuccess(t('copilot.shift_assignment_created'))
+        } else if (item.type === 'create_wo_feedback') {
+          await apiJson(cmmsPaths.workOrderFeedback(item.work_order_id), {
+            method: 'POST',
+            body: JSON.stringify(item.payload),
+          })
+          showSuccess(t('copilot.wo_feedback_applied'))
+        } else if (item.type === 'start_work_order') {
+          await apiJson(cmmsPaths.workOrderStart(item.work_order_id), {
+            method: 'POST',
+          })
+          showSuccess(t('copilot.wo_start_applied'))
+        } else if (item.type === 'hold_work_order') {
+          await apiJson(cmmsPaths.workOrderHold(item.work_order_id), {
+            method: 'POST',
+            body: JSON.stringify(item.payload),
+          })
+          showSuccess(t('copilot.wo_hold_applied'))
         } else {
           await apiJson(cmmsPaths.assets, {
             method: 'POST',
@@ -495,7 +512,22 @@ export function KiraAssistantContent({
                                   wo_key: row.item.wo_key,
                                   short_text: row.item.short_text,
                                 })
-                              : t('copilot.confirm_asset')}
+                              : row.item.type === 'create_wo_feedback'
+                                ? t('copilot.confirm_wo_feedback', {
+                                    wo_key: row.item.wo_key,
+                                    short_text: row.item.short_text,
+                                  })
+                                : row.item.type === 'start_work_order'
+                                  ? t('copilot.confirm_wo_start', {
+                                      wo_key: row.item.wo_key,
+                                      short_text: row.item.short_text,
+                                    })
+                                  : row.item.type === 'hold_work_order'
+                                    ? t('copilot.confirm_wo_hold', {
+                                        wo_key: row.item.wo_key,
+                                        short_text: row.item.short_text,
+                                      })
+                                    : t('copilot.confirm_asset')}
                   </div>
                   {row.item.type === 'update_work_order' ? (
                     <div className="flex flex-column gap-1 text-xs surface-ground border-round p-2">
@@ -560,6 +592,99 @@ export function KiraAssistantContent({
                         </span>
                       </div>
                     </div>
+                  ) : row.item.type === 'create_wo_feedback' ? (
+                    <div className="flex flex-column gap-2 text-xs surface-ground border-round p-2">
+                      {row.item.summary.entries.map((ent, j) => (
+                        <div
+                          key={`${ent.employee_id}-${j}`}
+                          className="flex flex-column gap-1"
+                        >
+                          <div className="flex flex-wrap gap-2">
+                            <span className="font-semibold">
+                              {ent.employee_key} — {ent.employee_name}:
+                            </span>
+                            <span>
+                              {ent.hours}{' '}
+                              {t('copilot.wo_feedback_hours_suffix')}
+                            </span>
+                          </div>
+                          {ent.feedback_text ? (
+                            <div className="text-color-secondary white-space-pre-wrap">
+                              {ent.feedback_text}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                      <div className="flex flex-wrap gap-2 pt-1 border-top-1 surface-border">
+                        <span className="font-semibold">
+                          {t('copilot.wo_feedback_total_label')}:
+                        </span>
+                        <span>
+                          {row.item.summary.total_hours}{' '}
+                          {t('copilot.wo_feedback_hours_suffix')}
+                        </span>
+                      </div>
+                      {row.item.summary.target_status ? (
+                        <div className="flex flex-wrap gap-2">
+                          <span className="font-semibold">
+                            {t('copilot.wo_feedback_target_status_label')}:
+                          </span>
+                          <span>
+                            {row.item.summary.target_status === 'done'
+                              ? t('copilot.wo_feedback_target_status_done')
+                              : t(
+                                  'copilot.wo_feedback_target_status_on_hold',
+                                )}
+                          </span>
+                        </div>
+                      ) : null}
+                      {row.item.summary.hold_reason ? (
+                        <div className="flex flex-wrap gap-2">
+                          <span className="font-semibold">
+                            {t('copilot.wo_feedback_hold_reason_label')}:
+                          </span>
+                          <span className="white-space-pre-wrap">
+                            {row.item.summary.hold_reason}
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : row.item.type === 'start_work_order' ? (
+                    <div className="flex flex-column gap-1 text-xs surface-ground border-round p-2">
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">
+                          {t('copilot.wo_start_current_label')}:
+                        </span>
+                        <span>{row.item.summary.current_status}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">
+                          {t('copilot.wo_start_next_label')}:
+                        </span>
+                        <span>
+                          {row.item.summary.next_status === 'continued'
+                            ? t('copilot.wo_start_next_continued')
+                            : t('copilot.wo_start_next_started')}
+                        </span>
+                      </div>
+                    </div>
+                  ) : row.item.type === 'hold_work_order' ? (
+                    <div className="flex flex-column gap-1 text-xs surface-ground border-round p-2">
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">
+                          {t('copilot.wo_start_current_label')}:
+                        </span>
+                        <span>{row.item.summary.current_status}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="font-semibold">
+                          {t('copilot.wo_hold_reason_label')}:
+                        </span>
+                        <span className="white-space-pre-wrap">
+                          {row.item.summary.reason}
+                        </span>
+                      </div>
+                    </div>
                   ) : (
                     <pre className="text-xs overflow-auto max-h-8rem surface-ground border-round p-2 m-0">
                       {JSON.stringify(row.item.payload, null, 2)}
@@ -591,7 +716,13 @@ export function KiraAssistantContent({
                                 ? t('copilot.confirm_shift_assignment_btn')
                                 : row.item.type === 'capacity_allocation'
                                   ? t('copilot.confirm_capacity_allocation_btn')
-                                  : t('copilot.confirm_asset')
+                                  : row.item.type === 'create_wo_feedback'
+                                    ? t('copilot.confirm_wo_feedback_btn')
+                                    : row.item.type === 'start_work_order'
+                                      ? t('copilot.confirm_wo_start_btn')
+                                      : row.item.type === 'hold_work_order'
+                                        ? t('copilot.confirm_wo_hold_btn')
+                                        : t('copilot.confirm_asset')
                       }
                       size="small"
                       disabled={aiConfigured === false}

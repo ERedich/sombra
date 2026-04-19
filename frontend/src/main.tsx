@@ -18,6 +18,7 @@ import { AppCreateShortcutProvider } from './layout/AppCreateShortcut'
 import { AppToolbarSearchFocusProvider } from './layout/AppToolbarSearchFocus'
 import { OpenLastAppShortcutProvider } from './layout/OpenLastAppShortcutProvider'
 import { KiraAssistantProvider } from './layout/KiraAssistantProvider'
+import { AtheneAssistantProvider } from './layout/AtheneAssistantProvider'
 import { QuickAccessProvider } from './layout/QuickAccessProvider'
 import { MinimizedDockStackProvider } from './components/app-crud-dialog'
 import { WorkOrderMwProvider } from './layout/WorkOrderMwProvider'
@@ -40,9 +41,11 @@ createRoot(document.getElementById('root')!).render(
                   <AppCreateShortcutProvider>
                     <AppI18nLoader>
                       <KiraAssistantProvider>
-                        <QuickAccessProvider>
-                          <App />
-                        </QuickAccessProvider>
+                        <AtheneAssistantProvider>
+                          <QuickAccessProvider>
+                            <App />
+                          </QuickAccessProvider>
+                        </AtheneAssistantProvider>
                       </KiraAssistantProvider>
                     </AppI18nLoader>
                   </AppCreateShortcutProvider>

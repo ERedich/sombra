@@ -116,7 +116,47 @@ body {
   opacity: 0.9;
 }
 
+/*
+ * Monitoring virtual scroller: requires fixed row height (matches
+ * MONITORING_ROW_HEIGHT_PX in WorkOrdersAppPage.tsx). Without this the
+ * Prime virtualScroller drifts because cell content can change height.
+ */
+.monitoring-wo-virtual-table.p-datatable .p-datatable-tbody > tr {
+  height: 56px;
+}
+.monitoring-wo-virtual-table.p-datatable .p-datatable-tbody > tr > td {
+  height: 56px;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+}
+
+/*
+ * Monitoring "updates available" pill: shown when WebSocket events arrive for
+ * rows that don't match the current filter/sort. Keeps the user in control —
+ * they can refresh on demand instead of having the list silently reshuffle.
+ */
+.monitoring-stale-pill {
+  background: var(--yellow-50, #fef3c7);
+  color: var(--yellow-900, #713f12);
+  border: 1px solid var(--yellow-200, #fde68a);
+  animation: monitoring-stale-pill-fade-in 220ms ease-out;
+}
+.monitoring-stale-pill > .pi-bolt {
+  color: var(--yellow-700, #a16207);
+}
+@keyframes monitoring-stale-pill-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* Workgroup members: two-pool PickList — minimum list height */
 .workgroup-members-picklist.p-picklist .p-picklist-list {
   min-height: 14rem;
+}
+
+/* Required-field marker next to a label (PrimeReact convention: red asterisk) */
+.wo-required-mark {
+  color: var(--red-500, #ef4444);
+  margin-left: 0.25rem;
+  font-weight: 700;
 }

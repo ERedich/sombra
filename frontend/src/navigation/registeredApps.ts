@@ -7,7 +7,7 @@ export type RegisteredApp = {
   icon: string
   adminOnly?: boolean
   /** Opens in-app assistant modal instead of routing to `path` */
-  shellAction?: 'kira'
+  shellAction?: 'kira' | 'athene'
 }
 
 /** Top-level home route (not nested under a section). */
@@ -57,6 +57,12 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: 'pi pi-sparkles',
         shellAction: 'kira',
       },
+      {
+        path: '/athene',
+        labelKey: 'nav.athene',
+        icon: 'pi pi-compass',
+        shellAction: 'athene',
+      },
       { path: '/template-app', labelKey: 'nav.template_app', icon: 'pi pi-book' },
       {
         path: '/mw-template-editor',
@@ -101,6 +107,21 @@ export const NAV_SECTIONS: NavSection[] = [
         path: '/asset-classifications',
         labelKey: 'nav.asset_classifications',
         icon: 'pi pi-tags',
+      },
+      {
+        path: '/pcr-problems',
+        labelKey: 'nav.pcr_problems',
+        icon: 'pi pi-exclamation-triangle',
+      },
+      {
+        path: '/pcr-causes',
+        labelKey: 'nav.pcr_causes',
+        icon: 'pi pi-search',
+      },
+      {
+        path: '/pcr-remedies',
+        labelKey: 'nav.pcr_remedies',
+        icon: 'pi pi-check-square',
       },
     ],
   },

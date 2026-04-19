@@ -39,12 +39,22 @@ import {
   validateCopilotSchedulingDates,
   COPILOT_SCHEDULING_MAX_RANGE_DAYS,
 } from './copilotSchedulingSnapshot.js'
+import {
+  getWoAppSettings,
+  getGeneralAppSettings,
+  getShiftAppSettings,
+} from '../services/appSettings.js'
 import { analyzeSchedulingSnapshot } from './schedulingInsights.js'
 import { computeCapacityKpis } from './copilotCapacityKpis.js'
 import { findAssignableEmployees } from './copilotAssignableEmployees.js'
 import { validateWorkPlanCreateForCopilot } from './copilotWorkPlanPayload.js'
 import { validatePrepareSetCapacityAllocation } from './copilotCapacityAllocation.js'
 import { validatePrepareCreateShiftAssignment } from './copilotShiftAssignmentPrepare.js'
+import { validatePrepareWoFeedback } from './copilotFeedbackPrepare.js'
+import {
+  validatePrepareWoStart,
+  validatePrepareWoHold,
+} from './copilotStartHoldPrepare.js'
 import type { CopilotConfirmable } from './copilotTypes.js'
 
 export const COPILOT_TOOL_DEFINITIONS = [
@@ -375,6 +385,15 @@ export const COPILOT_TOOL_DEFINITIONS = [
   {
     type: 'function' as const,
     function: {
+      name: 'get_app_parameters',
+      description:
+        'Read the **global CMMS app parameters** (app-wide, not per site) that drive business rules visible to the user. Use whenever the user asks **why** something is / is not possible, why a value looks a certain way, or what a specific setting is ("warum kann ich AA nicht starten?", "welche Einstellung verlangt Zeiten für Erledigt?", "ist SWB an?", "was ist meine Wochenstart-Einstellung?", "wie viel Prozent Schichtkapazität?"). Returns three groups: **wo** (work order flow: SWB `start_requires_assignment`, UAA `user_auto_assign_on_start`, PSH `allow_multiple_started_work_orders`, LEDD `lock_end_date_by_duration`, ASIH `allow_plan_start_in_history`, TRR `require_time_registration_for_done`, PHR `planned_hours_restriction`, WOST `allow_custom_work_order_status_colours` + `work_order_status_colours` map), **general** (UX: `idle_session_timeout_minutes`, DTF `dtf` date/time format id, FDW `fdw` first-day-of-week, `ask_for_site_change_on_login`, CURR `currencies` ordered list, DOCS `docs_storage` + `docs_application_path`), and **shifts** (capacity: SLR `shift_login_recognition`, SPC `shift_planning_capacity_pct` (0–100), SBPR `shift_bound_projection`, DSP `apply_default_shift_plan` + `default_shift_time_start` / `default_shift_time_end` / `default_shift_weekdays`). Read-only; mirrors GET /api/app-parameters. Do **not** use for per-WO data (use `get_work_order_details`).',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'prepare_create_work_order',
       description:
         'Validate fields and register a confirmable payload for POST /api/work-orders (**single WO / Arbeitsauftrag**). Do **not** use for **work plans (WP / Arbeitsplan)** — use `prepare_create_work_plan` for those. Only call when required fields are known (or can be inferred). Does not create the record.',
@@ -404,7 +423,7 @@ export const COPILOT_TOOL_DEFINITIONS = [
     function: {
       name: 'prepare_update_work_order',
       description:
-        'Register a confirmable **PATCH** payload for an existing work order on the working site (PATCH /api/work-orders/:id). **Use this for postponing / rescheduling / changing a WO** (plan_start, plan_end, planned_duration, status change, retyping, reassigning workgroup, etc.) — **not** `prepare_create_work_order`, which creates a brand-new WO. Identify the WO by `work_order_id` (UUID) or `wo_key` (integer). Only fields you include are patched; omit fields that should stay unchanged. Dates must be ISO 8601 (prefer UTC `...Z`); for a postpone, **set both** `plan_start` and `plan_end` to keep duration consistent, or set `planned_duration` (hours) alongside. Returns a confirmable; the user must tap Confirm in the app to apply the change.',
+        'Register a confirmable **PATCH** payload for an existing work order on the working site (PATCH /api/work-orders/:id). **Use this for postponing / rescheduling / retyping / reassigning a WO** (plan_start, plan_end, planned_duration, work_type_id, workgroup_id, asset_id, texts, category). **Status changes are NOT allowed via PATCH** — this endpoint rejects any `status` value that differs from the current one. For status transitions use the dedicated tools instead: `prepare_wo_start` (open/assigned/on_hold → started/continued), `prepare_wo_hold` (started/continued → on_hold) and `prepare_wo_feedback` (started/continued → on_hold/done via Rückmeldung). Identify the WO by `work_order_id` (UUID) or `wo_key` (integer). Only fields you include are patched; omit fields that should stay unchanged. Dates must be ISO 8601 (prefer UTC `...Z`); for a postpone, **set both** `plan_start` and `plan_end` to keep duration consistent, or set `planned_duration` (hours) alongside. Returns a confirmable; the user must tap Confirm in the app to apply the change.',
       parameters: {
         type: 'object',
         properties: {
@@ -450,12 +469,57 @@ export const COPILOT_TOOL_DEFINITIONS = [
             description:
               'New planned duration in hours (>= 0). Can be used alone (keep start) or together with plan_start/plan_end.',
           },
-          status: {
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'prepare_wo_start',
+      description:
+        'Register a confirmable **Start** for an existing work order (POST /api/work-orders/:id/actions/start). Transitions status: `open` / `assigned` → `started`, or `on_hold` → `continued`. No payload beyond the WO identifier — the server uses the **acting user**\'s linked employee (workgroup membership enforced when the WO has a workgroup; SWB / UAA rules apply). Use when the user says "AA starten", "Auftrag beginnen", "weitermachen nach Pause". Pre-conditions: WO is on the working site; current status is `open`, `assigned` or `on_hold`; acting user is linked to an employee and — when the WO has a workgroup — that employee is a member of it; if SWB is on, the employee must already be assigned to the WO. The user must tap **Confirm**.',
+      parameters: {
+        type: 'object',
+        properties: {
+          work_order_id: {
             type: 'string',
+            description: 'WO UUID on the working site (preferred).',
+          },
+          wo_key: {
+            type: 'integer',
             description:
-              'New status: one of open | assigned | started | continued | on_hold | done | closed.',
+              'Numeric wo_key on the working site. Provide either work_order_id or wo_key.',
           },
         },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'prepare_wo_hold',
+      description:
+        'Register a confirmable **Hold** (pause) for an existing work order (POST /api/work-orders/:id/actions/hold). Transitions `started` / `continued` → `on_hold` and stores `hold_reason`. Use when the user says "AA auf Wartung setzen", "Auftrag pausieren", "auf Hold mit Grund …". Pre-conditions: WO is on the working site; current status is `started` or `continued`; `reason` is non-empty (max 2000 chars). For a Hold **combined with a Rückmeldung** (hours + feedback + on_hold), use `prepare_wo_feedback` with `target_status: "on_hold"` instead. The user must tap **Confirm**.',
+      parameters: {
+        type: 'object',
+        properties: {
+          work_order_id: {
+            type: 'string',
+            description: 'WO UUID on the working site (preferred).',
+          },
+          wo_key: {
+            type: 'integer',
+            description:
+              'Numeric wo_key on the working site. Provide either work_order_id or wo_key.',
+          },
+          reason: {
+            type: 'string',
+            description:
+              'Why the WO goes on hold (1–2000 chars). Required and non-empty.',
+          },
+        },
+        required: ['reason'],
       },
     },
   },
@@ -520,6 +584,66 @@ export const COPILOT_TOOL_DEFINITIONS = [
           },
         },
         required: ['shift_id', 'employee_id', 'assignment_date'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'prepare_wo_feedback',
+      description:
+        'Register a confirmable **Rückmeldung / work order feedback** for POST /api/work-orders/:id/actions/feedback. Creates one or more `transactions` rows (type INT — internal time) with `hours` and `feedback_text` per employee, and optionally sets the work order to `on_hold` (requires `hold_reason`) or `done` in the same request. **Pre-condition:** the WO must currently be in status `started` or `continued`; otherwise this tool returns an error and the user must Start the WO in the app first. Each entry must have `hours > 0`, `feedback_text`, or both. The user must tap **Confirm** in Kira; Kira never posts feedback silently. Use when the user says "melde Zeiten zurück", "Rückmeldung schreiben", "buche X Stunden auf AA …", "Auftrag Y mit Rückmeldung abschließen", etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          work_order_id: {
+            type: 'string',
+            description: 'WO UUID on the working site (preferred).',
+          },
+          wo_key: {
+            type: 'integer',
+            description:
+              'Numeric wo_key on the working site. Provide either work_order_id or wo_key.',
+          },
+          entries: {
+            type: 'array',
+            description:
+              'One row per employee. Each row becomes a transactions (type=INT) record. At least 1, at most 50.',
+            items: {
+              type: 'object',
+              properties: {
+                employee_id: {
+                  type: 'string',
+                  description:
+                    'Employee UUID on the working site. Must be allowed by site WO settings (SWB / UAA) — usually already assigned to the WO or the acting user themselves.',
+                },
+                hours: {
+                  type: 'number',
+                  description:
+                    'Worked hours for this entry (>= 0). Must be > 0 if feedback_text is empty.',
+                },
+                feedback_text: {
+                  type: 'string',
+                  description:
+                    'Free-text feedback (max 10000 chars). Must be non-empty if hours is 0.',
+                },
+              },
+              required: ['employee_id'],
+            },
+          },
+          target_status: {
+            type: 'string',
+            enum: ['on_hold', 'done'],
+            description:
+              'Optional target status to set alongside the feedback. "done" closes the WO (requires time registered when site setting wo_require_time_registration_for_done is on). "on_hold" requires hold_reason. Omit to leave status unchanged (stays started/continued).',
+          },
+          hold_reason: {
+            type: 'string',
+            description:
+              'Required and non-empty when target_status === "on_hold" (max 2000 chars). Ignored otherwise.',
+          },
+        },
+        required: ['entries'],
       },
     },
   },
@@ -672,6 +796,13 @@ export type CopilotToolContext = {
   confirmables: CopilotConfirmable[]
   clientActions: ClientAction[]
   isAdmin: boolean
+  /**
+   * `employees.id` of the logged-in user's linked employee **on any site**.
+   * Used to enforce "self-only" feedback rules when SWB=off and UAA=off. May
+   * be null if the user is not linked to an employee row (then only already-
+   * assigned WO employees are allowed for Rückmeldung / capacity).
+   */
+  actorEmployeeId: string | null
 }
 
 function parseSchedulingToolDateRange(
@@ -752,16 +883,6 @@ function transcriptForRanking(parts: string[]): string {
     .slice(0, 8000)
 }
 
-const WORK_ORDER_PATCH_STATUSES = new Set<string>([
-  'open',
-  'assigned',
-  'started',
-  'continued',
-  'on_hold',
-  'done',
-  'closed',
-])
-
 function parseIsoOrEmpty(v: unknown): { ok: true; value: string | null } | { ok: false; error: string } {
   if (v === null || v === undefined) return { ok: true, value: null }
   if (typeof v !== 'string') return { ok: false, error: 'Must be ISO 8601 string or empty.' }
@@ -781,6 +902,7 @@ type ExecCtx = {
   confirmables: CopilotConfirmable[]
   clientActions: ClientAction[]
   isAdmin: boolean
+  actorEmployeeId: string | null
 }
 
 async function isAssetOnSite(pool: Pool, siteId: string, assetId: string): Promise<boolean> {
@@ -966,18 +1088,11 @@ async function preparePatchWorkOrder(
     }
   }
 
-  if (typeof o.status === 'string' && o.status.trim()) {
-    const v = o.status.trim()
-    if (!WORK_ORDER_PATCH_STATUSES.has(v)) {
-      return {
-        ok: false,
-        error:
-          'status must be one of: open, assigned, started, continued, on_hold, done, closed.',
-      }
-    }
-    if (v !== before.status) {
-      patch.status = v
-      changes.status = { before: before.status, after: v }
+  if ('status' in o && o.status !== undefined && o.status !== null && o.status !== '') {
+    return {
+      ok: false,
+      error:
+        'Status cannot be changed via prepare_update_work_order (PATCH rejects status transitions). Use prepare_wo_start for open/assigned/on_hold → started/continued, prepare_wo_hold for started/continued → on_hold, or prepare_wo_feedback for started/continued → on_hold/done with a Rückmeldung.',
     }
   }
 
@@ -1464,6 +1579,67 @@ export async function executeCopilotTool(args: {
         const shifts = await listShiftDefinitionsForSite(ctx.pool, ctx.siteId)
         return JSON.stringify({ ok: true, shifts })
       }
+      case 'get_app_parameters': {
+        const [wo, general, shifts] = await Promise.all([
+          getWoAppSettings(ctx.pool),
+          getGeneralAppSettings(ctx.pool),
+          getShiftAppSettings(ctx.pool),
+        ])
+        return JSON.stringify({
+          ok: true,
+          wo,
+          general,
+          shifts,
+          notes: {
+            wo: {
+              start_requires_assignment:
+                'SWB — when true, only employees already on the WO may Start or submit feedback. When false, UAA decides auto-assign on start.',
+              user_auto_assign_on_start:
+                'UAA — when true and SWB off, the acting user is auto-added to work_order_employees on Start (workgroup membership still required if the WO has one).',
+              allow_multiple_started_work_orders:
+                'PSH — when false (default), a user cannot Start a second WO while another of theirs is in Started / Continued.',
+              lock_end_date_by_duration:
+                'LEDD — when true, plan_end is locked to plan_start + planned_duration; editing plan_end alone is rejected.',
+              allow_plan_start_in_history:
+                'ASIH — when false (default), POST-ing a WO with plan_start before today (UTC) is rejected. PATCH keeps history as-is.',
+              require_time_registration_for_done:
+                'TRR — when true (default), flipping a WO to Done requires sum(transactions.hours) > 0.',
+              planned_hours_restriction:
+                'PHR — when true (default), capacity-allocation planned_hours per employee/day may not exceed their SPC-adjusted shift bucket.',
+              allow_custom_work_order_status_colours:
+                'WOST — when true, UI uses the `work_order_status_colours` hex overrides for WO status chips.',
+            },
+            general: {
+              idle_session_timeout_minutes:
+                '0 = disabled; otherwise auto-logout after N minutes of inactivity.',
+              dtf: 'Date/time format id used everywhere (ddmmyyyy_hhmm, ddmmyy_hhmm, mmddyyyy_hhmm, mmddyy_hhmm).',
+              fdw: 'FDW — first day of week in calendars (monday or sunday).',
+              ask_for_site_change_on_login:
+                'When true, users with 2+ assigned plant sites are prompted for working site at login.',
+              currencies:
+                'CURR — ordered list of ISO-ish 3-letter codes; first is the app default.',
+              docs_storage:
+                'DOCS — where uploaded document bytes live: `database` (bytea) or `application` (server filesystem at `docs_application_path`).',
+              docs_application_path:
+                'Filesystem directory used only when docs_storage = application.',
+            },
+            shifts: {
+              shift_login_recognition:
+                'SLR — when true, login auto-sets presence to `present` if current time matches an assigned shift.',
+              shift_planning_capacity_pct:
+                'SPC — percent (0–100) of raw shift hours used as effective planning capacity (TCP = raw × SPC / 100).',
+              shift_bound_projection:
+                'SBPR — when true, planner times follow shift template windows strictly. When false, scheduled times may diverge from templates.',
+              apply_default_shift_plan:
+                'DSP — when true, capacities use the system `_dsp_default` shift per site (template synthesized from the three default_shift_* fields).',
+              default_shift_time_start: 'DSP wall-clock start (HH:MM:SS).',
+              default_shift_time_end: 'DSP wall-clock end (HH:MM:SS).',
+              default_shift_weekdays:
+                'DSP ISO weekdays (Mon=1 … Sun=7) on which the default shift runs.',
+            },
+          },
+        })
+      }
       case 'prepare_create_work_order': {
         const catRaw = (o as { category_id?: unknown }).category_id
         const planRaw = (o as { plan_start?: unknown }).plan_start
@@ -1621,6 +1797,117 @@ export async function executeCopilotTool(args: {
           message:
             'Shift assignment validated. The user must tap Confirm in the app to POST /api/shift-assignments.',
           summary: c.summary,
+        })
+      }
+      case 'prepare_wo_start': {
+        const v = await validatePrepareWoStart(
+          ctx.pool,
+          ctx.siteId,
+          ctx.actorEmployeeId,
+          o as Record<string, unknown>,
+        )
+        if (!v.ok) {
+          return JSON.stringify({ ok: false, error: v.error })
+        }
+        const id = randomUUID()
+        const c: CopilotConfirmable = {
+          id,
+          type: 'start_work_order',
+          work_order_id: v.work_order_id,
+          wo_key: v.wo_key,
+          short_text: v.short_text,
+          payload: {},
+          summary: {
+            current_status: v.current_status,
+            next_status: v.next_status,
+            workgroup_id: v.workgroup_id,
+          },
+        }
+        ctx.confirmables.push(c)
+        return JSON.stringify({
+          ok: true,
+          confirmable_id: id,
+          message:
+            'Start validated. The user must tap Confirm in the app to POST /api/work-orders/:id/actions/start.',
+          work_order: {
+            id: v.work_order_id,
+            wo_key: v.wo_key,
+            short_text: v.short_text,
+            current_status: v.current_status,
+          },
+          summary: c.summary,
+        })
+      }
+      case 'prepare_wo_hold': {
+        const v = await validatePrepareWoHold(
+          ctx.pool,
+          ctx.siteId,
+          o as Record<string, unknown>,
+        )
+        if (!v.ok) {
+          return JSON.stringify({ ok: false, error: v.error })
+        }
+        const id = randomUUID()
+        const c: CopilotConfirmable = {
+          id,
+          type: 'hold_work_order',
+          work_order_id: v.work_order_id,
+          wo_key: v.wo_key,
+          short_text: v.short_text,
+          payload: { reason: v.reason },
+          summary: {
+            current_status: v.current_status,
+            reason: v.reason,
+          },
+        }
+        ctx.confirmables.push(c)
+        return JSON.stringify({
+          ok: true,
+          confirmable_id: id,
+          message:
+            'Hold validated. The user must tap Confirm in the app to POST /api/work-orders/:id/actions/hold.',
+          work_order: {
+            id: v.work_order_id,
+            wo_key: v.wo_key,
+            short_text: v.short_text,
+            current_status: v.current_status,
+          },
+          summary: c.summary,
+        })
+      }
+      case 'prepare_wo_feedback': {
+        const v = await validatePrepareWoFeedback(
+          ctx.pool,
+          ctx.siteId,
+          ctx.actorEmployeeId,
+          o as Record<string, unknown>,
+        )
+        if (!v.ok) {
+          return JSON.stringify({ ok: false, error: v.error })
+        }
+        const id = randomUUID()
+        const c: CopilotConfirmable = {
+          id,
+          type: 'create_wo_feedback',
+          work_order_id: v.work_order_id,
+          wo_key: v.wo_key,
+          short_text: v.short_text,
+          payload: v.payload,
+          summary: v.summary,
+        }
+        ctx.confirmables.push(c)
+        return JSON.stringify({
+          ok: true,
+          confirmable_id: id,
+          message:
+            'Feedback validated. The user must tap Confirm in the app to POST /api/work-orders/:id/actions/feedback.',
+          work_order: {
+            id: v.work_order_id,
+            wo_key: v.wo_key,
+            short_text: v.short_text,
+            current_status: v.wo_status,
+          },
+          summary: v.summary,
         })
       }
       case 'prepare_create_work_plan': {

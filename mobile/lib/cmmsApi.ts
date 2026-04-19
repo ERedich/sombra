@@ -129,6 +129,10 @@ export async function postWorkOrderFeedback(
     entries: FeedbackEntryPayload[];
     target_status?: 'on_hold' | 'done' | null;
     hold_reason?: string | null;
+    mark_done?: boolean;
+    pcr_problem_id?: string | null;
+    pcr_cause_id?: string | null;
+    pcr_remedy_id?: string | null;
   },
 ): Promise<{ work_order: WorkOrderDetail }> {
   return authJson(cmmsPaths.workOrderFeedback(id), {
@@ -267,6 +271,61 @@ export type CopilotTurnResult = {
           employee_key: string;
           employee_name: string;
           assignment_date: string;
+        };
+      }
+    | {
+        id: string;
+        type: 'start_work_order';
+        work_order_id: string;
+        wo_key: number;
+        short_text: string;
+        payload: Record<string, never>;
+        summary: {
+          current_status: string;
+          next_status: 'started' | 'continued';
+          workgroup_id: string | null;
+        };
+      }
+    | {
+        id: string;
+        type: 'hold_work_order';
+        work_order_id: string;
+        wo_key: number;
+        short_text: string;
+        payload: {
+          reason: string;
+        };
+        summary: {
+          current_status: string;
+          reason: string;
+        };
+      }
+    | {
+        id: string;
+        type: 'create_wo_feedback';
+        work_order_id: string;
+        wo_key: number;
+        short_text: string;
+        payload: {
+          entries: Array<{
+            employee_id: string;
+            hours: number;
+            feedback_text: string;
+          }>;
+          target_status: 'on_hold' | 'done' | null;
+          hold_reason: string | null;
+        };
+        summary: {
+          entries: Array<{
+            employee_id: string;
+            employee_key: string;
+            employee_name: string;
+            hours: number;
+            feedback_text: string;
+          }>;
+          target_status: 'on_hold' | 'done' | null;
+          hold_reason: string | null;
+          total_hours: number;
         };
       }
   >;

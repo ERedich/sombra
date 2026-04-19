@@ -63,7 +63,6 @@ import { useTableWizard, useTableWizardToastEffect } from '../../table-wizard'
 import {
   SearchPanel,
   SearchPresetsDialog,
-  applyColumnSearch,
   buildSearchableColumns,
   useTableSearch,
 } from '../../table-search'
@@ -75,6 +74,17 @@ import { useWorkOrderMw } from '../../layout/WorkOrderMwProvider'
 import type { WoMwEvent } from '../../layout/workOrderMwTypes'
 import type { WorkOrder } from './workOrderTypes'
 import { feedbackTabIndexForRow } from './workOrderFormShared'
+import {
+  DEFAULT_WORK_ORDER_LIST_SORT,
+  resolveQuery,
+  workOrderMatchesQuery,
+  type WorkOrderListSort,
+  type WorkOrderSortField,
+} from './workOrderListQuery'
+import {
+  WORK_ORDER_CACHE_CHUNK_SIZE,
+  useWorkOrderListCache,
+} from './useWorkOrderListCache'
 
 export type { WorkOrder } from './workOrderTypes'
 
@@ -319,6 +329,69 @@ const MONITORING_DELETE_HOLD_MS = 10_000
 const CURRENT_EMPLOYEE_FILTER_VALUE = '__CURRENT_EMPLOYEE__'
 const CURRENT_EMPLOYEE_MISSING_SENTINEL = '__CURRENT_EMPLOYEE_MISSING__'
 const EMPTY_EMPLOYEE_WORKGROUP_IDS: string[] = []
+/** Fixed row height (px) for Prime virtual scroller on the monitoring table. Keep in sync with CSS. */
+const MONITORING_ROW_HEIGHT_PX = 56
+
+/** Stable accessor refs for {@link useDistinctOptions}. */
+const PICK_CREATED_BY_LOGIN_NAME = (r: WorkOrder): string | null =>
+  r.created_by_login_name
+const PICK_UPDATED_BY_LOGIN_NAME = (r: WorkOrder): string | null =>
+  r.updated_by_login_name
+
+/** Sort fields accepted by the server paginated endpoint (whitelist). */
+const ALLOWED_SERVER_SORT_FIELDS: ReadonlySet<WorkOrderSortField> = new Set<
+  WorkOrderSortField
+>([
+  'wo_key',
+  'plan_start',
+  'plan_end',
+  'status',
+  'created_at',
+  'updated_at',
+  'planned_duration',
+  'work_plan_key',
+  'work_type_key',
+  'workgroup_key',
+  'category_key',
+  'site_key',
+  'costcenter_key',
+  'started_by_employee_key',
+  'continued_by_employee_key',
+  'created_by_login_name',
+  'updated_by_login_name',
+])
+
+/**
+ * Distinct sorted `(value, label)` option list derived from row-level strings.
+ * Uses an internal ref-cached hash so the returned array reference stays
+ * stable when the underlying distinct set has not changed — critical for
+ * `tableColumnDefs` memoization on the monitoring table where `rows` churns
+ * on every WebSocket update.
+ */
+function useDistinctOptions(
+  rows: WorkOrder[],
+  pick: (row: WorkOrder) => string | null | undefined,
+): { value: string; label: string }[] {
+  // Build a stable primitive key first. `useMemo` with `[rows, pick]` still
+  // recomputes whenever `rows` is replaced (every WS patch), but the string
+  // result is cheap to compare and *does* have referential stability when
+  // content is unchanged -- so the second memo below can safely bail out.
+  const sortedKey = useMemo(() => {
+    const set = new Set<string>()
+    for (const r of rows) {
+      const v = pick(r)
+      if (typeof v === 'string' && v.length > 0) set.add(v)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b)).join('\u0001')
+  }, [rows, pick])
+  return useMemo(() => {
+    if (sortedKey === '') return EMPTY_OPTIONS
+    return sortedKey
+      .split('\u0001')
+      .map((value) => ({ value, label: value }))
+  }, [sortedKey])
+}
+const EMPTY_OPTIONS: { value: string; label: string }[] = []
 
 function workTypeColumnBody(
   row: WorkOrder,
@@ -459,8 +532,17 @@ export function WorkOrdersPage({
   const [recentlyDeletedWorkOrderIds, setRecentlyDeletedWorkOrderIds] = useState<
     Set<string>
   >(new Set())
-  const [recentlyChangedFieldsByWorkOrderId, setRecentlyChangedFieldsByWorkOrderId] =
-    useState<Record<string, Set<string>>>({})
+  /**
+   * Per-row set of field names that recently changed (for cell-level flash).
+   * Stored in a ref so updates don't invalidate `tableColumnDefs` by object
+   * identity — instead we bump `flashTick` to trigger a cheap rerender. The
+   * `cellClassName` closures read the ref at call time.
+   */
+  const recentlyChangedFieldsRef = useRef<Record<string, Set<string>>>({})
+  const [flashTick, setFlashTick] = useState(0)
+  const bumpFlashTick = useCallback(() => {
+    setFlashTick((x) => (x + 1) | 0)
+  }, [])
   const [search, setSearch] = useState('')
   const [searchPanelOpen, setSearchPanelOpen] = useState(false)
   const [searchPresetsOpen, setSearchPresetsOpen] = useState(false)
@@ -560,6 +642,34 @@ export function WorkOrdersPage({
     [woStatusColourOverrides],
   )
 
+  const createdByOptions = useDistinctOptions(
+    rows,
+    PICK_CREATED_BY_LOGIN_NAME,
+  )
+  const updatedByOptions = useDistinctOptions(
+    rows,
+    PICK_UPDATED_BY_LOGIN_NAME,
+  )
+
+  /**
+   * Precomputed set of WO IDs the current employee has currently started or
+   * continued. Used by the Start button cell to decide whether MSWO (multiple
+   * started work orders) blocks a new Start. Replaces a per-row
+   * `rows.some(...)` scan which was O(n^2) on large monitoring datasets.
+   */
+  const employeeActiveStartedWoIds = useMemo(() => {
+    if (!currentEmployeeId || woAllowMultipleStarted) {
+      return new Set<string>()
+    }
+    const ids = new Set<string>()
+    for (const w of rows) {
+      if (w.status !== 'started' && w.status !== 'continued') continue
+      const assigned = w.assigned_employee_ids ?? []
+      if (assigned.includes(currentEmployeeId)) ids.add(w.id)
+    }
+    return ids
+  }, [rows, currentEmployeeId, woAllowMultipleStarted])
+
   const flashMonitoringWorkOrderRow = useCallback(
     (id: string, durationMs = MONITORING_UPDATE_FLASH_MS) => {
       if (!isMonitoring || !id) return
@@ -617,22 +727,19 @@ export function WorkOrdersPage({
       }
       if (changedFields.size === 0) return
       const id = after.id
-      setRecentlyChangedFieldsByWorkOrderId((cur) => ({
-        ...cur,
-        [id]: changedFields,
-      }))
+      recentlyChangedFieldsRef.current[id] = changedFields
+      bumpFlashTick()
       const existing = fieldFlashTimeoutsRef.current[id]
       if (existing !== undefined) window.clearTimeout(existing)
       fieldFlashTimeoutsRef.current[id] = window.setTimeout(() => {
-        setRecentlyChangedFieldsByWorkOrderId((cur) => {
-          if (!(id in cur)) return cur
-          const { [id]: _removed, ...rest } = cur
-          return rest
-        })
+        if (id in recentlyChangedFieldsRef.current) {
+          delete recentlyChangedFieldsRef.current[id]
+          bumpFlashTick()
+        }
         delete fieldFlashTimeoutsRef.current[id]
       }, MONITORING_UPDATE_FLASH_MS)
     },
-    [isMonitoring],
+    [bumpFlashTick, isMonitoring],
   )
 
   const markMonitoringDeletedRow = useCallback(
@@ -648,6 +755,11 @@ export function WorkOrdersPage({
       const existing = deleteHoldTimeoutsRef.current[id]
       if (existing !== undefined) window.clearTimeout(existing)
       deleteHoldTimeoutsRef.current[id] = window.setTimeout(() => {
+        // Route through the cache so `total` is decremented in lockstep with
+        // the visible rows. The sync effect mirrors the resulting rows back
+        // into `setRows`; keeping the local `setRows` here as well keeps
+        // work-orders mode correct (cache is disabled there).
+        workOrderCacheRef.current.removeRow(id)
         setRows((prev) => prev.filter((w) => w.id !== id))
         setRecentlyDeletedWorkOrderIds((prev) => {
           if (!prev.has(id)) return prev
@@ -667,15 +779,14 @@ export function WorkOrdersPage({
           next.delete(id)
           return next
         })
-        setRecentlyChangedFieldsByWorkOrderId((cur) => {
-          if (!(id in cur)) return cur
-          const { [id]: _removed, ...rest } = cur
-          return rest
-        })
+        if (id in recentlyChangedFieldsRef.current) {
+          delete recentlyChangedFieldsRef.current[id]
+          bumpFlashTick()
+        }
         delete deleteHoldTimeoutsRef.current[id]
       }, MONITORING_DELETE_HOLD_MS)
     },
-    [isMonitoring],
+    [bumpFlashTick, isMonitoring],
   )
 
   const cardSubTitle = useMemo(() => {
@@ -746,12 +857,6 @@ export function WorkOrdersPage({
         }))
         .sort((a, b) => a.label.localeCompare(b.label)),
     ]
-    const createdByOptions = [...new Set(rows.map((r) => r.created_by_login_name).filter((v): v is string => !!v))]
-      .sort((a, b) => a.localeCompare(b))
-      .map((value) => ({ value, label: value }))
-    const updatedByOptions = [...new Set(rows.map((r) => r.updated_by_login_name).filter((v): v is string => !!v))]
-      .sort((a, b) => a.localeCompare(b))
-      .map((value) => ({ value, label: value }))
     const defs: ColumnRegistryEntry<WorkOrder>[] = [
       {
         field: 'wo_key',
@@ -777,15 +882,12 @@ export function WorkOrdersPage({
         headerKey: 'wo.col_start',
         sortable: false,
         body: (row) => {
+          // MSWO blocked when the current employee already has some other WO
+          // started/continued. O(1) lookup — the expensive scan is done once
+          // per `rows` change in `employeeActiveStartedWoIds`.
           const mswoBlocks =
-            !woAllowMultipleStarted &&
-            !!currentEmployeeId &&
-            rows.some(
-              (w) =>
-                w.id !== row.id &&
-                (w.status === 'started' || w.status === 'continued') &&
-                (w.assigned_employee_ids ?? []).includes(currentEmployeeId),
-            )
+            employeeActiveStartedWoIds.size > 0 &&
+            !employeeActiveStartedWoIds.has(row.id)
           return (
             <WorkOrderStartCell
               row={row}
@@ -995,6 +1097,40 @@ export function WorkOrdersPage({
         },
       },
       {
+        field: 'started_by_employee_key',
+        headerKey: 'wo.col_started_employee',
+        sortable: true,
+        defaultVisible: false,
+        body: (row) => {
+          const k = row.started_by_employee_key?.trim() ?? ''
+          const n = row.started_by_employee_name?.trim() ?? ''
+          if (!k && !n) return emDash
+          if (k && n) return `${k} ${emDash} ${n}`
+          return k || n
+        },
+        search: {
+          getSearchValue: (row) =>
+            `${row.started_by_employee_key ?? ''} ${row.started_by_employee_name ?? ''}`.trim(),
+        },
+      },
+      {
+        field: 'continued_by_employee_key',
+        headerKey: 'wo.col_continued_employee',
+        sortable: true,
+        defaultVisible: false,
+        body: (row) => {
+          const k = row.continued_by_employee_key?.trim() ?? ''
+          const n = row.continued_by_employee_name?.trim() ?? ''
+          if (!k && !n) return emDash
+          if (k && n) return `${k} ${emDash} ${n}`
+          return k || n
+        },
+        search: {
+          getSearchValue: (row) =>
+            `${row.continued_by_employee_key ?? ''} ${row.continued_by_employee_name ?? ''}`.trim(),
+        },
+      },
+      {
         field: 'created_at',
         headerKey: 'common.col_created_at',
         sortable: true,
@@ -1043,7 +1179,10 @@ export function WorkOrdersPage({
     return defs.map((def) => ({
       ...def,
       cellClassName: (row: WorkOrder) => {
-        const changed = recentlyChangedFieldsByWorkOrderId[row.id]
+        // Reads from ref at call time; `flashTick` (in the memo deps below)
+        // rebuilds column defs after ref mutations so PrimeReact re-evaluates
+        // this callback for every visible cell.
+        const changed = recentlyChangedFieldsRef.current[row.id]
         if (!changed) return undefined
         if (def.field === 'wo_key') {
           for (const f of WO_PRIMARY_COLUMN_FLASH_FIELDS) {
@@ -1060,15 +1199,16 @@ export function WorkOrdersPage({
     workTypes,
     categories,
     workgroups,
-    rows,
+    createdByOptions,
+    updatedByOptions,
     subscribedWorkOrderIds,
     employeesForFilter,
     isMonitoring,
-    recentlyChangedFieldsByWorkOrderId,
+    flashTick,
     currentEmployeeId,
     employeeWorkgroupIds,
+    employeeActiveStartedWoIds,
     woStartRequiresAssignment,
-    woAllowMultipleStarted,
     woStatusMergedColours,
     documentCounts,
     openDocumentsForEntity,
@@ -1123,27 +1263,22 @@ export function WorkOrdersPage({
   )
 
   const filteredRows = useMemo(() => {
-    let list = rows
+    // Monitoring mode: the server (via `workOrderCache`) already applied
+    // filters, global search and sort. Applying them again here would be
+    // both wasteful and incorrect — the cache holds only the loaded window
+    // of the full result set, so re-filtering would produce false "no
+    // matches" states during background chunk loads.
     if (workOrderIdParam) {
-      list = list.filter((w) => w.id === workOrderIdParam)
+      return rows.filter((w) => w.id === workOrderIdParam)
     }
+    if (isMonitoring) return rows
+    let list = rows
     const q = search.trim().toLowerCase()
     if (q) {
       list = list.filter((w) => rowMatchesGlobalSearch(w, q, t))
     }
-    if (isMonitoring) {
-      list = applyColumnSearch(list, resolvedMonitoringSearch, searchableColumns)
-    }
     return list
-  }, [
-    isMonitoring,
-    rows,
-    search,
-    searchableColumns,
-    resolvedMonitoringSearch,
-    t,
-    workOrderIdParam,
-  ])
+  }, [isMonitoring, rows, search, t, workOrderIdParam])
 
   const workOrdersDefaultMultiSortMeta = useMemo(
     () => [{ field: 'wo_key', order: -1 as const }],
@@ -1205,6 +1340,87 @@ export function WorkOrdersPage({
     [t],
   )
 
+  /**
+   * Primary sort for the server paginated work-orders list. We take the first
+   * entry of Prime's `multiSortMeta` (which reflects the user's current sort
+   * choice via the table wizard) and fall back to `wo_key desc` when the
+   * chosen field is not in the server whitelist.
+   */
+  const workOrderListSort = useMemo<WorkOrderListSort>(() => {
+    const multi =
+      (tw.tableLayoutProps as {
+        multiSortMeta?: { field?: string; order?: number }[]
+      }).multiSortMeta ?? []
+    const first = multi[0]
+    if (!first?.field) return DEFAULT_WORK_ORDER_LIST_SORT
+    const field = first.field as WorkOrderSortField
+    if (!ALLOWED_SERVER_SORT_FIELDS.has(field)) {
+      return DEFAULT_WORK_ORDER_LIST_SORT
+    }
+    return { field, order: first.order === 1 ? 'asc' : 'desc' }
+  }, [tw.tableLayoutProps])
+
+  /**
+   * Resolved query for the monitoring cache: folds the user's search input,
+   * applied filters and current sort into a single serialisable shape that
+   * both the server request (`buildWorkOrderQuery`) and the client-side
+   * predicate (`workOrderMatchesQuery`) consume.
+   */
+  const workOrderResolvedQuery = useMemo(
+    () =>
+      resolveQuery({
+        sort: workOrderListSort,
+        search,
+        applied: resolvedMonitoringSearch,
+        limit: WORK_ORDER_CACHE_CHUNK_SIZE,
+        offset: 0,
+      }),
+    [workOrderListSort, search, resolvedMonitoringSearch],
+  )
+
+  const workOrderCache = useWorkOrderListCache({
+    enabled: isMonitoring,
+    query: workOrderResolvedQuery,
+    onError: showError,
+  })
+  // Stable ref so callbacks that use the cache can list it as a dep without
+  // being recreated every render when the cache's internal state updates.
+  // All consumers (mutation handlers, WS handler) run outside render, so a
+  // commit-time sync is safe: by the time they fire, the latest cache object
+  // has already been committed.
+  const workOrderCacheRef = useRef(workOrderCache)
+  const workOrderResolvedQueryRef = useRef(workOrderResolvedQuery)
+  const workOrderListSortRef = useRef(workOrderListSort)
+  useEffect(() => {
+    workOrderCacheRef.current = workOrderCache
+    workOrderResolvedQueryRef.current = workOrderResolvedQuery
+    workOrderListSortRef.current = workOrderListSort
+  })
+
+  /**
+   * Sync effect: in monitoring mode the cache is the source of truth for the
+   * visible list. Any existing `setRows` call in monitoring mode will be
+   * overwritten on the next render by this sync — so the WS handlers and
+   * action handlers below must drive mutations through `workOrderCache.*`.
+   */
+  useEffect(() => {
+    if (!isMonitoring) return
+    setRows(workOrderCache.rows)
+  }, [isMonitoring, workOrderCache.rows])
+
+  /**
+   * Bridge the cache's loading flag into the page's `loading` state. We only
+   * show the DataTable's loading overlay while the *initial* chunk is in
+   * flight (no rows yet) — once the first 500 rows land, the table stays
+   * interactive and background pre-fetches for the remaining chunks run
+   * silently. Otherwise the overlay would block clicks on columns / rows
+   * for the entire ~1.5s it takes to finish pre-fetching 2000+ work orders.
+   */
+  useEffect(() => {
+    if (!isMonitoring) return
+    setLoading(workOrderCache.loading && workOrderCache.rows.length === 0)
+  }, [isMonitoring, workOrderCache.loading, workOrderCache.rows.length])
+
   const postStartWo = useCallback(
     async (row: WorkOrder) => {
       try {
@@ -1212,11 +1428,15 @@ export function WorkOrdersPage({
           `/api/work-orders/${encodeURIComponent(row.id)}/actions/start`,
           { method: 'POST', body: JSON.stringify({}) },
         )
-        setRows((prev) =>
-          sortedWorkOrders(
-            prev.map((w) => (w.id === row.id ? data.work_order : w)),
-          ),
-        )
+        if (isMonitoring) {
+          workOrderCacheRef.current.patchRow(data.work_order)
+        } else {
+          setRows((prev) =>
+            sortedWorkOrders(
+              prev.map((w) => (w.id === row.id ? data.work_order : w)),
+            ),
+          )
+        }
         setSelected((cur) =>
           cur?.id === row.id ? data.work_order : cur,
         )
@@ -1234,6 +1454,7 @@ export function WorkOrdersPage({
     [
       flashMonitoringChangedFields,
       flashMonitoringWorkOrderRow,
+      isMonitoring,
       showError,
       showSuccess,
       t,
@@ -1252,6 +1473,12 @@ export function WorkOrdersPage({
 
   const loadWorkOrders = useCallback(
     async (opts?: { silent?: boolean }): Promise<WorkOrder[]> => {
+      // Monitoring mode owns the list through `workOrderCache`; silent
+      // refreshes translate to a cache reset (same UX: WO list reloads).
+      if (isMonitoring) {
+        workOrderCacheRef.current.refresh()
+        return workOrderCacheRef.current.rows
+      }
       const silent = opts?.silent === true
       if (!silent) setLoading(true)
       try {
@@ -1272,12 +1499,14 @@ export function WorkOrdersPage({
         if (!silent) setLoading(false)
       }
     },
-    [showError, t],
+    [isMonitoring, showError, t],
   )
 
   useEffect(() => {
+    // In monitoring mode the cache hook handles the initial fetch itself.
+    if (isMonitoring) return
     void loadWorkOrders()
-  }, [loadWorkOrders])
+  }, [isMonitoring, loadWorkOrders])
 
   const loadSubscriptions = useCallback(async () => {
     try {
@@ -1369,23 +1598,71 @@ export function WorkOrdersPage({
           const data = JSON.parse(ev.data as string) as WorkOrderWsMessage
           if (data.type === 'work_order_created' && data.work_order?.id) {
             const wo = data.work_order
-            setRows((prev) => {
-              const map = new Map(prev.map((w) => [w.id, w]))
-              map.set(wo.id, wo)
-              return sortedWorkOrders([...map.values()])
-            })
-            markMonitoringCreatedRow(wo.id)
+            if (isMonitoring) {
+              // Filter-aware merge: only push rows that match the active
+              // query. Rows that don't match are dropped from the visible
+              // list; the created-row highlight still fires for WOs that
+              // belong to the user's scope so the Monitoring "heartbeat"
+              // stays intact even when the user has narrowed filters.
+              const query = workOrderResolvedQueryRef.current
+              const sort = workOrderListSortRef.current
+              if (workOrderMatchesQuery(wo, query)) {
+                if (sort.field === 'wo_key' && sort.order === 'desc') {
+                  workOrderCacheRef.current.prependRow(wo)
+                } else {
+                  workOrderCacheRef.current.insertRow(wo)
+                }
+                markMonitoringCreatedRow(wo.id)
+              } else {
+                // No filter match: flag the list as stale so the user has
+                // an explicit "refresh available" pill available. We do NOT
+                // surface the WO in the list — otherwise the active filter
+                // would silently lie about the visible set.
+                workOrderCacheRef.current.markStale()
+              }
+            } else {
+              setRows((prev) => {
+                const map = new Map(prev.map((w) => [w.id, w]))
+                map.set(wo.id, wo)
+                return sortedWorkOrders([...map.values()])
+              })
+              markMonitoringCreatedRow(wo.id)
+            }
             return
           }
           if (isMonitoring && data.type === 'work_order_updated' && data.work_order?.id) {
             const wo = data.work_order
-            let previousRow: WorkOrder | undefined
-            setRows((prev) => {
-              previousRow = prev.find((w) => w.id === wo.id)
-              const map = new Map(prev.map((w) => [w.id, w]))
-              map.set(wo.id, wo)
-              return sortedWorkOrders([...map.values()])
-            })
+            const previousRow = workOrderCacheRef.current.getById(wo.id)
+            const query = workOrderResolvedQueryRef.current
+            const sort = workOrderListSortRef.current
+            const stillMatches = workOrderMatchesQuery(wo, query)
+            if (previousRow && stillMatches) {
+              // Most common path: row stays in the current view; patch in
+              // place and replay the existing flash/highlight timers.
+              workOrderCacheRef.current.patchRow(wo)
+            } else if (previousRow && !stillMatches) {
+              // Update pushed the row out of the current filter. Let the
+              // flash play first so the user sees *why* it disappeared,
+              // then remove it once the flash completes.
+              workOrderCacheRef.current.patchRow(wo)
+              window.setTimeout(() => {
+                workOrderCacheRef.current.removeRow(wo.id)
+              }, MONITORING_UPDATE_FLASH_MS)
+            } else if (!previousRow && stillMatches) {
+              // Row was outside the loaded set (or filtered out previously)
+              // but the update made it match — treat as insert.
+              if (sort.field === 'wo_key' && sort.order === 'desc') {
+                workOrderCacheRef.current.prependRow(wo)
+              } else {
+                workOrderCacheRef.current.insertRow(wo)
+              }
+              markMonitoringCreatedRow(wo.id)
+            } else {
+              // Update happened for a row that wasn't in our view and still
+              // doesn't match — nothing to show, but mark as stale so the
+              // total count can be refreshed on demand.
+              workOrderCacheRef.current.markStale()
+            }
             setSelected((cur) => (cur?.id === wo.id ? wo : cur))
             flashMonitoringWorkOrderRow(wo.id)
             flashMonitoringChangedFields(previousRow, wo)
@@ -1394,6 +1671,9 @@ export function WorkOrdersPage({
           if (isMonitoring && data.type === 'work_order_deleted') {
             const deletedId = data.work_order_id?.trim()
             if (!deletedId) return
+            // Keep the row in `cache.rows` so the 10s "deleting" hold
+            // animation can play; `markMonitoringDeletedRow` schedules the
+            // actual cache removal after the hold completes.
             markMonitoringDeletedRow(deletedId)
           }
         } catch {
@@ -1474,22 +1754,37 @@ export function WorkOrdersPage({
   const handleMwEvent = useCallback(
     (ev: WoMwEvent) => {
       if (ev.type === 'merged_row') {
-        setRows((prev) =>
-          sortedWorkOrders(
-            prev.map((w) => (w.id === ev.workOrder.id ? ev.workOrder : w)),
-          ),
-        )
+        if (isMonitoring) {
+          workOrderCacheRef.current.patchRow(ev.workOrder)
+        } else {
+          setRows((prev) =>
+            sortedWorkOrders(
+              prev.map((w) => (w.id === ev.workOrder.id ? ev.workOrder : w)),
+            ),
+          )
+        }
         setSelected((cur) =>
           cur?.id === ev.workOrder.id ? ev.workOrder : cur,
         )
         flashMonitoringWorkOrderRow(ev.workOrder.id)
         flashMonitoringChangedFields(ev.beforeRow ?? null, ev.workOrder)
       } else if (ev.type === 'created_row') {
-        setRows((prev) => {
-          const map = new Map(prev.map((w) => [w.id, w]))
-          map.set(ev.workOrder.id, ev.workOrder)
-          return sortedWorkOrders([...map.values()])
-        })
+        if (isMonitoring) {
+          if (
+            workOrderListSort.field === 'wo_key' &&
+            workOrderListSort.order === 'desc'
+          ) {
+            workOrderCacheRef.current.prependRow(ev.workOrder)
+          } else {
+            workOrderCacheRef.current.insertRow(ev.workOrder)
+          }
+        } else {
+          setRows((prev) => {
+            const map = new Map(prev.map((w) => [w.id, w]))
+            map.set(ev.workOrder.id, ev.workOrder)
+            return sortedWorkOrders([...map.values()])
+          })
+        }
         markMonitoringCreatedRow(ev.workOrder.id)
         setSelected(ev.workOrder)
       } else if (ev.type === 'silent_list_refresh') {
@@ -1499,8 +1794,10 @@ export function WorkOrdersPage({
     [
       flashMonitoringChangedFields,
       flashMonitoringWorkOrderRow,
+      isMonitoring,
       loadWorkOrders,
       markMonitoringCreatedRow,
+      workOrderListSort,
     ],
   )
 
@@ -1726,11 +2023,15 @@ export function WorkOrdersPage({
           }),
         },
       )
-      setRows((prev) =>
-        sortedWorkOrders(
-          prev.map((w) => (w.id === employeeAssignWoId ? data.work_order : w)),
-        ),
-      )
+      if (isMonitoring) {
+        workOrderCacheRef.current.patchRow(data.work_order)
+      } else {
+        setRows((prev) =>
+          sortedWorkOrders(
+            prev.map((w) => (w.id === employeeAssignWoId ? data.work_order : w)),
+          ),
+        )
+      }
       setSelected((cur) =>
         cur?.id === employeeAssignWoId ? data.work_order : cur,
       )
@@ -1768,11 +2069,15 @@ export function WorkOrdersPage({
         `/api/work-orders/${encodeURIComponent(row.id)}/actions/hold`,
         { method: 'POST', body: JSON.stringify({ reason }) },
       )
-      setRows((prev) =>
-        sortedWorkOrders(
-          prev.map((w) => (w.id === row.id ? data.work_order : w)),
-        ),
-      )
+      if (isMonitoring) {
+        workOrderCacheRef.current.patchRow(data.work_order)
+      } else {
+        setRows((prev) =>
+          sortedWorkOrders(
+            prev.map((w) => (w.id === row.id ? data.work_order : w)),
+          ),
+        )
+      }
       setSelected((cur) => (cur?.id === row.id ? data.work_order : cur))
       flashMonitoringWorkOrderRow(data.work_order.id)
       flashMonitoringChangedFields(row, data.work_order)
@@ -2149,11 +2454,11 @@ export function WorkOrdersPage({
       <div
         className={[
           'w-full app-page-mw-none flex flex-column',
-          isMonitoring ? 'p-2 h-full min-h-0 gap-2' : 'p-4 gap-3',
+          isMonitoring ? 'p-2 gap-2' : 'p-4 gap-3',
         ].join(' ')}
       >
         {isMonitoring ? (
-          <div className="surface-card p-3 flex flex-column gap-3 min-h-0 flex-1">
+          <div className="surface-card p-3 flex flex-column gap-3">
             <div className="flex justify-content-between align-items-center gap-3 flex-wrap w-full">
               <div className="flex align-items-center gap-3 flex-wrap min-w-0">
                 <div className="min-w-0">
@@ -2162,6 +2467,33 @@ export function WorkOrdersPage({
                     {cardSubTitle}
                   </p>
                 </div>
+                {workOrderCache.stale ? (
+                  <div
+                    className="monitoring-stale-pill flex align-items-center gap-2 px-3 py-2 border-round-2xl"
+                    role="status"
+                    aria-live="polite"
+                    title={t('monitoring.stale_pill_hint')}
+                  >
+                    <i className="pi pi-bolt" aria-hidden="true" />
+                    <span className="font-medium">{t('monitoring.stale_pill')}</span>
+                    <Button
+                      type="button"
+                      size="small"
+                      label={t('monitoring.stale_pill_refresh')}
+                      icon="pi pi-refresh"
+                      onClick={() => workOrderCache.refresh()}
+                    />
+                    <Button
+                      type="button"
+                      size="small"
+                      text
+                      severity="secondary"
+                      icon="pi pi-times"
+                      aria-label={t('monitoring.stale_pill_dismiss')}
+                      onClick={() => workOrderCache.dismissStale()}
+                    />
+                  </div>
+                ) : null}
                 <ButtonGroup>
                   <Button
                     type="button"
@@ -2270,10 +2602,14 @@ export function WorkOrdersPage({
                 {tw.heroTableWizard}
               </div>
             </div>
-            <div className="w-full overflow-x-auto flex-1 min-h-0">
+            <div className="w-full overflow-x-auto">
               <DataTable
                 {...tableLayoutRest}
-                className={['work-orders-table', twTableClass]
+                className={[
+                  'work-orders-table',
+                  'monitoring-wo-virtual-table',
+                  twTableClass,
+                ]
                   .filter(Boolean)
                   .join(' ')}
                 value={tw.prepareRows(filteredRows)}
@@ -2282,7 +2618,18 @@ export function WorkOrdersPage({
                 selection={selected}
                 tableStyle={{ minWidth: '96rem', width: 'max-content' }}
                 scrollable
-                scrollHeight="flex"
+                // Virtualization needs an explicit viewport height. Using
+                // `scrollHeight="flex"` would require every ancestor (main,
+                // app-shell) to propagate a deterministic height, which
+                // `.app-shell-main` does not. The calc mirrors the pattern
+                // established in TranslationsAppPage.tsx and leaves ~11rem
+                // for title + toolbar + page padding.
+                scrollHeight="calc(100vh - 11rem)"
+                virtualScrollerOptions={{
+                  itemSize: MONITORING_ROW_HEIGHT_PX,
+                  numToleratedItems: 10,
+                  showLoader: false,
+                }}
                 rowClassName={(row) =>
                   [
                     recentlyCreatedWorkOrderIds.has((row as WorkOrder).id)

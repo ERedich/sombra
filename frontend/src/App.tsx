@@ -22,6 +22,9 @@ import ShiftsAppPage from './apps/shifts/ShiftsAppPage'
 import ShiftPlannerAppPage from './apps/shift-planner/ShiftPlannerAppPage'
 import CapacityPlannerAppPage from './apps/capacity-planner/CapacityPlannerAppPage'
 import CategoriesAppPage from './apps/categories/CategoriesAppPage'
+import PcrProblemsAppPage from './apps/pcr-problems/PcrProblemsAppPage'
+import PcrCausesAppPage from './apps/pcr-causes/PcrCausesAppPage'
+import PcrRemediesAppPage from './apps/pcr-remedies/PcrRemediesAppPage'
 import EmployeesAppPage from './apps/employees/EmployeesAppPage'
 import WorkgroupsAppPage from './apps/workgroups/WorkgroupsAppPage'
 import UserGroupsAppPage from './apps/user-groups/UserGroupsAppPage'
@@ -32,6 +35,7 @@ import TranslationsAppPage from './apps/translations/TranslationsAppPage'
 import AppParametersAppPage from './apps/app-parameters/AppParametersAppPage'
 import NotificationEmailRulesAppPage from './apps/notification-email-rules/NotificationEmailRulesAppPage'
 import { useKiraAssistant } from './layout/KiraAssistantProvider'
+import { useAtheneAssistant } from './layout/AtheneAssistantProvider'
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
   if (!getToken()) {
@@ -55,6 +59,17 @@ function KiraLegacyPath() {
     openKira()
     navigate('/', { replace: true })
   }, [openKira, navigate])
+  return null
+}
+
+/** `/athene` URL: open Athene modal and return to home. */
+function AtheneLegacyPath() {
+  const { openAthene } = useAtheneAssistant()
+  const navigate = useNavigate()
+  useLayoutEffect(() => {
+    openAthene()
+    navigate('/', { replace: true })
+  }, [openAthene, navigate])
   return null
 }
 
@@ -166,6 +181,30 @@ export default function App() {
         element={
           <ProtectedRoute>
             <CategoriesAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/pcr-problems"
+        element={
+          <ProtectedRoute>
+            <PcrProblemsAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/pcr-causes"
+        element={
+          <ProtectedRoute>
+            <PcrCausesAppPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/pcr-remedies"
+        element={
+          <ProtectedRoute>
+            <PcrRemediesAppPage />
           </ProtectedRoute>
         }
       />
@@ -296,6 +335,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <KiraLegacyPath />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/athene"
+        element={
+          <ProtectedRoute>
+            <AtheneLegacyPath />
           </ProtectedRoute>
         }
       />

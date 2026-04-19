@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
 import { Button } from 'primereact/button'
 import { Calendar } from 'primereact/calendar'
+import { Checkbox } from 'primereact/checkbox'
 import { Column } from 'primereact/column'
 import { DataTable } from 'primereact/datatable'
 import { AppCrudDialog } from '../../components/app-crud-dialog'
@@ -141,8 +142,22 @@ export function WorkOrderFormDialog({
   const [fbExtraHours, setFbExtraHours] = useState<Record<string, number | null>>(
     {},
   )
-  const [fbTargetStatus, setFbTargetStatus] = useState<'' | 'on_hold' | 'done'>('')
+  const [fbTargetStatus, setFbTargetStatus] = useState<'' | 'on_hold'>('')
   const [fbHoldReason, setFbHoldReason] = useState('')
+  const [fbMarkDone, setFbMarkDone] = useState(false)
+  const [fbCaptureDate, setFbCaptureDate] = useState<Date | null>(null)
+  const [fbProblemId, setFbProblemId] = useState<string | null>(null)
+  const [fbCauseId, setFbCauseId] = useState<string | null>(null)
+  const [fbRemedyId, setFbRemedyId] = useState<string | null>(null)
+  const [fbPcrProblems, setFbPcrProblems] = useState<
+    { id: string; key: string; name: string }[]
+  >([])
+  const [fbPcrCauses, setFbPcrCauses] = useState<
+    { id: string; key: string; name: string; problem_id: string }[]
+  >([])
+  const [fbPcrRemedies, setFbPcrRemedies] = useState<
+    { id: string; key: string; name: string; cause_id: string }[]
+  >([])
   const [fbSaving, setFbSaving] = useState(false)
   const [feedbackPoolAvailable, setFeedbackPoolAvailable] = useState<
     WorkOrderEmployeePoolItemDto[]
@@ -321,6 +336,11 @@ export function WorkOrderFormDialog({
     setFbExtraHours({})
     setFbTargetStatus('')
     setFbHoldReason('')
+    setFbMarkDone(false)
+    setFbCaptureDate(new Date())
+    setFbProblemId(null)
+    setFbCauseId(null)
+    setFbRemedyId(null)
   }, [])
 
   const resetFormState = useCallback(() => {
@@ -833,10 +853,96 @@ export function WorkOrderFormDialog({
   }, [dialogOpen, dialogTab, editingId, feedbackTabIdx, loadWoTransactions])
 
   useEffect(() => {
-    if (fbTargetStatus === 'done' && feedbackDoneBlockedByTrr) {
-      setFbTargetStatus('')
+    if (!dialogOpen || feedbackTabIdx < 0) return
+    if (dialogTab !== feedbackTabIdx) return
+    const isBd = detailWorkOrder?.work_type_key === 'BD'
+    if (!isBd) return
+    if (fbPcrProblems.length > 0) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await apiJson<{
+          problems: { id: string; key: string; name: string }[]
+        }>('/api/pcr-problems')
+        if (!cancelled) setFbPcrProblems(data.problems ?? [])
+      } catch {
+        if (!cancelled) setFbPcrProblems([])
+      }
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [fbTargetStatus, feedbackDoneBlockedByTrr])
+  }, [
+    dialogOpen,
+    dialogTab,
+    feedbackTabIdx,
+    detailWorkOrder?.work_type_key,
+    fbPcrProblems.length,
+  ])
+
+  useEffect(() => {
+    if (!fbProblemId) {
+      setFbPcrCauses([])
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await apiJson<{
+          causes: {
+            id: string
+            key: string
+            name: string
+            problem_id: string
+          }[]
+        }>(`/api/pcr-causes?problem_id=${encodeURIComponent(fbProblemId)}`)
+        if (!cancelled) setFbPcrCauses(data.causes ?? [])
+      } catch {
+        if (!cancelled) setFbPcrCauses([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [fbProblemId])
+
+  useEffect(() => {
+    if (!fbCauseId) {
+      setFbPcrRemedies([])
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await apiJson<{
+          remedies: {
+            id: string
+            key: string
+            name: string
+            cause_id: string
+          }[]
+        }>(`/api/pcr-remedies?cause_id=${encodeURIComponent(fbCauseId)}`)
+        if (!cancelled) setFbPcrRemedies(data.remedies ?? [])
+      } catch {
+        if (!cancelled) setFbPcrRemedies([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [fbCauseId])
+
+  useEffect(() => {
+    if (!dialogOpen || feedbackTabIdx < 0) return
+    if (dialogTab !== feedbackTabIdx) return
+    setFbCaptureDate(new Date())
+  }, [dialogOpen, dialogTab, feedbackTabIdx, editingId])
+
+  useEffect(() => {
+    if (fbMarkDone && feedbackDoneBlockedByTrr) {
+      setFbMarkDone(false)
+    }
+  }, [fbMarkDone, feedbackDoneBlockedByTrr])
 
   async function submitFeedbackForm(rowOverride?: WorkOrder | null) {
     if (!editingId) return
@@ -882,7 +988,7 @@ export function WorkOrderFormDialog({
       showError(t('wo.hold_reason_required'))
       return
     }
-    if (fbTargetStatus === 'done' && feedbackDoneBlockedByTrr) {
+    if (fbMarkDone && feedbackDoneBlockedByTrr) {
       showError(t('wo.feedback_done_requires_time'))
       return
     }
@@ -892,8 +998,14 @@ export function WorkOrderFormDialog({
       if (fbTargetStatus === 'on_hold') {
         body.target_status = 'on_hold'
         body.hold_reason = fbHoldReason.trim()
-      } else if (fbTargetStatus === 'done') {
-        body.target_status = 'done'
+      } else if (fbMarkDone) {
+        body.mark_done = true
+      }
+      const isBd = row.work_type_key === 'BD'
+      if (isBd) {
+        if (fbProblemId) body.pcr_problem_id = fbProblemId
+        if (fbCauseId) body.pcr_cause_id = fbCauseId
+        if (fbRemedyId) body.pcr_remedy_id = fbRemedyId
       }
       const data = await apiJson<WorkOrderResponse>(
         `/api/work-orders/${encodeURIComponent(editingId)}/actions/feedback`,
@@ -1248,7 +1360,7 @@ export function WorkOrderFormDialog({
               ) : null}
               {editingId ? (
                 <div
-                  className="col-12 sm:col-4 lg:col-2 flex flex-column gap-2"
+                  className="col-2 flex flex-column gap-2"
                   style={mwFieldStyle('wo_key', generalOrderMap)}
                 >
                   <span className="text-sm font-medium">{t('wo.col_key')}</span>
@@ -1262,13 +1374,14 @@ export function WorkOrderFormDialog({
               <div
                 className={
                   editingId
-                    ? 'col-12 sm:col-8 lg:col-10 flex flex-column gap-2'
+                    ? 'col-10 flex flex-column gap-2'
                     : 'col-12 flex flex-column gap-2'
                 }
                 style={mwFieldStyle('short_text', generalOrderMap)}
               >
                 <label htmlFor="wo-short" className="text-sm font-medium">
                   {t('wo.col_short_text')}
+                  <span className="wo-required-mark" aria-hidden="true">*</span>
                 </label>
                 <InputText
                   id="wo-short"
@@ -1278,6 +1391,8 @@ export function WorkOrderFormDialog({
                   disabled={saving}
                   maxLength={200}
                   autoComplete="off"
+                  required
+                  aria-required="true"
                 />
               </div>
               <div
@@ -1286,6 +1401,7 @@ export function WorkOrderFormDialog({
               >
                 <label htmlFor="wo-asset" className="text-sm font-medium">
                   {t('wo.col_asset')}
+                  <span className="wo-required-mark" aria-hidden="true">*</span>
                 </label>
                 <SelItemField
                   id="wo-asset"
@@ -1328,9 +1444,6 @@ export function WorkOrderFormDialog({
                   className="w-full"
                   disabled
                 />
-                <span className="text-xs text-color-secondary">
-                  {t('wo.cost_center_from_asset')}
-                </span>
               </div>
               {editingId && editingWo && workOrderHasLinkedPlan(editingWo) ? (
                 <div
@@ -1353,6 +1466,7 @@ export function WorkOrderFormDialog({
               >
                 <label htmlFor="wo-type" className="text-sm font-medium">
                   {t('wo.field_wo_type')}
+                  <span className="wo-required-mark" aria-hidden="true">*</span>
                 </label>
                 <Dropdown
                   id="wo-type"
@@ -1397,6 +1511,7 @@ export function WorkOrderFormDialog({
               >
                 <label htmlFor="wo-instruction" className="text-sm font-medium">
                   {t('common.col_instruction')}
+                  <span className="wo-required-mark" aria-hidden="true">*</span>
                 </label>
                 <InputTextarea
                   id="wo-instruction"
@@ -1407,8 +1522,50 @@ export function WorkOrderFormDialog({
                   disabled={saving}
                   maxLength={2000}
                   autoResize
+                  required
+                  aria-required="true"
                 />
               </div>
+              {editingId ? (
+                <>
+                  <div
+                    className="col-12 md:col-6 flex flex-column gap-2"
+                    style={mwFieldStyle('started_employee', generalOrderMap)}
+                  >
+                    <span className="text-sm font-medium">
+                      {t('wo.field_started_employee')}
+                    </span>
+                    <InputText
+                      value={
+                        detailWorkOrder?.started_by_employee_id
+                          ? `${detailWorkOrder.started_by_employee_key ?? ''} ${emDash} ${detailWorkOrder.started_by_employee_name ?? ''}`.trim()
+                          : emDash
+                      }
+                      className="w-full"
+                      disabled
+                      readOnly
+                    />
+                  </div>
+                  <div
+                    className="col-12 md:col-6 flex flex-column gap-2"
+                    style={mwFieldStyle('continued_employee', generalOrderMap)}
+                  >
+                    <span className="text-sm font-medium">
+                      {t('wo.field_continued_employee')}
+                    </span>
+                    <InputText
+                      value={
+                        detailWorkOrder?.continued_by_employee_id
+                          ? `${detailWorkOrder.continued_by_employee_key ?? ''} ${emDash} ${detailWorkOrder.continued_by_employee_name ?? ''}`.trim()
+                          : emDash
+                      }
+                      className="w-full"
+                      disabled
+                      readOnly
+                    />
+                  </div>
+                </>
+              ) : null}
             </div>
           </TabPanel>
           <TabPanel header={t('wo.tab_instructions')}>
@@ -1500,6 +1657,7 @@ export function WorkOrderFormDialog({
                     className="text-sm font-medium"
                   >
                     {t('wo.field_workgroup')}
+                    <span className="wo-required-mark" aria-hidden="true">*</span>
                   </label>
                   <Dropdown
                     id="wo-workgroup"
@@ -1548,6 +1706,7 @@ export function WorkOrderFormDialog({
                     className="text-sm font-medium"
                   >
                     {t('wo.field_planned_duration_hours')}
+                    <span className="wo-required-mark" aria-hidden="true">*</span>
                   </label>
                   <InputNumber
                     id="wo-planned-duration"
@@ -1749,15 +1908,10 @@ export function WorkOrderFormDialog({
                               value: 'on_hold',
                               label: t(WO_STATUS_I18N_KEYS.on_hold),
                             },
-                            {
-                              value: 'done',
-                              label: t(WO_STATUS_I18N_KEYS.done),
-                              disabled: feedbackDoneBlockedByTrr,
-                            },
                           ]}
                           onChange={(e) =>
                             setFbTargetStatus(
-                              (e.value as '' | 'on_hold' | 'done') ?? '',
+                              (e.value as '' | 'on_hold') ?? '',
                             )
                           }
                           optionLabel="label"
@@ -1765,6 +1919,33 @@ export function WorkOrderFormDialog({
                           className="w-full"
                           disabled={fbSaving}
                         />
+                      </div>
+                      <div
+                        className="col-12 md:col-6 flex align-items-end gap-2"
+                        style={mwFieldStyle(
+                          'feedback_done_checkbox',
+                          feedbackOrderMap,
+                        )}
+                      >
+                        <div className="flex align-items-center gap-2 pb-2">
+                          <Checkbox
+                            inputId="wo-feedback-mark-done"
+                            checked={fbMarkDone}
+                            onChange={(e) => setFbMarkDone(!!e.checked)}
+                            disabled={fbSaving || feedbackDoneBlockedByTrr}
+                            tooltip={
+                              feedbackDoneBlockedByTrr
+                                ? t('wo.feedback_done_requires_time')
+                                : undefined
+                            }
+                          />
+                          <label
+                            htmlFor="wo-feedback-mark-done"
+                            className="text-sm font-medium"
+                          >
+                            {t('wo.feedback_done_checkbox')}
+                          </label>
+                        </div>
                       </div>
                       {fbTargetStatus === 'on_hold' ? (
                         <div
@@ -1786,6 +1967,180 @@ export function WorkOrderFormDialog({
                           />
                         </div>
                       ) : null}
+                      <div
+                        className="col-12 md:col-4 flex flex-column gap-2"
+                        style={mwFieldStyle(
+                          'feedback_capture_date',
+                          feedbackOrderMap,
+                        )}
+                      >
+                        <label className="text-sm font-medium">
+                          {t('wo.feedback_capture_date')}
+                        </label>
+                        <InputText
+                          value={
+                            fbCaptureDate
+                              ? formatDateTime(fbCaptureDate.toISOString())
+                              : ''
+                          }
+                          readOnly
+                          disabled
+                          className="w-full"
+                        />
+                      </div>
+                      <div
+                        className="col-12 md:col-4 flex flex-column gap-2"
+                        style={mwFieldStyle(
+                          'feedback_done_at',
+                          feedbackOrderMap,
+                        )}
+                      >
+                        <label className="text-sm font-medium">
+                          {t('wo.feedback_done_at')}
+                        </label>
+                        <InputText
+                          value={
+                            detailWorkOrder?.done_at
+                              ? formatDateTime(detailWorkOrder.done_at)
+                              : ''
+                          }
+                          readOnly
+                          disabled
+                          className="w-full"
+                        />
+                      </div>
+                      <div
+                        className="col-12 md:col-4 flex flex-column gap-2"
+                        style={mwFieldStyle(
+                          'feedback_done_by',
+                          feedbackOrderMap,
+                        )}
+                      >
+                        <label className="text-sm font-medium">
+                          {t('wo.feedback_done_by')}
+                        </label>
+                        <InputText
+                          value={
+                            detailWorkOrder?.done_by_employee_key
+                              ? `${detailWorkOrder.done_by_employee_key} ${emDash} ${detailWorkOrder.done_by_employee_name ?? ''}`.trim()
+                              : ''
+                          }
+                          readOnly
+                          disabled
+                          className="w-full"
+                        />
+                      </div>
+                      {(() => {
+                        const isBd =
+                          editingRowForFeedback?.work_type_key === 'BD'
+                        const pcrTooltip = isBd
+                          ? undefined
+                          : t('wo.feedback_pcr_bd_only')
+                        return (
+                          <>
+                            <div
+                              className="col-12 md:col-4 flex flex-column gap-2"
+                              style={mwFieldStyle(
+                                'feedback_problem',
+                                feedbackOrderMap,
+                              )}
+                            >
+                              <label className="text-sm font-medium">
+                                {t('wo.feedback_problem')}
+                              </label>
+                              <Dropdown
+                                value={fbProblemId}
+                                options={fbPcrProblems.map((p) => ({
+                                  value: p.id,
+                                  label: `${p.key} ${emDash} ${p.name}`,
+                                }))}
+                                onChange={(e) => {
+                                  const v =
+                                    typeof e.value === 'string'
+                                      ? e.value
+                                      : null
+                                  setFbProblemId(v)
+                                  setFbCauseId(null)
+                                  setFbRemedyId(null)
+                                }}
+                                optionLabel="label"
+                                optionValue="value"
+                                filter
+                                showClear
+                                placeholder={t('wo.feedback_problem')}
+                                className="w-full"
+                                disabled={!isBd || fbSaving}
+                                tooltip={pcrTooltip}
+                              />
+                            </div>
+                            <div
+                              className="col-12 md:col-4 flex flex-column gap-2"
+                              style={mwFieldStyle(
+                                'feedback_cause',
+                                feedbackOrderMap,
+                              )}
+                            >
+                              <label className="text-sm font-medium">
+                                {t('wo.feedback_cause')}
+                              </label>
+                              <Dropdown
+                                value={fbCauseId}
+                                options={fbPcrCauses.map((c) => ({
+                                  value: c.id,
+                                  label: `${c.key} ${emDash} ${c.name}`,
+                                }))}
+                                onChange={(e) => {
+                                  const v =
+                                    typeof e.value === 'string'
+                                      ? e.value
+                                      : null
+                                  setFbCauseId(v)
+                                  setFbRemedyId(null)
+                                }}
+                                optionLabel="label"
+                                optionValue="value"
+                                filter
+                                showClear
+                                placeholder={t('wo.feedback_cause')}
+                                className="w-full"
+                                disabled={!isBd || !fbProblemId || fbSaving}
+                              />
+                            </div>
+                            <div
+                              className="col-12 md:col-4 flex flex-column gap-2"
+                              style={mwFieldStyle(
+                                'feedback_remedy',
+                                feedbackOrderMap,
+                              )}
+                            >
+                              <label className="text-sm font-medium">
+                                {t('wo.feedback_remedy')}
+                              </label>
+                              <Dropdown
+                                value={fbRemedyId}
+                                options={fbPcrRemedies.map((r) => ({
+                                  value: r.id,
+                                  label: `${r.key} ${emDash} ${r.name}`,
+                                }))}
+                                onChange={(e) =>
+                                  setFbRemedyId(
+                                    typeof e.value === 'string'
+                                      ? e.value
+                                      : null,
+                                  )
+                                }
+                                optionLabel="label"
+                                optionValue="value"
+                                filter
+                                showClear
+                                placeholder={t('wo.feedback_remedy')}
+                                className="w-full"
+                                disabled={!isBd || !fbCauseId || fbSaving}
+                              />
+                            </div>
+                          </>
+                        )
+                      })()}
                     <div
                       className="col-12"
                       style={mwFieldStyle('feedback_submit', feedbackOrderMap)}

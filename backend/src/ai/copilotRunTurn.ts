@@ -234,6 +234,7 @@ export async function runCopilotTurn(args: {
     confirmables,
     clientActions,
     isAdmin: args.isAdmin,
+    actorEmployeeId: userEmployee?.id ?? null,
   }
 
   const apiMessages: ApiMessage[] = [

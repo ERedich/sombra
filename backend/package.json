@@ -14,6 +14,7 @@
     "seed:assets-4000": "tsx scripts/seed-4000-assets.ts",
     "seed:dummy-org": "tsx scripts/seed-dummy-org-data.ts",
     "db:copy": "node scripts/pg-copy.mjs",
+    "ai:backfill-wo-embeddings": "tsx scripts/backfill-wo-embeddings.ts",
     "parity:interval": "tsx scripts/compare-interval-sql-vs-ts.ts",
     "test": "tsx --test src/**/*.test.ts"
   },

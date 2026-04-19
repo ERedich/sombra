@@ -7,6 +7,11 @@ import {
 } from '../ai/openAiErrors.js'
 import { runCopilotTurn } from '../ai/copilotRunTurn.js'
 import { runAiSuggest } from '../ai/suggestOrchestrator.js'
+import {
+  searchSimilarByQuery,
+  searchSimilarByWorkOrderId,
+} from '../ai/embeddings/similarWorkOrders.js'
+import { runAtheneQuery } from '../ai/athene/atheneRunQuery.js'
 import type {
   AiRefItem,
   AiSuggestContext,
@@ -324,6 +329,153 @@ router.post('/transcribe', upload.single('audio'), async (req, res) => {
     )
     res.status(statusCode).json({
       error: e instanceof Error ? e.message : 'Transcription failed.',
+    })
+  }
+})
+
+router.post('/similar-work-orders', async (req, res) => {
+  const auth = req.authUser!
+  if (!checkAiRate(auth.id)) {
+    res.status(429).json({ error: 'Too many AI requests. Try again shortly.' })
+    return
+  }
+
+  const siteId = await aiWorkingSiteIdOr403(res, auth.id)
+  if (!siteId) return
+
+  if (!env.OPENAI_API_KEY?.trim()) {
+    res.status(503).json({ error: 'AI provider not configured (set OPENAI_API_KEY).' })
+    return
+  }
+
+  const body = (req.body ?? {}) as {
+    wo_id?: unknown
+    query?: unknown
+    limit?: unknown
+  }
+
+  const limitRaw = typeof body.limit === 'number' ? body.limit : 10
+  const limit = Math.min(20, Math.max(1, Math.floor(limitRaw))) || 10
+
+  const woIdRaw = typeof body.wo_id === 'string' ? body.wo_id.trim() : ''
+  const queryRaw = typeof body.query === 'string' ? body.query.trim() : ''
+
+  if (woIdRaw && !UUID_RE.test(woIdRaw)) {
+    res.status(400).json({ error: 'wo_id must be a valid UUID.' })
+    return
+  }
+  if (!woIdRaw && (!queryRaw || queryRaw.length > 2000)) {
+    res.status(400).json({
+      error: 'Provide wo_id (uuid) or query (1-2000 chars).',
+    })
+    return
+  }
+
+  const t0 = Date.now()
+  try {
+    const results = woIdRaw
+      ? await searchSimilarByWorkOrderId(pool, {
+          siteId,
+          workOrderId: woIdRaw,
+          limit,
+        })
+      : await searchSimilarByQuery(pool, {
+          siteId,
+          query: queryRaw,
+          limit,
+        })
+
+    req.log?.info?.(
+      {
+        aiSimilarWoMs: Date.now() - t0,
+        userId: auth.id,
+        mode: woIdRaw ? 'wo_id' : 'query',
+        resultCount: results.length,
+      },
+      'ai_similar_wo_ok',
+    )
+    res.json({ results })
+  } catch (e) {
+    const statusCode = e instanceof OpenAiRequestError ? e.statusCode : 502
+    req.log?.warn?.(
+      {
+        err: e instanceof Error ? e.message : String(e),
+        userId: auth.id,
+      },
+      'ai_similar_wo_fail',
+    )
+    res.status(statusCode).json({
+      error:
+        e instanceof Error ? e.message : 'Similar work orders lookup failed.',
+    })
+  }
+})
+
+/**
+ * Athene RAG endpoint: embed the query, pull candidates from pgvector, hand
+ * them to GPT which returns a prose answer + filtered picks with reasons.
+ *
+ * Unlike the raw `/similar-work-orders` endpoint, this route interprets the
+ * user's intent (e.g. "top 5 breakdowns") and can exclude irrelevant hits.
+ */
+router.post('/athene/ask', async (req, res) => {
+  const auth = req.authUser!
+  if (!checkAiRate(auth.id)) {
+    res.status(429).json({ error: 'Too many AI requests. Try again shortly.' })
+    return
+  }
+
+  const siteId = await aiWorkingSiteIdOr403(res, auth.id)
+  if (!siteId) return
+
+  if (!env.OPENAI_API_KEY?.trim()) {
+    res
+      .status(503)
+      .json({ error: 'AI provider not configured (set OPENAI_API_KEY).' })
+    return
+  }
+
+  const body = (req.body ?? {}) as { query?: unknown }
+  const queryRaw = typeof body.query === 'string' ? body.query.trim() : ''
+  if (!queryRaw || queryRaw.length > 2000) {
+    res.status(400).json({ error: 'query is required (1-2000 chars).' })
+    return
+  }
+
+  const t0 = Date.now()
+  try {
+    const result = await runAtheneQuery({
+      pool,
+      siteId,
+      query: queryRaw,
+    })
+    req.log?.info?.(
+      {
+        aiAtheneMs: Date.now() - t0,
+        userId: auth.id,
+        hitCount: result.hits.length,
+        siteId: result.diagnostics.siteId,
+        embeddingsInSite: result.diagnostics.embeddingsInSite,
+        candidateCount: result.diagnostics.candidateCount,
+        hydratedCount: result.diagnostics.hydratedCount,
+      },
+      'ai_athene_ok',
+    )
+    // Diagnostics are server-only; strip before shipping to client.
+    const { diagnostics: _d, ...payload } = result
+    void _d
+    res.json(payload)
+  } catch (e) {
+    const statusCode = e instanceof OpenAiRequestError ? e.statusCode : 502
+    req.log?.warn?.(
+      {
+        err: e instanceof Error ? e.message : String(e),
+        userId: auth.id,
+      },
+      'ai_athene_fail',
+    )
+    res.status(statusCode).json({
+      error: e instanceof Error ? e.message : 'Athene query failed.',
     })
   }
 })

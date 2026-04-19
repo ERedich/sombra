@@ -23,6 +23,7 @@ import { formatDateTime } from '../utils/dateTime'
 import { IdleSessionLogoutController } from './IdleSessionLogoutController'
 import { useAppParameters } from './AppParametersProvider'
 import { useKiraAssistant } from './KiraAssistantProvider'
+import { useAtheneAssistant } from './AtheneAssistantProvider'
 
 const THEME_LINK_ID = 'theme-link'
 const THEME_LIGHT = 'lara-light-amber'
@@ -115,7 +116,26 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { openKira, kiraCopilotSending, kiraUnreadReplyDot } = useKiraAssistant()
+  const { openAthene, atheneSending, atheneUnreadReplyDot } =
+    useAtheneAssistant()
   const showKiraReadyDot = kiraUnreadReplyDot && !kiraCopilotSending
+  const showAtheneReadyDot = atheneUnreadReplyDot && !atheneSending
+
+  /** Map a `shellAction`-flagged nav item to its open handler + live state. */
+  function getShellActionProps(action: 'kira' | 'athene') {
+    if (action === 'athene') {
+      return {
+        open: openAthene,
+        sending: atheneSending,
+        showDot: showAtheneReadyDot,
+      }
+    }
+    return {
+      open: openKira,
+      sending: kiraCopilotSending,
+      showDot: showKiraReadyDot,
+    }
+  }
   const { shiftLoginRecognition } = useAppParameters()
   const location = useLocation()
   const { changeTheme } = useContext(PrimeReactContext)
@@ -391,40 +411,44 @@ export function AppShell({ children }: { children: ReactNode }) {
                 {t('shell.nav_section_empty')}
               </span>
             ) : (
-              flyoutSection.children.map((app) =>
-                app.shellAction === 'kira' ? (
-                  <button
-                    key={app.path}
-                    type="button"
-                    disabled={kiraCopilotSending}
-                    className={[
-                      'app-sidebar-link',
-                      'flex align-items-center gap-2 px-2 py-2 border-round text-sm no-underline transition-colors transition-duration-150',
-                      'w-full text-left cursor-pointer border-none bg-transparent',
-                      'text-color-secondary',
-                    ].join(' ')}
-                    onClick={() => {
-                      openKira()
-                      closeFlyout()
-                    }}
-                  >
-                    <span className="relative inline-flex align-items-center justify-content-center flex-shrink-0">
-                      <i
-                        className={
-                          kiraCopilotSending ? 'pi pi-spin pi-spinner' : app.icon
-                        }
-                        aria-hidden
-                      />
-                      {showKiraReadyDot ? (
-                        <span
-                          className="app-shell-kira-ready-dot app-shell-kira-ready-dot--navicon"
+              flyoutSection.children.map((app) => {
+                if (app.shellAction) {
+                  const sa = getShellActionProps(app.shellAction)
+                  return (
+                    <button
+                      key={app.path}
+                      type="button"
+                      disabled={sa.sending}
+                      className={[
+                        'app-sidebar-link',
+                        'flex align-items-center gap-2 px-2 py-2 border-round text-sm no-underline transition-colors transition-duration-150',
+                        'w-full text-left cursor-pointer border-none bg-transparent',
+                        'text-color-secondary',
+                      ].join(' ')}
+                      onClick={() => {
+                        sa.open()
+                        closeFlyout()
+                      }}
+                    >
+                      <span className="relative inline-flex align-items-center justify-content-center flex-shrink-0">
+                        <i
+                          className={
+                            sa.sending ? 'pi pi-spin pi-spinner' : app.icon
+                          }
                           aria-hidden
                         />
-                      ) : null}
-                    </span>
-                    <span>{t(app.labelKey)}</span>
-                  </button>
-                ) : (
+                        {sa.showDot ? (
+                          <span
+                            className="app-shell-kira-ready-dot app-shell-kira-ready-dot--navicon"
+                            aria-hidden
+                          />
+                        ) : null}
+                      </span>
+                      <span>{t(app.labelKey)}</span>
+                    </button>
+                  )
+                }
+                return (
                   <NavLink
                     key={app.path}
                     to={app.path}
@@ -442,8 +466,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                     <i className={app.icon} aria-hidden />
                     <span>{t(app.labelKey)}</span>
                   </NavLink>
-                ),
-              )
+                )
+              })
             )}
           </div>
         ) : null}
@@ -543,40 +567,44 @@ export function AppShell({ children }: { children: ReactNode }) {
                             {t('shell.nav_section_empty')}
                           </span>
                         ) : (
-                          section.children.map((app) =>
-                            app.shellAction === 'kira' ? (
-                              <button
-                                key={app.path}
-                                type="button"
-                                tabIndex={isOpen ? undefined : -1}
-                                disabled={kiraCopilotSending}
-                                className={[
-                                  'app-sidebar-link',
-                                  'flex align-items-center gap-2 px-2 py-1 border-round text-sm no-underline transition-colors transition-duration-150',
-                                  'w-full text-left cursor-pointer border-none bg-transparent',
-                                  'text-color-secondary',
-                                ].join(' ')}
-                                onClick={() => openKira()}
-                              >
-                                <span className="relative inline-flex align-items-center justify-content-center flex-shrink-0">
-                                  <i
-                                    className={
-                                      kiraCopilotSending
-                                        ? 'pi pi-spin pi-spinner'
-                                        : app.icon
-                                    }
-                                    aria-hidden
-                                  />
-                                  {showKiraReadyDot ? (
-                                    <span
-                                      className="app-shell-kira-ready-dot app-shell-kira-ready-dot--navicon"
+                          section.children.map((app) => {
+                            if (app.shellAction) {
+                              const sa = getShellActionProps(app.shellAction)
+                              return (
+                                <button
+                                  key={app.path}
+                                  type="button"
+                                  tabIndex={isOpen ? undefined : -1}
+                                  disabled={sa.sending}
+                                  className={[
+                                    'app-sidebar-link',
+                                    'flex align-items-center gap-2 px-2 py-1 border-round text-sm no-underline transition-colors transition-duration-150',
+                                    'w-full text-left cursor-pointer border-none bg-transparent',
+                                    'text-color-secondary',
+                                  ].join(' ')}
+                                  onClick={() => sa.open()}
+                                >
+                                  <span className="relative inline-flex align-items-center justify-content-center flex-shrink-0">
+                                    <i
+                                      className={
+                                        sa.sending
+                                          ? 'pi pi-spin pi-spinner'
+                                          : app.icon
+                                      }
                                       aria-hidden
                                     />
-                                  ) : null}
-                                </span>
-                                <span>{t(app.labelKey)}</span>
-                              </button>
-                            ) : (
+                                    {sa.showDot ? (
+                                      <span
+                                        className="app-shell-kira-ready-dot app-shell-kira-ready-dot--navicon"
+                                        aria-hidden
+                                      />
+                                    ) : null}
+                                  </span>
+                                  <span>{t(app.labelKey)}</span>
+                                </button>
+                              )
+                            }
+                            return (
                               <NavLink
                                 key={app.path}
                                 to={app.path}
@@ -594,8 +622,8 @@ export function AppShell({ children }: { children: ReactNode }) {
                                 <i className={app.icon} aria-hidden />
                                 <span>{t(app.labelKey)}</span>
                               </NavLink>
-                            ),
-                          )
+                            )
+                          })
                         )}
                       </div>
                     </div>
@@ -663,6 +691,29 @@ export function AppShell({ children }: { children: ReactNode }) {
                   aria-busy={kiraCopilotSending}
                 />
                 {showKiraReadyDot ? (
+                  <span className="app-shell-kira-ready-dot" aria-hidden />
+                ) : null}
+              </span>
+              <span
+                className="relative inline-flex"
+                title={
+                  showAtheneReadyDot
+                    ? t('athene.response_ready_detail')
+                    : undefined
+                }
+              >
+                <Button
+                  type="button"
+                  icon="pi pi-compass"
+                  rounded
+                  text
+                  severity="secondary"
+                  loading={atheneSending}
+                  onClick={() => openAthene()}
+                  aria-label={t('shell.athene_aria')}
+                  aria-busy={atheneSending}
+                />
+                {showAtheneReadyDot ? (
                   <span className="app-shell-kira-ready-dot" aria-hidden />
                 ) : null}
               </span>

@@ -60,6 +60,23 @@ export const env = {
     process.env.OPENAI_SUGGEST_MODEL?.trim() || 'gpt-4o-mini',
   /** Model for copilot chat + tools (defaults to OPENAI_SUGGEST_MODEL). */
   OPENAI_COPILOT_MODEL: process.env.OPENAI_COPILOT_MODEL?.trim() || '',
+  /** Embedding model for /api/ai/similar-work-orders and related vector features. */
+  OPENAI_EMBEDDING_MODEL:
+    process.env.OPENAI_EMBEDDING_MODEL?.trim() || 'text-embedding-3-small',
+  /** Max inputs per OpenAI embeddings request during backfill / bulk jobs. */
+  AI_EMBEDDING_BATCH_SIZE: Math.min(
+    256,
+    Math.max(1, Number(process.env.AI_EMBEDDING_BATCH_SIZE ?? '64') || 64),
+  ),
+  /**
+   * pgvector IVFFlat probes used for Athene vector search. Default 10 works
+   * well for ~4k-100k rows at lists=100; raise if recall seems low, lower for
+   * faster search on very large tables. Must be >= 1.
+   */
+  AI_IVFFLAT_PROBES: Math.min(
+    200,
+    Math.max(1, Number(process.env.AI_IVFFLAT_PROBES ?? '10') || 10),
+  ),
   /** Max reference rows per list sent to the model (client may send more; server truncates). */
   AI_SUGGEST_MAX_CONTEXT_ITEMS: Math.min(
     2000,

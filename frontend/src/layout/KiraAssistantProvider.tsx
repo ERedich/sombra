@@ -85,6 +85,61 @@ export type KiraConfirmable =
         assignment_date: string
       }
     }
+  | {
+      id: string
+      type: 'start_work_order'
+      work_order_id: string
+      wo_key: number
+      short_text: string
+      payload: Record<string, never>
+      summary: {
+        current_status: string
+        next_status: 'started' | 'continued'
+        workgroup_id: string | null
+      }
+    }
+  | {
+      id: string
+      type: 'hold_work_order'
+      work_order_id: string
+      wo_key: number
+      short_text: string
+      payload: {
+        reason: string
+      }
+      summary: {
+        current_status: string
+        reason: string
+      }
+    }
+  | {
+      id: string
+      type: 'create_wo_feedback'
+      work_order_id: string
+      wo_key: number
+      short_text: string
+      payload: {
+        entries: Array<{
+          employee_id: string
+          hours: number
+          feedback_text: string
+        }>
+        target_status: 'on_hold' | 'done' | null
+        hold_reason: string | null
+      }
+      summary: {
+        entries: Array<{
+          employee_id: string
+          employee_key: string
+          employee_name: string
+          hours: number
+          feedback_text: string
+        }>
+        target_status: 'on_hold' | 'done' | null
+        hold_reason: string | null
+        total_hours: number
+      }
+    }
 
 type CopilotTurnResult = {
   message: { role: 'assistant'; content: string }

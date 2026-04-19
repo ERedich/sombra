@@ -15,6 +15,9 @@ import workTypesRouter from './routes/work-types.js'
 import shiftsRouter from './routes/shifts.js'
 import shiftAssignmentsRouter from './routes/shift-assignments.js'
 import categoriesRouter from './routes/categories.js'
+import pcrProblemsRouter from './routes/pcr-problems.js'
+import pcrCausesRouter from './routes/pcr-causes.js'
+import pcrRemediesRouter from './routes/pcr-remedies.js'
 import employeesRouter from './routes/employees.js'
 import workgroupsRouter from './routes/workgroups.js'
 import userGroupsRouter from './routes/user-groups.js'
@@ -85,6 +88,9 @@ app.use('/api/work-types', workTypesRouter)
 app.use('/api/shifts', shiftsRouter)
 app.use('/api/shift-assignments', shiftAssignmentsRouter)
 app.use('/api/categories', categoriesRouter)
+app.use('/api/pcr-problems', pcrProblemsRouter)
+app.use('/api/pcr-causes', pcrCausesRouter)
+app.use('/api/pcr-remedies', pcrRemediesRouter)
 app.use('/api/employees', employeesRouter)
 app.use('/api/workgroups', workgroupsRouter)
 app.use('/api/user-groups', userGroupsRouter)

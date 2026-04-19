@@ -10,3 +10,4 @@ mobile/.expo/
 Thumbs.db
 coverage/
 *.tsbuildinfo
+backend/dumps/

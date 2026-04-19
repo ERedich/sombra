@@ -23,6 +23,9 @@ import {
   postAiTranscribe,
   putWorkOrderCapacityAllocation,
   createShiftAssignment,
+  postWorkOrderFeedback,
+  postWorkOrderStart,
+  postWorkOrderHold,
   type CopilotTurnResult,
 } from '@/lib/cmmsApi';
 import {
@@ -53,8 +56,14 @@ function strings(de: boolean) {
     confirmAsset: de ? 'Objekt anlegen' : 'Create asset',
     confirmCap: de ? 'Kapazität zuweisen' : 'Apply capacity allocation',
     confirmShift: de ? 'Schicht zuweisen' : 'Assign shift',
+    confirmFeedback: de ? 'Rückmeldung buchen' : 'Report feedback',
+    confirmWoStart: de ? 'Auftrag starten' : 'Start work order',
+    confirmWoHold: de ? 'Auf Wartung setzen' : 'Put on hold',
     capSaved: de ? 'Kapazitätszuweisung gespeichert.' : 'Capacity allocation updated.',
     shiftSaved: de ? 'Schichtzuweisung gespeichert.' : 'Shift assignment saved.',
+    feedbackSaved: de ? 'Rückmeldung gespeichert.' : 'Feedback saved.',
+    woStartSaved: de ? 'Auftrag gestartet.' : 'Work order started.',
+    woHoldSaved: de ? 'Auftrag auf Wartung gesetzt.' : 'Work order put on hold.',
     wpSaved: de ? 'Arbeitsplan angelegt.' : 'Work plan created.',
     cancel: de ? 'Verwerfen' : 'Discard',
     busy: de ? 'Bitte warten…' : 'Please wait…',
@@ -279,6 +288,18 @@ export default function CopilotScreen() {
           await createShiftAssignment(item.payload);
           setPending((p) => p.filter((x) => x.id !== item.id));
           Alert.alert('OK', S.shiftSaved);
+        } else if (item.type === 'create_wo_feedback') {
+          await postWorkOrderFeedback(item.work_order_id, item.payload);
+          setPending((p) => p.filter((x) => x.id !== item.id));
+          Alert.alert('OK', S.feedbackSaved);
+        } else if (item.type === 'start_work_order') {
+          await postWorkOrderStart(item.work_order_id);
+          setPending((p) => p.filter((x) => x.id !== item.id));
+          Alert.alert('OK', S.woStartSaved);
+        } else if (item.type === 'hold_work_order') {
+          await postWorkOrderHold(item.work_order_id, item.payload.reason);
+          setPending((p) => p.filter((x) => x.id !== item.id));
+          Alert.alert('OK', S.woHoldSaved);
         } else {
           await createAsset(item.payload);
           setPending((p) => p.filter((x) => x.id !== item.id));
@@ -337,7 +358,10 @@ export default function CopilotScreen() {
           }
           const pl =
             row.item.type === 'capacity_allocation' ||
-            row.item.type === 'create_shift_assignment'
+            row.item.type === 'create_shift_assignment' ||
+            row.item.type === 'create_wo_feedback' ||
+            row.item.type === 'start_work_order' ||
+            row.item.type === 'hold_work_order'
               ? JSON.stringify(row.item, null, 2)
               : JSON.stringify(row.item.payload, null, 2);
           return (
@@ -351,7 +375,13 @@ export default function CopilotScreen() {
                       ? S.confirmCap
                       : row.item.type === 'create_shift_assignment'
                         ? S.confirmShift
-                        : S.confirmAsset}
+                        : row.item.type === 'create_wo_feedback'
+                          ? S.confirmFeedback
+                          : row.item.type === 'start_work_order'
+                            ? S.confirmWoStart
+                            : row.item.type === 'hold_work_order'
+                              ? S.confirmWoHold
+                              : S.confirmAsset}
               </Text>
               <Text selectable style={styles.cardBody}>
                 {pl}
@@ -375,7 +405,13 @@ export default function CopilotScreen() {
                           ? S.confirmCap
                           : row.item.type === 'create_shift_assignment'
                             ? S.confirmShift
-                            : S.confirmAsset}
+                            : row.item.type === 'create_wo_feedback'
+                              ? S.confirmFeedback
+                              : row.item.type === 'start_work_order'
+                                ? S.confirmWoStart
+                                : row.item.type === 'hold_work_order'
+                                  ? S.confirmWoHold
+                                  : S.confirmAsset}
                   </Text>
                 </RNPressable>
               </RNView>

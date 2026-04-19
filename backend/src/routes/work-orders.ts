@@ -22,7 +22,10 @@ import {
   writeAudit,
 } from '../audit/auditLog.js'
 import { planEndFromStartAndDurationHours } from '../services/intervalUtc.js'
-import { WORK_ORDERS_LIST_SQL as LIST_SQL } from './workOrderListSql.js'
+import {
+  WORK_ORDER_JOINS_SQL as LIST_JOINS_SQL,
+  WORK_ORDERS_LIST_SQL as LIST_SQL,
+} from './workOrderListSql.js'
 import {
   getShiftAppSettings,
   getWoAllowMultipleStartedWorkOrders,
@@ -49,6 +52,31 @@ import {
   createNotificationsForSubscribers,
   type NotificationDraft,
 } from '../notifications/workOrderNotifications.js'
+import { embedWorkOrderById } from '../ai/embeddings/workOrderEmbed.js'
+
+/**
+ * Fire-and-forget upsert of a work order's vector embedding. Never throws:
+ * similarity search is best-effort and must not block the write path. No-op
+ * when OPENAI_API_KEY is unset (handled inside `embedWorkOrderById`).
+ *
+ * Takes only the WO id — the loader inside rebuilds the canonical text from
+ * the current DB state (work_orders + assets + transactions), and the stored
+ * source_hash makes the call a cheap no-op when nothing relevant changed.
+ */
+function scheduleWorkOrderEmbedding(
+  workOrderId: string,
+  log?: { warn?: (obj: unknown, msg: string) => void },
+): void {
+  void embedWorkOrderById(pool, workOrderId).catch((err) => {
+    log?.warn?.(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        woId: workOrderId,
+      },
+      'wo_embed_fail',
+    )
+  })
+}
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -85,6 +113,10 @@ type WorkOrderTableRow = {
   category_id: string | null
   workgroup_id: string
   hold_reason: string | null
+  started_by_employee_id: string | null
+  continued_by_employee_id: string | null
+  done_at?: Date | null
+  done_by_employee_id?: string | null
   created_at: Date
   updated_at: Date
   created_by: string | null
@@ -111,6 +143,12 @@ type WorkOrderRow = WorkOrderTableRow & {
   category_name: string | null
   workgroup_key: string
   workgroup_name: string
+  started_by_employee_key: string | null
+  started_by_employee_name: string | null
+  continued_by_employee_key: string | null
+  continued_by_employee_name: string | null
+  done_by_employee_key?: string | null
+  done_by_employee_name?: string | null
   has_material_assignment: boolean
   has_employee_assignment: boolean
   assigned_employee_ids: string[]
@@ -344,6 +382,10 @@ function parseFeedbackActionBody(body: unknown):
       entries: FeedbackEntryInput[]
       target_status: 'on_hold' | 'done' | null
       hold_reason: string | null
+      mark_done: boolean
+      pcr_problem_id: string | null
+      pcr_cause_id: string | null
+      pcr_remedy_id: string | null
     }
   | { ok: false; error: string } {
   if (typeof body !== 'object' || body === null) {
@@ -411,7 +453,63 @@ function parseFeedbackActionBody(body: unknown):
     }
   }
 
-  return { ok: true, entries, target_status, hold_reason }
+  // New: `mark_done` replaces `target_status === 'done'`; legacy callers may still
+  // send target_status='done', which we treat as mark_done=true.
+  let mark_done = false
+  const md = o.mark_done
+  if (md === undefined || md === null) {
+    mark_done = false
+  } else if (typeof md === 'boolean') {
+    mark_done = md
+  } else {
+    return { ok: false, error: 'mark_done must be a boolean.' }
+  }
+  if (target_status === 'done') {
+    mark_done = true
+    target_status = null
+  }
+  if (mark_done && target_status === 'on_hold') {
+    return {
+      ok: false,
+      error: 'Cannot set mark_done together with target_status on_hold.',
+    }
+  }
+
+  // Optional PCR (Problem/Cause/Remedy) references. Only meaningful for BD work
+  // orders; handler silently ignores them for non-BD WOs.
+  function parseOptionalUuid(
+    key: string,
+  ): { ok: true; value: string | null } | { ok: false; error: string } {
+    const raw = o[key]
+    if (raw === undefined || raw === null || raw === '') {
+      return { ok: true, value: null }
+    }
+    if (typeof raw !== 'string') {
+      return { ok: false, error: `${key} must be a string uuid.` }
+    }
+    const s = raw.trim()
+    if (!UUID_RE.test(s)) {
+      return { ok: false, error: `${key} must be a valid uuid.` }
+    }
+    return { ok: true, value: s }
+  }
+  const pProblem = parseOptionalUuid('pcr_problem_id')
+  if (!pProblem.ok) return pProblem
+  const pCause = parseOptionalUuid('pcr_cause_id')
+  if (!pCause.ok) return pCause
+  const pRemedy = parseOptionalUuid('pcr_remedy_id')
+  if (!pRemedy.ok) return pRemedy
+
+  return {
+    ok: true,
+    entries,
+    target_status,
+    hold_reason,
+    mark_done,
+    pcr_problem_id: pProblem.value,
+    pcr_cause_id: pCause.value,
+    pcr_remedy_id: pRemedy.value,
+  }
 }
 
 /** Omitted field → undefined; invalid → 'invalid'. */
@@ -806,27 +904,281 @@ router.delete('/:id/subscribe', async (req, res) => {
   res.json({ ok: true, work_order_id: id, subscribed: false })
 })
 
+/**
+ * Whitelist of client-facing sort fields -> SQL expression. Using a whitelist
+ * prevents column injection via `?sort=` and keeps the ORDER BY predictable.
+ */
+const WORK_ORDER_SORT_COLUMN_SQL: Record<string, string> = {
+  wo_key: 'w.wo_key',
+  plan_start: 'w.plan_start',
+  plan_end: 'w.plan_end',
+  status: 'w.status',
+  created_at: 'w.created_at',
+  updated_at: 'w.updated_at',
+  planned_duration: 'w.planned_duration',
+  work_plan_key: 'w.work_plan_key',
+  work_type_key: 'wt.key',
+  workgroup_key: 'wg.key',
+  category_key: 'cat.key',
+  site_key: 'st.key',
+  costcenter_key: 'cc.key',
+  started_by_employee_key: 'sbe.key',
+  continued_by_employee_key: 'cbe.key',
+  created_by_login_name: 'cb.login_name',
+  updated_by_login_name: 'ub.login_name',
+}
+
+/** Keys that signal the caller uses the new paginated contract. */
+const WORK_ORDER_LIST_QUERY_KEYS = [
+  'limit',
+  'offset',
+  'sort',
+  'order',
+  'search',
+  'status',
+  'workgroup_key',
+  'work_type_key',
+  'category_key',
+  'assigned_employee_ids',
+  'created_by_login_name',
+  'updated_by_login_name',
+  'plan_start_from',
+  'plan_start_to',
+  'plan_end_from',
+  'plan_end_to',
+  'created_at_from',
+  'created_at_to',
+  'updated_at_from',
+  'updated_at_to',
+] as const
+
+const DEFAULT_LIST_LIMIT = 500
+const MAX_LIST_LIMIT = 1000
+
+type WorkOrderListQuery = {
+  limit: number
+  offset: number
+  sort: string
+  order: 'asc' | 'desc'
+  search: string | null
+  status: string[] | null
+  workgroup_key: string[] | null
+  work_type_key: string[] | null
+  category_key: string[] | null
+  assigned_employee_ids: string[] | null
+  created_by_login_name: string[] | null
+  updated_by_login_name: string[] | null
+  plan_start_from: string | null
+  plan_start_to: string | null
+  plan_end_from: string | null
+  plan_end_to: string | null
+  created_at_from: string | null
+  created_at_to: string | null
+  updated_at_from: string | null
+  updated_at_to: string | null
+}
+
+function parseStringParam(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const v = raw.trim()
+  return v === '' ? null : v
+}
+
+function parseStringArrayParam(raw: unknown): string[] | null {
+  if (Array.isArray(raw)) {
+    const arr = raw
+      .filter((v): v is string => typeof v === 'string' && v.trim() !== '')
+      .map((v) => v.trim())
+    return arr.length > 0 ? arr : null
+  }
+  const one = parseStringParam(raw)
+  return one === null ? null : [one]
+}
+
+function parseIntParam(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  if (typeof raw !== 'string') return fallback
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n)) return fallback
+  if (n < min) return min
+  if (n > max) return max
+  return n
+}
+
+function parseWorkOrderListQuery(
+  raw: Record<string, unknown>,
+): WorkOrderListQuery {
+  const sortRaw = parseStringParam(raw.sort)
+  const sort =
+    sortRaw && sortRaw in WORK_ORDER_SORT_COLUMN_SQL ? sortRaw : 'wo_key'
+  const orderRaw = parseStringParam(raw.order)
+  const order = orderRaw === 'asc' ? 'asc' : 'desc'
+  return {
+    limit: parseIntParam(raw.limit, DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT),
+    offset: parseIntParam(raw.offset, 0, 0, Number.MAX_SAFE_INTEGER),
+    sort,
+    order,
+    search: parseStringParam(raw.search),
+    status: parseStringArrayParam(raw.status),
+    workgroup_key: parseStringArrayParam(raw.workgroup_key),
+    work_type_key: parseStringArrayParam(raw.work_type_key),
+    category_key: parseStringArrayParam(raw.category_key),
+    assigned_employee_ids: parseStringArrayParam(raw.assigned_employee_ids),
+    created_by_login_name: parseStringArrayParam(raw.created_by_login_name),
+    updated_by_login_name: parseStringArrayParam(raw.updated_by_login_name),
+    plan_start_from: parseStringParam(raw.plan_start_from),
+    plan_start_to: parseStringParam(raw.plan_start_to),
+    plan_end_from: parseStringParam(raw.plan_end_from),
+    plan_end_to: parseStringParam(raw.plan_end_to),
+    created_at_from: parseStringParam(raw.created_at_from),
+    created_at_to: parseStringParam(raw.created_at_to),
+    updated_at_from: parseStringParam(raw.updated_at_from),
+    updated_at_to: parseStringParam(raw.updated_at_to),
+  }
+}
+
+function hasWorkOrderListQueryParams(raw: Record<string, unknown>): boolean {
+  return WORK_ORDER_LIST_QUERY_KEYS.some((k) => raw[k] !== undefined)
+}
+
+/**
+ * Build the WHERE clauses and bind params for the paginated list endpoint.
+ * Site scope (when non-admin) is included as the first clause so both the
+ * list and the count query stay in sync.
+ */
+function buildWorkOrderListFilters(
+  q: WorkOrderListQuery,
+  siteIds: string[] | null,
+): { whereSql: string; params: unknown[] } {
+  const clauses: string[] = []
+  const params: unknown[] = []
+  const push = (clause: string, value: unknown) => {
+    params.push(value)
+    clauses.push(clause.replace(/\$\?/g, `$${params.length}`))
+  }
+
+  if (siteIds !== null) {
+    push('w.site_id = ANY($?::uuid[])', siteIds)
+  }
+  if (q.status) push('w.status = ANY($?::text[])', q.status)
+  if (q.workgroup_key) push('wg.key = ANY($?::text[])', q.workgroup_key)
+  if (q.work_type_key) push('wt.key = ANY($?::text[])', q.work_type_key)
+  if (q.category_key) push('cat.key = ANY($?::text[])', q.category_key)
+  if (q.created_by_login_name) {
+    push('cb.login_name = ANY($?::text[])', q.created_by_login_name)
+  }
+  if (q.updated_by_login_name) {
+    push('ub.login_name = ANY($?::text[])', q.updated_by_login_name)
+  }
+  if (q.assigned_employee_ids) {
+    push(
+      `EXISTS(
+         SELECT 1 FROM work_order_employees woe
+         WHERE woe.work_order_id = w.id
+           AND woe.employee_id::text = ANY($?::text[])
+       )`,
+      q.assigned_employee_ids,
+    )
+  }
+  if (q.plan_start_from) push('w.plan_start >= $?::timestamptz', q.plan_start_from)
+  if (q.plan_start_to) push('w.plan_start <= $?::timestamptz', q.plan_start_to)
+  if (q.plan_end_from) push('w.plan_end >= $?::timestamptz', q.plan_end_from)
+  if (q.plan_end_to) push('w.plan_end <= $?::timestamptz', q.plan_end_to)
+  if (q.created_at_from) push('w.created_at >= $?::timestamptz', q.created_at_from)
+  if (q.created_at_to) push('w.created_at <= $?::timestamptz', q.created_at_to)
+  if (q.updated_at_from) push('w.updated_at >= $?::timestamptz', q.updated_at_from)
+  if (q.updated_at_to) push('w.updated_at <= $?::timestamptz', q.updated_at_to)
+  if (q.search) {
+    const needle = `%${q.search}%`
+    params.push(needle)
+    const p = `$${params.length}`
+    clauses.push(
+      `(w.wo_key::text ILIKE ${p} OR w.short_text ILIKE ${p} OR a.key ILIKE ${p} OR a.name ILIKE ${p})`,
+    )
+  }
+
+  const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+  return { whereSql, params }
+}
+
 router.get('/', async (req, res) => {
   const auth = req.authUser!
-  if (auth.role === 'admin') {
+
+  // Resolve site scope up front — shared by legacy and paginated branches.
+  let siteIds: string[] | null = null
+  if (auth.role !== 'admin') {
+    const scope = await loadUserSiteScope(pool, auth.id, auth.role)
+    const allowed = accessibleSiteIds(scope)
+    if (allowed === null || allowed.length === 0) {
+      if (hasWorkOrderListQueryParams(req.query as Record<string, unknown>)) {
+        const q = parseWorkOrderListQuery(req.query as Record<string, unknown>)
+        res.json({
+          work_orders: [],
+          total: 0,
+          offset: q.offset,
+          limit: q.limit,
+        })
+      } else {
+        res.json({ work_orders: [] })
+      }
+      return
+    }
+    siteIds = allowed
+  }
+
+  // Legacy path: no new query params -> unchanged response shape for callers
+  // like the month scheduler and mobile app.
+  if (!hasWorkOrderListQueryParams(req.query as Record<string, unknown>)) {
+    if (siteIds === null) {
+      const r = await pool.query<WorkOrderRow>(
+        `${LIST_SQL} ORDER BY w.wo_key DESC`,
+      )
+      res.json({ work_orders: r.rows })
+      return
+    }
     const r = await pool.query<WorkOrderRow>(
-      `${LIST_SQL} ORDER BY w.wo_key DESC`,
+      `${LIST_SQL} WHERE w.site_id = ANY($1::uuid[])
+       ORDER BY w.wo_key DESC`,
+      [siteIds],
     )
     res.json({ work_orders: r.rows })
     return
   }
-  const scope = await loadUserSiteScope(pool, auth.id, auth.role)
-  const allowed = accessibleSiteIds(scope)
-  if (allowed === null || allowed.length === 0) {
-    res.json({ work_orders: [] })
-    return
-  }
-  const r = await pool.query<WorkOrderRow>(
-    `${LIST_SQL} WHERE w.site_id = ANY($1::uuid[])
-     ORDER BY w.wo_key DESC`,
-    [allowed],
-  )
-  res.json({ work_orders: r.rows })
+
+  // Paginated path (limit/offset/sort/filter/search).
+  const q = parseWorkOrderListQuery(req.query as Record<string, unknown>)
+  const { whereSql, params } = buildWorkOrderListFilters(q, siteIds)
+
+  const sortExpr = WORK_ORDER_SORT_COLUMN_SQL[q.sort] ?? 'w.wo_key'
+  const sortOrder = q.order === 'asc' ? 'ASC' : 'DESC'
+  // Secondary tiebreaker on wo_key so page boundaries are deterministic even
+  // when the primary sort has duplicates/NULLs.
+  const orderSql =
+    q.sort === 'wo_key'
+      ? `ORDER BY ${sortExpr} ${sortOrder}`
+      : `ORDER BY ${sortExpr} ${sortOrder} NULLS LAST, w.wo_key DESC`
+
+  const listParams: unknown[] = [...params, q.limit, q.offset]
+  const limitIdx = listParams.length - 1
+  const offsetIdx = listParams.length
+  const listSql = `${LIST_SQL} ${whereSql} ${orderSql} LIMIT $${limitIdx} OFFSET $${offsetIdx}`
+  const countSql = `SELECT COUNT(*)::int AS total ${LIST_JOINS_SQL} ${whereSql}`
+
+  const [listRes, countRes] = await Promise.all([
+    pool.query<WorkOrderRow>(listSql, listParams),
+    pool.query<{ total: number }>(countSql, params),
+  ])
+
+  res.json({
+    work_orders: listRes.rows,
+    total: countRes.rows[0]?.total ?? 0,
+    offset: q.offset,
+    limit: q.limit,
+  })
 })
 
 router.get('/:id', async (req, res) => {
@@ -991,6 +1343,7 @@ router.put('/:id/employees', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1080,6 +1433,7 @@ router.put('/:id/employees', async (req, res) => {
                  plan_start, plan_end, work_type_id, status,
                  hold_reason,
                  work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                 started_by_employee_id, continued_by_employee_id,
                  created_at, updated_at, created_by, updated_by`,
       [nextStatus, auth.id, id],
     )
@@ -1248,6 +1602,7 @@ router.put('/:id/capacity-allocation', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1473,6 +1828,7 @@ router.put('/:id/capacity-allocation', async (req, res) => {
                    plan_start, plan_end, work_type_id, status,
                    hold_reason,
                    work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                   started_by_employee_id, continued_by_employee_id,
                    created_at, updated_at, created_by, updated_by`,
         [id, auth.id],
       )
@@ -1487,6 +1843,7 @@ router.put('/:id/capacity-allocation', async (req, res) => {
                 plan_start, plan_end, work_type_id, status,
                 hold_reason,
                 work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                started_by_employee_id, continued_by_employee_id,
                 created_at, updated_at, created_by, updated_by
          FROM work_orders
          WHERE id = $1`,
@@ -1682,6 +2039,7 @@ router.post('/:id/actions/start', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1790,19 +2148,41 @@ router.post('/:id/actions/start', async (req, res) => {
       beforeRow.status === 'on_hold' ? 'continued' : 'started'
     const nextHoldReason =
       beforeRow.status === 'on_hold' ? null : beforeRow.hold_reason
+    // Record the first employee to start the WO, and the most recent employee
+    // to continue from hold. `started_by_employee_id` is set once (first
+    // transition to `started`); `continued_by_employee_id` refreshes each
+    // time the WO is re-started from `on_hold`.
+    const nextStartedByEmployeeId =
+      afterStatus === 'started' && beforeRow.started_by_employee_id == null
+        ? actorEmployeeId
+        : beforeRow.started_by_employee_id
+    const nextContinuedByEmployeeId =
+      afterStatus === 'continued'
+        ? actorEmployeeId
+        : beforeRow.continued_by_employee_id
     const r = await client.query<WorkOrderTableRow>(
       `UPDATE work_orders SET
          status = $1,
          hold_reason = $2,
+         started_by_employee_id = $3,
+         continued_by_employee_id = $4,
          updated_at = now(),
-         updated_by = $3
-       WHERE id = $4
+         updated_by = $5
+       WHERE id = $6
        RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
                  plan_start, plan_end, work_type_id, status,
                  hold_reason,
                  work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                 started_by_employee_id, continued_by_employee_id,
                  created_at, updated_at, created_by, updated_by`,
-      [afterStatus, nextHoldReason, auth.id, id],
+      [
+        afterStatus,
+        nextHoldReason,
+        nextStartedByEmployeeId,
+        nextContinuedByEmployeeId,
+        auth.id,
+        id,
+      ],
     )
     const afterTable = r.rows[0]
     if (!afterTable) {
@@ -1859,6 +2239,7 @@ router.post('/:id/actions/start', async (req, res) => {
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
+    scheduleWorkOrderEmbedding(afterTable.id, req.log)
     res.json({ work_order: workOrder! })
   } catch (e) {
     await client.query('ROLLBACK')
@@ -1898,6 +2279,7 @@ router.post('/:id/actions/hold', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -1929,6 +2311,7 @@ router.post('/:id/actions/hold', async (req, res) => {
                  plan_start, plan_end, work_type_id, status,
                  hold_reason,
                  work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                 started_by_employee_id, continued_by_employee_id,
                  created_at, updated_at, created_by, updated_by`,
       [reason, auth.id, id],
     )
@@ -1986,6 +2369,7 @@ router.post('/:id/actions/hold', async (req, res) => {
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
+    scheduleWorkOrderEmbedding(afterTable.id, req.log)
     res.json({ work_order: workOrder! })
   } catch (e) {
     await client.query('ROLLBACK')
@@ -2006,7 +2390,15 @@ router.post('/:id/actions/feedback', async (req, res) => {
     res.status(400).json({ error: parsed.error })
     return
   }
-  const { entries, target_status, hold_reason } = parsed
+  const {
+    entries,
+    target_status,
+    hold_reason,
+    mark_done,
+    pcr_problem_id,
+    pcr_cause_id,
+    pcr_remedy_id,
+  } = parsed
   const auth = req.authUser!
   const scope = await loadUserSiteScope(pool, auth.id, auth.role)
   const auditPath = `${req.baseUrl}${req.path}`
@@ -2022,6 +2414,8 @@ router.post('/:id/actions/feedback', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
+              done_at, done_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -2041,6 +2435,66 @@ router.post('/:id/actions/feedback', async (req, res) => {
           'Feedback is only allowed when the work order is started or continued.',
       })
       return
+    }
+    // PCR (Problem/Cause/Remedy) refs only apply to Breakdown (BD) work orders.
+    // For non-BD WOs we silently drop them instead of erroring, so legacy UIs
+    // that always send the fields keep working.
+    const wtRow = await client.query<{ key: string }>(
+      `SELECT key FROM work_types WHERE id = $1`,
+      [beforeRow.work_type_id],
+    )
+    const isBd = wtRow.rows[0]?.key === 'BD'
+    const effProblemId = isBd ? pcr_problem_id : null
+    const effCauseId = isBd ? pcr_cause_id : null
+    const effRemedyId = isBd ? pcr_remedy_id : null
+    // Optional defensive check: if PCR ids are provided, they must belong to the
+    // same site as the work order.
+    if (isBd) {
+      if (effProblemId) {
+        const r = await client.query<{ site_id: string }>(
+          `SELECT site_id FROM pcr_problems WHERE id = $1`,
+          [effProblemId],
+        )
+        if (r.rows[0]?.site_id !== beforeRow.site_id) {
+          await client.query('ROLLBACK')
+          res.status(400).json({ error: 'Invalid pcr_problem_id for this site.' })
+          return
+        }
+      }
+      if (effCauseId) {
+        const r = await client.query<{ site_id: string; problem_id: string }>(
+          `SELECT site_id, problem_id FROM pcr_causes WHERE id = $1`,
+          [effCauseId],
+        )
+        const row = r.rows[0]
+        if (!row || row.site_id !== beforeRow.site_id) {
+          await client.query('ROLLBACK')
+          res.status(400).json({ error: 'Invalid pcr_cause_id for this site.' })
+          return
+        }
+        if (effProblemId && row.problem_id !== effProblemId) {
+          await client.query('ROLLBACK')
+          res.status(400).json({ error: 'pcr_cause_id does not match pcr_problem_id.' })
+          return
+        }
+      }
+      if (effRemedyId) {
+        const r = await client.query<{ site_id: string; cause_id: string }>(
+          `SELECT site_id, cause_id FROM pcr_remedies WHERE id = $1`,
+          [effRemedyId],
+        )
+        const row = r.rows[0]
+        if (!row || row.site_id !== beforeRow.site_id) {
+          await client.query('ROLLBACK')
+          res.status(400).json({ error: 'Invalid pcr_remedy_id for this site.' })
+          return
+        }
+        if (effCauseId && row.cause_id !== effCauseId) {
+          await client.query('ROLLBACK')
+          res.status(400).json({ error: 'pcr_remedy_id does not match pcr_cause_id.' })
+          return
+        }
+      }
     }
     const startRequiresAssignment =
       await getWoStartRequiresAssignment(client)
@@ -2070,9 +2524,19 @@ router.post('/:id/actions/feedback', async (req, res) => {
     for (const ent of entries) {
       await client.query(
         `INSERT INTO transactions (
-           work_order_id, type, employee_id, created_by_user_id, hours, feedback_text
-         ) VALUES ($1, 'INT', $2, $3, $4, $5)`,
-        [id, ent.employee_id, auth.id, ent.hours, ent.feedback_text],
+           work_order_id, type, employee_id, created_by_user_id, hours, feedback_text,
+           pcr_problem_id, pcr_cause_id, pcr_remedy_id
+         ) VALUES ($1, 'INT', $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          id,
+          ent.employee_id,
+          auth.id,
+          ent.hours,
+          ent.feedback_text,
+          effProblemId,
+          effCauseId,
+          effRemedyId,
+        ],
       )
     }
     let afterTable = beforeRow
@@ -2088,6 +2552,8 @@ router.post('/:id/actions/feedback', async (req, res) => {
                    plan_start, plan_end, work_type_id, status,
                    hold_reason,
                    work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                   started_by_employee_id, continued_by_employee_id,
+                   done_at, done_by_employee_id,
                    created_at, updated_at, created_by, updated_by`,
         [hold_reason!, auth.id, id],
       )
@@ -2129,7 +2595,7 @@ router.post('/:id/actions/feedback', async (req, res) => {
         workOrderId: afterTable.id,
         drafts: feedbackHoldDrafts,
       })
-    } else if (target_status === 'done') {
+    } else if (mark_done) {
       const requireTimeForDone =
         await getWoRequireTimeRegistrationForDone(client)
       if (requireTimeForDone) {
@@ -2154,15 +2620,19 @@ router.post('/:id/actions/feedback', async (req, res) => {
         `UPDATE work_orders SET
            status = 'done',
            hold_reason = NULL,
+           done_at = now(),
+           done_by_employee_id = $1,
            updated_at = now(),
-           updated_by = $1
-         WHERE id = $2
+           updated_by = $2
+         WHERE id = $3
          RETURNING id, site_id, wo_key, short_text, asset_id, costcenter_id, instruction_text,
                    plan_start, plan_end, work_type_id, status,
                    hold_reason,
                    work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                   started_by_employee_id, continued_by_employee_id,
+                   done_at, done_by_employee_id,
                    created_at, updated_at, created_by, updated_by`,
-        [auth.id, id],
+        [actorEmployeeId, auth.id, id],
       )
       afterTable = r.rows[0]!
       const beforeState = redactForAudit(
@@ -2213,6 +2683,8 @@ router.post('/:id/actions/feedback', async (req, res) => {
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
+    // Refresh embedding so the new feedback text becomes searchable via Athene.
+    scheduleWorkOrderEmbedding(afterTable.id, req.log)
     res.json({ work_order: workOrder! })
   } catch (e) {
     await client.query('ROLLBACK')
@@ -2446,6 +2918,7 @@ router.post('/', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders WHERE id = $1`,
       [insertedId],
@@ -2473,6 +2946,7 @@ router.post('/', async (req, res) => {
     broadcastWorkOrderCreated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderCreated>[0],
     )
+    scheduleWorkOrderEmbedding(persisted.id, req.log)
     res.status(201).json({
       work_order: workOrder!,
     })
@@ -2580,6 +3054,7 @@ router.patch('/:id', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1
@@ -2784,6 +3259,7 @@ router.patch('/:id', async (req, res) => {
                  plan_start, plan_end, work_type_id, status,
                  hold_reason,
                  work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+                 started_by_employee_id, continued_by_employee_id,
                  created_at, updated_at, created_by, updated_by`,
       [
         nextShort,
@@ -2856,6 +3332,10 @@ router.patch('/:id', async (req, res) => {
     broadcastWorkOrderUpdated(
       workOrder! as unknown as Parameters<typeof broadcastWorkOrderUpdated>[0],
     )
+    // Embedding now includes status, asset, hold reason and feedback — any
+    // patch can change what feeds into the canonical text. `scheduleWorkOrderEmbedding`
+    // uses source_hash to skip the OpenAI call when nothing actually changed.
+    scheduleWorkOrderEmbedding(afterTable.id, req.log)
     res.json({
       work_order: workOrder!,
     })
@@ -3251,6 +3731,7 @@ router.delete('/:id', async (req, res) => {
               plan_start, plan_end, work_type_id, status,
               hold_reason,
               work_plan_id, work_plan_key, planned_duration, category_id, workgroup_id,
+              started_by_employee_id, continued_by_employee_id,
               created_at, updated_at, created_by, updated_by
        FROM work_orders
        WHERE id = $1

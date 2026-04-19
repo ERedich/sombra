@@ -1,0 +1,17 @@
+---
+description: First day of week (FDW) from app parameters for calendars and custom grids
+globs:
+  - "**/Calendar*.tsx"
+  - "**/calendar/**/*.tsx"
+  - "**/SearchPanel.tsx"
+  - "**/*Planner*.tsx"
+  - "**/PrimeLocaleSync.tsx"
+  - "**/registerPrimeLocales.ts"
+  - "**/firstDayOfWeekPreference.ts"
+---
+
+# Calendar first day of week (FDW)
+
+- General setting **`general.fdw`**: `"monday"` | `"sunday"` (default **Monday**). Read **`useAppParameters().fdw`** (or API `general.fdw`); validate with **`isGeneralFdwId`** from `frontend/src/utils/firstDayOfWeekPreference.ts`.
+- **PrimeReact `Calendar`**: Do not hardcode week start per screen. **`PrimeLocaleSync`** calls `addLocale` with **`firstDayOfWeek`** from **`primeFirstDayOfWeekFromFdw(fdw)`** (0 = Sunday, 1 = Monday). Keep `registerPrimeLocales.ts` aligned: avoid duplicating conflicting `firstDayOfWeek` there.
+- **Other custom month/week grids**: Reuse the same **`primeFirstDayOfWeekFromFdw(fdw)`** offset logic (0 = Sunday, 1 = Monday) so headers and cells stay in sync with FDW.
